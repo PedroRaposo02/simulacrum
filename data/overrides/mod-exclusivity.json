@@ -1,0 +1,11 @@
+{
+  "_note": "Mods in one group can't be equipped together. 'Primed X' / 'Amalgam X' pair with 'X' automatically. Verify additions in-game.",
+  "groups": [
+    ["Split Chamber", "Galvanized Chamber"],
+    ["Barrel Diffusion", "Galvanized Diffusion"],
+    ["Hell's Chamber", "Galvanized Hell"],
+    ["Rifle Aptitude", "Galvanized Aptitude"],
+    ["Sure Shot", "Galvanized Shot"],
+    ["Shotgun Savvy", "Galvanized Savvy"]
+  ]
+}

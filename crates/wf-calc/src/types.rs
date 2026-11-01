@@ -1,0 +1,168 @@
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use wf_data::{Coverage, DamageType, EnemyProfile, Modifier};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Conditions {
+    /// 0..1 uptime applied to conditional modifiers (on kill, on headshot, aiming...).
+    pub conditional_uptime: f64,
+    /// Share of hits that land on a headshot / weak point (only where allowed).
+    pub headshot_share: f64,
+}
+
+impl Default for Conditions {
+    fn default() -> Self {
+        Self { conditional_uptime: 1.0, headshot_share: 0.0 }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Build {
+    pub weapon: String,
+    /// Mod names or ids, in slot order (element combination depends on it).
+    pub mods: Vec<String>,
+    pub arcane: Option<String>,
+    pub riven: Vec<Modifier>,
+    pub buffs: Vec<Modifier>,
+    pub conditions: Conditions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Target {
+    /// Preset id from gamedata, or None for "raw" numbers (no enemy).
+    pub enemy: Option<String>,
+    /// Inline profile; takes precedence over `enemy`.
+    pub profile: Option<EnemyProfile>,
+    /// External armor strip 0..1 (abilities, shattering impact...).
+    pub armor_strip: f64,
+    /// Override steady-state stack counts instead of deriving them from the build.
+    pub viral_stacks: Option<f64>,
+    pub corrosive_stacks: Option<f64>,
+    pub heat_active: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Explain {
+    pub label: String,
+    pub value: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<Explain>,
+}
+
+impl Explain {
+    pub fn new(label: impl Into<String>, value: f64) -> Self {
+        Self { label: label.into(), value, detail: None, children: vec![] }
+    }
+    pub fn detail(mut self, d: impl Into<String>) -> Self {
+        self.detail = Some(d.into());
+        self
+    }
+    pub fn child(mut self, c: Explain) -> Self {
+        self.children.push(c);
+        self
+    }
+    pub fn with(mut self, cs: Vec<Explain>) -> Self {
+        self.children.extend(cs);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComponentResult {
+    pub name: String,
+    pub damage: BTreeMap<DamageType, f64>,
+    pub per_projectile_raw: f64,
+    pub per_projectile_target: f64,
+    pub projectiles: f64,
+    pub crit_chance: f64,
+    pub crit_mult: f64,
+    pub status_chance: f64,
+    pub explain: Explain,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModeResult {
+    pub mode: String,
+    pub mode_index: usize,
+    pub coverage: Coverage,
+    pub approximations: Vec<String>,
+    pub fire_rate: f64,
+    pub magazine: Option<u32>,
+    pub reload_s: f64,
+    pub per_shot_raw: f64,
+    pub per_shot: f64,
+    pub burst_dps_raw: f64,
+    pub burst_dps: f64,
+    pub sustained_dps: f64,
+    pub per_charge: Option<f64>,
+    pub status_dps: f64,
+    pub procs_per_s: BTreeMap<DamageType, f64>,
+    pub viral_stacks: f64,
+    pub corrosive_stacks: f64,
+    pub components: Vec<ComponentResult>,
+    pub explain: Explain,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildResult {
+    pub weapon: String,
+    pub weapon_id: String,
+    pub target: String,
+    pub modes: Vec<ModeResult>,
+    pub failed_modes: Vec<ModeFailure>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModeFailure {
+    pub mode: String,
+    pub mode_index: usize,
+    pub error: CalcError,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ErrorCode {
+    UnknownWeapon,
+    UnknownMod,
+    UnknownArcane,
+    UnknownEnemy,
+    IncompatibleMod,
+    DuplicateMod,
+    ExclusiveMods,
+    UnknownMechanic,
+    MissingField,
+    InvalidValue,
+    NonFinite,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalcError {
+    pub code: ErrorCode,
+    pub message: String,
+}
+
+impl CalcError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self { code, message: message.into() }
+    }
+}
+
+impl std::fmt::Display for CalcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for CalcError {}

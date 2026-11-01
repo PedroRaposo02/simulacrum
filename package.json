@@ -1,0 +1,11 @@
+{
+  "name": "wf-builds",
+  "version": "0.1.0-beta.1",
+  "private": true,
+  "scripts": {
+    "ingest": "pnpm --filter @wf/ingest run ingest",
+    "dev": "pnpm --filter @wf/web run dev",
+    "build:wasm": "pnpm --filter @wf/web run build:wasm",
+    "build": "pnpm --filter @wf/web run build"
+  }
+}

@@ -1,0 +1,16 @@
+[package]
+name = "wf-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wfcalc"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+wf-data.workspace = true
+wf-calc.workspace = true
+clap = { version = "4", features = ["derive"] }

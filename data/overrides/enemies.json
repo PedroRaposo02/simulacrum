@@ -1,0 +1,9 @@
+{
+  "_note": "Health-class damage modifiers are left empty until verified against the current damage table; results then reflect armor, faction mods and status only.",
+  "enemies": [
+    { "id": "sp-grineer", "name": "Steel Path Grineer (armor cap)", "faction": "grineer", "armor": 2700 },
+    { "id": "sp-corpus", "name": "Steel Path Corpus (unarmored)", "faction": "corpus", "armor": 0, "shields": true, "note": "Shields not modelled yet" },
+    { "id": "sp-infested", "name": "Steel Path Infested (light armor)", "faction": "infested", "armor": 300 },
+    { "id": "boss-armored", "name": "Armored boss (armor cap)", "faction": "none", "armor": 2700, "isBoss": true }
+  ]
+}

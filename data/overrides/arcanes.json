@@ -1,0 +1,6 @@
+{
+  "_note": "Arcanes whose effect is a named engine behaviour (crates/wf-calc/src/behaviours.rs) instead of a stat line.",
+  "behaviours": {
+    "Secondary Enervate": "enervate"
+  }
+}

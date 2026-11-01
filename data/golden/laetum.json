@@ -1,0 +1,15 @@
+{
+  "_note": "Laetum regression vectors from the earlier analysis. Pending cases need the exact mod list, arcane, evolutions and conditions of each build before they can run.",
+  "cases": [
+    {
+      "name": "Laetum unmodded, normal fire, expected shot (160 listed x crit 1 + 0.22 x 1.2)",
+      "build": { "weapon": "Laetum" },
+      "mode": 0, "metric": "perShot", "expected": 202.24, "tolerance": 0.0001
+    },
+    { "name": "Laetum build A (Cascadia Flare crit): 829,900 per shot", "status": "pending: build definition", "metric": "perShot", "expected": 829900 },
+    { "name": "Laetum build A (Cascadia Flare crit): 14.95M burst", "status": "pending: build definition", "expected": 14950000 },
+    { "name": "Laetum red-crit build: 6.9M burst", "status": "pending: build definition", "expected": 6900000 },
+    { "name": "Laetum Devouring Attrition build: 22.1M burst", "status": "pending: Devouring Attrition evolution + build definition", "expected": 22100000 },
+    { "name": "Laetum Enervate build: 21.0M burst", "status": "pending: build definition", "expected": 21000000 }
+  ]
+}
