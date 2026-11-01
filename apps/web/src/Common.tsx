@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { Coverage, Explain } from "./types";
-import { fmt, useStore } from "./store";
+import { fmt } from "./store";
 
 const BADGE: Record<Coverage, string> = {
   verified: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300",
@@ -17,17 +17,69 @@ export function CoverageBadge({ c, title }: { c: Coverage; title?: string }) {
   );
 }
 
-export function EnemyPicker() {
-  const { data, target, setTarget } = useStore();
+export function Slider({
+  label,
+  value,
+  onChange,
+  min = 0,
+  max = 1,
+  step = 0.05,
+  display,
+  disabled,
+}: {
+  label: ReactNode;
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  display?: string;
+  disabled?: boolean;
+}) {
   return (
-    <select className="field" value={target.enemy ?? ""} onChange={(e) => setTarget({ ...target, enemy: e.target.value || null })}>
-      <option value="">Raw (no enemy)</option>
-      {data!.enemies.map((e) => (
-        <option key={e.id} value={e.id}>
-          {e.name}
-        </option>
+    <div className={disabled ? "opacity-50" : ""}>
+      <label className="label flex justify-between gap-2">
+        <span>{label}</span>
+        <span className="num normal-case">{display ?? `${Math.round(value * 100)}%`}</span>
+      </label>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full accent-indigo-600"
+      />
+    </div>
+  );
+}
+
+export function Toggle({ label, checked, onChange, title }: { label: ReactNode; checked: boolean; onChange: (v: boolean) => void; title?: string }) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2 text-sm" title={title}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="accent-indigo-600" />
+      <span>{label}</span>
+    </label>
+  );
+}
+
+export function Segmented<T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) {
+  return (
+    <div className="inline-flex rounded-md border border-zinc-300 p-0.5 dark:border-zinc-700">
+      {options.map(([v, l]) => (
+        <button
+          key={v}
+          onClick={() => onChange(v)}
+          className={`rounded px-2.5 py-1 text-sm ${
+            value === v ? "bg-indigo-600 text-white" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          }`}
+        >
+          {l}
+        </button>
       ))}
-    </select>
+    </div>
   );
 }
 

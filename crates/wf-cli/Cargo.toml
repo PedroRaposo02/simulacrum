@@ -13,4 +13,6 @@ serde.workspace = true
 serde_json.workspace = true
 wf-data.workspace = true
 wf-calc.workspace = true
+wf-opt.workspace = true
+rayon = "1"
 clap = { version = "4", features = ["derive"] }

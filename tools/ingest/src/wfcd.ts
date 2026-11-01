@@ -5,8 +5,6 @@ import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-
-
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const wfcdDir = join(dirname(fileURLToPath(import.meta.url)), "../node_modules/@wfcd/items/data/json");
 const wfcdVersion: string = JSON.parse(readFileSync(join(wfcdDir, "../../package.json"), "utf8")).version;
@@ -14,7 +12,22 @@ const load = (f: string) => JSON.parse(readFileSync(join(wfcdDir, f), "utf8"));
 const override = (f: string) => JSON.parse(readFileSync(join(root, "data/overrides", f), "utf8"));
 
 type Stat = { kind: string; of?: string };
-type Modifier = { source: string; stat: Stat; value: number; maxStacks?: number; condition?: string };
+type Modifier = { source: string; stat: Stat; value: number; maxStacks?: number; condition?: string; per?: string; appliesTo?: string };
+
+/** Split off "per Status Type" / "per Combo Multiplier" qualifiers. */
+function splitPer(text: string): [string, string | undefined] {
+  const st = text.replace(/ per Status Type affecting the target/i, "");
+  if (st !== text) return [st, "statusType"];
+  const cm = text.replace(/ (?:per|stacks with) Combo Multiplier/i, "");
+  if (cm !== text) return [cm, "comboMultiplier"];
+  return [text, undefined];
+}
+
+function withPer(m: Modifier, per: string | undefined, statName: string): Modifier {
+  if (per) m.per = per;
+  if (/^Direct Damage$/.test(statName.trim())) m.appliesTo = "directOnly";
+  return m;
+}
 
 const ELEMENTS: Record<string, string> = {
   Heat: "heat", Cold: "cold", Electricity: "electricity", Toxin: "toxin", Blast: "blast",
@@ -28,11 +41,13 @@ const FACTIONS: Record<string, string> = {
 const DAMAGE_KEYS: Record<string, string> = { ...ELEMENTS, ...PHYSICAL, Void: "void", Tau: "tau", True: "true" };
 
 // Stats that never change damage output; dropped instead of reported as unparsed.
-const IRRELEVANT = /Punch Through|Recoil|Ammo Maximum|Ammo Pick Up|Projectile Speed|Zoom|Accuracy|Health Orbs|Minimap|Movement Speed|Holstered|Heal Rate|Shield Recharge|hear gunfire|Beam Range|Blast Range|Flight Speed|Holster|Chance to Explode|'\w+'|Ammo Efficiency|Spread|Sprint Speed|Dodge Speed|Revive Speed|Combo Count|Life Steal|Mobility|Slide/i;
+const IRRELEVANT = /Punch Through|Recoil|Ammo Maximum|Ammo Pick Up|Projectile Speed|Zoom|Accuracy|Health Orbs|Minimap|Movement Speed|Holstered|Heal Rate|Shield Recharge|hear gunfire|Beam Range|Blast Range|Flight Speed|Holster|Chance to Explode|'\w+'|Ammo Efficiency|Spread|Sprint Speed|Dodge Speed|Revive Speed|Combo Count|Life Steal|Mobility|Slide|Combo Duration|Heavy Attack Efficiency|Wind Up|Finisher|Range|Bounce|Initial Combo|Channeling|Block|Parry|Throw/i;
 
 function statOf(name: string): Stat | null {
-  name = name.trim().replace(/\s*\(x2 for Bows\)/, "");
-  if (name === "Damage" || name === "Direct Damage") return { kind: "baseDamage" };
+  // Drop qualifiers such as "(x2 for Bows)" or "(x2 for Heavy Attacks)"; the base effect is what normal attacks get.
+  name = name.trim().replace(/\s*\(x\d+ for [^)]+\)/, "");
+  if (name === "Damage" || name === "Direct Damage" || name === "Melee Damage") return { kind: "baseDamage" };
+  if (name === "Attack Speed") return { kind: "fireRate" };
   if (name === "Multishot") return { kind: "multishot" };
   if (name === "Critical Chance") return { kind: "critChance" };
   if (name === "Critical Damage") return { kind: "critDamage" };
@@ -50,6 +65,7 @@ function statOf(name: string): Stat | null {
 const CONDITIONS: Record<string, string> = {
   "On Kill": "onKill", "On Headshot": "onHeadshot", "On Headshot Kill": "onHeadshotKill",
   "On Reload": "onReload", "On Weak Point Kill": "onHeadshotKill", "On Weak Point Hit": "onHeadshot",
+  "On Melee Kill": "onKill",
 };
 
 /** Parse one stat line into modifiers; returns null when it can't be read. */
@@ -62,24 +78,27 @@ function parseLine(source: string, raw: string): Modifier[] | null {
   const cond = line.match(/^(On [\w ]+?):\s*\n?([\s\S]+)$/);
   if (cond) {
     const condition = CONDITIONS[cond[1]];
-    const body = cond[2].trim().match(/^([+-][\d.]+)% ([A-Za-z ]+?)(?: when Aiming)?(?: for [\d.]+s)?\.?(?: Stacks up to (\d+)x\.?)?$/);
+    const [bodyText, per] = splitPer(cond[2].trim());
+    const body = bodyText.match(/^([+-][\d.]+)% ([A-Za-z ]+?)(?: when Aiming)?(?: for [\d.]+s)?\.?(?: Stacks up to (\d+)x\.?)?$/);
     if (!condition || !body) return null;
     const stat = statOf(body[2]);
     if (!stat) return IRRELEVANT.test(body[2]) ? [] : null;
-    return [{ source: `${source} (${cond[1].toLowerCase()})`, stat, value: +body[1] / 100, maxStacks: body[3] ? +body[3] : 1, condition }];
+    return [withPer({ source: `${source} (${cond[1].toLowerCase()})`, stat, value: +body[1] / 100, maxStacks: body[3] ? +body[3] : 1, condition }, per, body[2])];
   }
-  const plain = line.match(/^([+-][\d.]+)% (.+)$/);
+  const [plainText, per] = splitPer(line);
+  const plain = plainText.match(/^([+-][\d.]+)% (.+)$/);
   if (plain) {
     const stat = statOf(plain[2]);
-    if (stat) return [{ source, stat, value: +plain[1] / 100 }];
+    if (stat) return [withPer({ source, stat, value: +plain[1] / 100 }, per, plain[2])];
   }
   return IRRELEVANT.test(line) ? [] : null;
 }
 
 const POOLS: Record<string, string> = {
   "Primary Mod": "primary", "Shotgun Mod": "shotgun", "Secondary Mod": "secondary", "Arch-Gun Mod": "archGun",
+  "Melee Mod": "melee",
 };
-const GENERIC_COMPAT = new Set(["primary", "unique", "rifle", "pistol", "shotgun", "archgun", "thrown", "rifle (no aoe)", "pistol (no aoe)"]);
+const GENERIC_COMPAT = new Set(["primary", "unique", "rifle", "pistol", "shotgun", "archgun", "thrown", "rifle (no aoe)", "pistol (no aoe)", "melee"]);
 
 const exclusivity: string[][] = override("mod-exclusivity.json").groups;
 function exclusiveGroup(name: string, pool: string): string | undefined {
@@ -104,16 +123,20 @@ function buildMods() {
         else unparsed.push(part.replace(/<[^>]+>/g, "").replace(/\\n/g, " "));
       }
     }
+    const desc = String(m.description ?? "");
+    const requiresTrigger = /Only compatible with Semi-Auto/i.test(desc) ? "semi" : undefined;
+    const locksFireRate = /Fire Rate cannot be modified/i.test(desc) || undefined;
     return {
       id: m.uniqueName, name: m.name, pool, compat, polarity: m.polarity ?? "", baseDrain: m.baseDrain ?? 0,
       maxRank: m.fusionLimit ?? 0, isExilus: !!m.isExilus, exclusiveGroup: exclusiveGroup(m.name, pool),
-      modifiers, unparsed,
+      modifiers, ...(requiresTrigger ? { requiresTrigger } : {}), ...(locksFireRate ? { locksFireRate } : {}), unparsed,
     };
   });
   // Same name can appear several times (beginner, PvP variants); keep the full version.
   // "Expert" paths are primed variants; under an unprimed name they are unreleased placeholders.
+  // Among the rest the plainest internal path is the released mod (e.g. WeaponMeleeDamageMod, not ...OnHeavyKillMod).
   const rank = (m: { id: string; name: string; maxRank: number }) =>
-    (/Beginner|PvP|Conclave/i.test(m.id) ? -100 : 0) + (/Expert/.test(m.id) && !/^Primed /.test(m.name) ? -50 : 0) + m.maxRank;
+    (/Beginner|PvP|Conclave/i.test(m.id) ? -1000 : 0) + (/Expert/.test(m.id) && !/^Primed /.test(m.name) ? -500 : 0) - m.id.length;
   const best = new Map<string, (typeof out)[number]>();
   for (const m of out) if (!best.has(m.name) || rank(m) > rank(best.get(m.name)!)) best.set(m.name, m);
   const deduped = [...best.values()];
@@ -154,7 +177,19 @@ const CLASS: Record<string, string> = {
 const TRIGGER: Record<string, string> = {
   Auto: "auto", Semi: "semi", Held: "held", "Auto Burst": "burst", Burst: "burst", Active: "active", Charge: "charge", Duplex: "duplex",
 };
-const SLOT: Record<string, string> = { Primary: "primary", Secondary: "secondary", "Arch-Gun": "archGun", SentinelWeapons: "companion" };
+const SLOT: Record<string, string> = { Primary: "primary", Secondary: "secondary", Melee: "melee", "Arch-Gun": "archGun", SentinelWeapons: "companion" };
+
+/** Mod pool a weapon takes. Companion weapons borrow the pool matching their internal path. */
+function modPoolOf(slot: string, cls: string, uniqueName: string): string {
+  if (slot === "companion") {
+    if (/Melee|Glaive/i.test(uniqueName)) return "melee";
+    if (/Shotgun/i.test(uniqueName)) return "shotgun";
+    if (/Pistol/i.test(uniqueName)) return "secondary";
+    return "primary";
+  }
+  if (cls === "shotgun") return "shotgun";
+  return ({ primary: "primary", secondary: "secondary", melee: "melee", archGun: "archGun" } as Record<string, string>)[slot];
+}
 
 const FAMILY_AFFIXES = /^(Kuva|Tenet|Coda|Prisma|Mara|Dex|Synoid|Telos|Sancti|Rakta|Secura|Vaykor|Carmine|Ak|Twin|Mk1-) | (Prime|Vandal|Wraith|Prisma)$/g;
 
@@ -177,6 +212,7 @@ function damageMap(d: Record<string, number>) {
 }
 
 function buildWeapon(w: any, slotFile: string) {
+  const isMelee = slotFile === "Melee";
   const multishot = w.multishot ?? 1;
   const modes: any[] = [];
   const tags = new Set<string>();
@@ -186,11 +222,11 @@ function buildWeapon(w: any, slotFile: string) {
       name: a.name, kind: kindOf(a), damage: damageMap(a.damage),
       critChance: (a.crit_chance ?? 0) / 100, critMult: a.crit_mult ?? 1, statusChance: (a.status_chance ?? 0) / 100,
       multishot, ...(a.falloff ? { falloff: { startM: a.falloff.start, endM: a.falloff.end, reduction: a.falloff.reduction ?? 0 } } : {}),
-      rules: { canHeadshot: kindOf(a) !== "radial", receivesMultishot: true },
+      rules: { canHeadshot: kindOf(a) !== "radial", receivesMultishot: true, comboScaling: isMelee && /Heavy/i.test(a.name) },
     };
     const prev = modes.at(-1);
     const sameRate = prev && (a.speed == null || prev.fireRate === a.speed || prev.chargeTimeS === a.charge_time);
-    if (comp.kind === "radial" && prev && sameRate) {
+    if (comp.kind === "radial" && prev && sameRate && !isMelee) {
       if (prev.components[0].kind !== "radial" && /hit-?scan/i.test(prev.shotType)) comp.rules.receivesMultishot = false;
       prev.components.push(comp);
       tags.add("radialChild");
@@ -200,6 +236,11 @@ function buildWeapon(w: any, slotFile: string) {
     if (a.falloff) notes.push(`Damage falloff ignored (assumes ${comp.kind === "radial" ? "blast centre" : "point blank"})`);
     if (w.trigger?.includes("Burst")) notes.push("Burst delay not modelled; listed fire rate used");
     if (/Kuva|Tenet/.test(w.name)) { notes.push("Progenitor bonus element not included"); tags.add("progenitor"); }
+    if (isMelee) {
+      notes.push("Melee: attack speed used as hits per second; stance and combo multipliers not modelled");
+      if (/Heavy/i.test(a.name)) notes.push("Heavy attack at full combo every hit: an upper bound (combo is consumed, wind-up not modelled)");
+      tags.add("melee");
+    }
     const inc = incarnon[w.name];
     const hasDamage = Object.keys(comp.damage).length > 0;
     const hasRate = (a.speed ?? 0) > 0 || (a.charge_time ?? 0) > 0;
@@ -208,11 +249,12 @@ function buildWeapon(w: any, slotFile: string) {
     if (a.charge_time) tags.add("charge");
     modes.push({
       name: a.name, shotType: a.shot_type ?? "",
-      trigger: a.charge_time ? "charge" : TRIGGER[w.trigger] ?? "other",
-      fireRate: a.speed ?? 0, magazine: isIncarnon ? null : w.magazineSize ?? null, reloadS: w.reloadTime ?? 0,
+      trigger: isMelee ? "other" : a.charge_time ? "charge" : TRIGGER[w.trigger] ?? "other",
+      fireRate: a.speed ?? 0, magazine: isIncarnon || isMelee ? null : w.magazineSize ?? null, reloadS: isMelee ? 0 : w.reloadTime ?? 0,
       ...(a.charge_time ? { chargeTimeS: a.charge_time } : {}),
-      ammoPool: isIncarnon ? { kind: "incarnon", rounds: inc?.rounds ?? null, recharge_s: inc?.rechargeS ?? null } : { kind: "magazine" },
+      ammoPool: isIncarnon ? { kind: "incarnon", rounds: inc?.rounds ?? null, recharge_s: inc?.rechargeS ?? null } : isMelee ? { kind: "none" } : { kind: "magazine" },
       components: [comp],
+      ...(isMelee && !/^Normal Attack$/i.test(a.name) ? { headline: false } : {}),
       coverage: hasDamage && hasRate && !eventTriggered ? "computed" : "unsupported",
       notes: eventTriggered
         ? ["Triggered by an event (reload, kill, explosion), not by firing; event attacks not modelled yet"]
@@ -220,8 +262,10 @@ function buildWeapon(w: any, slotFile: string) {
     });
   }
   for (const m of modes) delete m.shotType;
+  const slot = SLOT[slotFile];
+  const cls = isMelee ? "melee" : CLASS[w.type] ?? "rifle";
   return {
-    id: w.uniqueName, name: w.name, slot: SLOT[slotFile], class: CLASS[w.type] ?? "rifle",
+    id: w.uniqueName, name: w.name, slot, class: cls, modPool: modPoolOf(slot, cls, w.uniqueName),
     family: w.name.replace(FAMILY_AFFIXES, "").trim(), modes, innate: [], mechanicTags: [...tags],
     image: w.imageName ? `https://cdn.warframestat.us/img/${w.imageName}` : undefined,
     sources: { base: "wfcd", attacks: "wfcd (wiki-derived)" },
@@ -229,11 +273,15 @@ function buildWeapon(w: any, slotFile: string) {
 }
 
 function buildWeapons() {
-  const files: [string, string][] = [["Primary", "Primary.json"], ["Secondary", "Secondary.json"], ["Arch-Gun", "Arch-Gun.json"], ["SentinelWeapons", "SentinelWeapons.json"]];
+  const files: [string, string][] = [
+    ["Primary", "Primary.json"], ["Secondary", "Secondary.json"], ["Melee", "Melee.json"],
+    ["Arch-Gun", "Arch-Gun.json"], ["SentinelWeapons", "SentinelWeapons.json"],
+  ];
   const out: any[] = [];
   for (const [slot, f] of files) {
     for (const w of load(f) as any[]) {
       if (!w.attacks?.length || w.uniqueName.includes("/PvPVariant")) continue;
+      if (slot === "Melee" && w.type !== "Melee") continue;
       if (slot === "Primary" && w.type === "Pistol") w.type = "Rifle";
       out.push(buildWeapon(w, slot));
     }
@@ -246,7 +294,9 @@ const weapons = buildWeapons();
 const mods = buildMods();
 const arcanes = buildArcanes();
 const enemies = override("enemies.json").enemies;
-const body = { weapons, mods, arcanes, enemies };
+const { _note: _rivenNote, ...riven } = override("riven.json");
+const buffs = override("buffs.json").buffs;
+const body = { weapons, mods, arcanes, enemies, riven, buffs };
 const hash = createHash("sha256").update(JSON.stringify(body)).digest("hex").slice(0, 12);
 const gamedata = {
   version: hash, generatedAt: new Date().toISOString(),
@@ -262,6 +312,7 @@ copyFileSync(outPath, join(root, "apps/web/public/gamedata.json"));
 const modesN = weapons.reduce((n, w) => n + w.modes.length, 0);
 const unsupported = weapons.flatMap((w) => w.modes.filter((m: any) => m.coverage === "unsupported").map((m: any) => `${w.name} / ${m.name}`));
 const unparsedMods = mods.filter((m) => m.unparsed.length);
-console.log(`gamedata ${hash}: ${weapons.length} weapons, ${modesN} attack modes, ${mods.length} mods, ${arcanes.length} arcanes`);
+const bySlot = Object.entries(weapons.reduce((a: Record<string, number>, w) => ((a[w.slot] = (a[w.slot] ?? 0) + 1), a), {})).map(([k, v]) => `${v} ${k}`).join(", ");
+console.log(`gamedata ${hash}: ${weapons.length} weapons (${bySlot}), ${modesN} attack modes, ${mods.length} mods, ${arcanes.length} arcanes, ${buffs.length} buffs`);
 console.log(`unsupported modes: ${unsupported.length}; mods with unparsed effects: ${unparsedMods.length}`);
 writeFileSync(join(root, "data/ingest-report.json"), JSON.stringify({ unsupported, unparsedMods: unparsedMods.map((m) => ({ name: m.name, unparsed: m.unparsed })) }, null, 2));

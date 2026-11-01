@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useStore } from "./store";
 import WeaponBrowser from "./WeaponBrowser";
 import BuildEditor from "./BuildEditor";
+import ScenarioPanel from "./Scenario";
 
 export default function App() {
   const { status, error, tab, setTab, data, load } = useStore();
@@ -24,7 +25,7 @@ export default function App() {
   );
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-4">
+    <div className="mx-auto max-w-[1600px] px-4 py-4">
       <header className="mb-4 flex flex-wrap items-center gap-3">
         <h1 className="text-lg font-semibold">Simulacrum</h1>
         <span className="mr-4 rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-900/50 dark:text-amber-300">
@@ -36,7 +37,10 @@ export default function App() {
           data {data?.version} · {data?.weapons.length} weapons · {data?.mods.length} mods
         </span>
       </header>
-      {tab === "browser" ? <WeaponBrowser /> : <BuildEditor />}
+      <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
+        <ScenarioPanel />
+        <main className="min-w-0">{tab === "browser" ? <WeaponBrowser /> : <BuildEditor />}</main>
+      </div>
       <footer className="mt-8 text-xs text-zinc-500">
         Weapon and mod data: {Object.values(data?.sources ?? {}).join(" · ")}. Not affiliated with Digital Extremes.
       </footer>

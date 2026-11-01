@@ -27,7 +27,7 @@ pub struct BehaviourEffect {
 pub fn apply(id: &str, modded_crit_chance: f64) -> Option<BehaviourEffect> {
     match id {
         "enervate" => {
-            let avg = enervate_average_cc(modded_crit_chance, 0.10, 6, 200_000, 0xE7E2);
+            let avg = enervate_cached(modded_crit_chance);
             Some(BehaviourEffect {
                 crit_chance_flat: avg - modded_crit_chance,
                 detail: format!(
@@ -38,6 +38,19 @@ pub fn apply(id: &str, modded_crit_chance: f64) -> Option<BehaviourEffect> {
         }
         _ => None,
     }
+}
+
+thread_local! {
+    static ENERVATE: std::cell::RefCell<std::collections::HashMap<u64, f64>> = Default::default();
+}
+
+/// The optimizer asks for the same crit chance many times; the simulation is seeded, so caching is exact.
+fn enervate_cached(cc: f64) -> f64 {
+    ENERVATE.with(|c| {
+        *c.borrow_mut()
+            .entry(cc.to_bits())
+            .or_insert_with(|| enervate_average_cc(cc, 0.10, 6, 200_000, 0xE7E2))
+    })
 }
 
 /// Secondary/Primary Enervate: every hit adds `step` flat crit chance; after `resets_after`

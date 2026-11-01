@@ -1,0 +1,77 @@
+import type { GameData, Modifier, ModPool, RivenLayout, RivenPick, RivenRow, RivenState, RivenTable, RivenType } from "./types";
+
+export const emptyRiven = (): RivenState => ({ positives: [], negative: null });
+
+export function rivenType(pool: ModPool): RivenType {
+  switch (pool) {
+    case "shotgun":
+      return "shotgun";
+    case "secondary":
+      return "pistol";
+    case "archGun":
+      return "archGun";
+    case "melee":
+      return "melee";
+    default:
+      return "rifle";
+  }
+}
+
+export function layoutOf(table: RivenTable, r: RivenState): RivenLayout | undefined {
+  const n = Math.max(2, r.positives.length);
+  return table.layouts.find((l) => l.positives === n && l.negative === (r.negative != null));
+}
+
+/** [min, max] rolled value; negatives come back as negative numbers (min is the worst roll). */
+export function statRange(table: RivenTable, key: string, ty: RivenType, layout: RivenLayout, negative: boolean): [number, number] | null {
+  const def = table.stats.find((s) => s.key === key);
+  const base = def?.base[ty];
+  if (base == null) return null;
+  const v = base * table.disposition * (negative ? -layout.negativeMult : layout.positiveMult);
+  const a = v * table.rollMin;
+  const b = v * table.rollMax;
+  return negative ? [Math.min(a, b), Math.max(a, b)] : [a, b];
+}
+
+/** Value at a roll position: 0 = worst roll, 1 = best roll (for negatives, best = smallest penalty). */
+export function rowValue(table: RivenTable, row: RivenRow, ty: RivenType, layout: RivenLayout, negative: boolean): number | null {
+  const r = statRange(table, row.key, ty, layout, negative);
+  if (!r) return null;
+  return r[0] + (r[1] - r[0]) * row.roll;
+}
+
+export function rivenModifiers(data: GameData, r: RivenState, pool: ModPool): Modifier[] {
+  const table = data.riven;
+  if (!table) return [];
+  const layout = layoutOf(table, r);
+  if (!layout) return [];
+  const ty = rivenType(pool);
+  const rows: [RivenRow, boolean][] = [...r.positives.map((p) => [p, false] as [RivenRow, boolean]), ...(r.negative ? [[r.negative, true] as [RivenRow, boolean]] : [])];
+  const out: Modifier[] = [];
+  for (const [row, neg] of rows) {
+    const def = table.stats.find((s) => s.key === row.key);
+    const value = rowValue(table, row, ty, layout, neg);
+    if (!def?.stat || value == null) continue;
+    out.push({ source: `Riven ${def.label}`, stat: def.stat, value });
+  }
+  return out;
+}
+
+/** Convert optimizer picks (absolute values) back into roll positions. */
+export function rivenFromPicks(table: RivenTable, picks: RivenPick[], negative: RivenPick | null | undefined, pool: ModPool): RivenState {
+  const ty = rivenType(pool);
+  const state: RivenState = {
+    positives: picks.map((p) => ({ key: p.key, roll: 1 })),
+    negative: negative ? { key: negative.key, roll: 1 } : null,
+  };
+  const layout = layoutOf(table, state);
+  if (!layout) return state;
+  const toRoll = (p: RivenPick, neg: boolean) => {
+    const r = statRange(table, p.key, ty, layout, neg);
+    if (!r) return 1;
+    return Math.min(1, Math.max(0, (p.value - r[0]) / (r[1] - r[0] || 1)));
+  };
+  state.positives = picks.map((p) => ({ key: p.key, roll: toRoll(p, false) }));
+  if (negative) state.negative = { key: negative.key, roll: toRoll(negative, true) };
+  return state;
+}

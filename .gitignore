@@ -5,3 +5,5 @@ apps/web/src/wasm/
 apps/web/public/gamedata.json
 sweep-report.json
 data/ingest-report.json
+data/best-builds.json
+apps/web/public/best-builds.json

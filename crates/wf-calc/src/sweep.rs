@@ -73,9 +73,13 @@ fn reference_builds(pool: Option<ModPool>) -> Vec<(&'static str, Vec<&'static st
             &["Point Blank", "Hell's Chamber", "Blunderbuss", "Ravage", "Shotgun Spazz"],
             &["Point Blank", "Hell's Chamber", "Shotgun Savvy", "Incendiary Coat", "Charged Shell"],
         ),
-        Some(ModPool::Primary) => (
+        Some(ModPool::Primary) | Some(ModPool::Companion) => (
             &["Serration", "Split Chamber", "Point Strike", "Vital Sense", "Speed Trigger"],
             &["Serration", "Split Chamber", "Rifle Aptitude", "Hellfire", "Stormbringer"],
+        ),
+        Some(ModPool::Melee) => (
+            &["Pressure Point", "True Steel", "Organ Shatter", "Fury", "Blood Rush"],
+            &["Pressure Point", "Condition Overload", "Weeping Wounds", "Molten Impact", "North Wind"],
         ),
         _ => (&[], &[]),
     };
@@ -83,15 +87,7 @@ fn reference_builds(pool: Option<ModPool>) -> Vec<(&'static str, Vec<&'static st
 }
 
 fn pool_of(w: &Weapon) -> Option<ModPool> {
-    use wf_data::{Slot, WeaponClass};
-    Some(match (w.slot, w.class) {
-        (_, WeaponClass::Shotgun) => ModPool::Shotgun,
-        (Slot::Primary, _) => ModPool::Primary,
-        (Slot::Secondary, _) => ModPool::Secondary,
-        (Slot::Melee, _) => ModPool::Melee,
-        (Slot::ArchGun, _) => ModPool::ArchGun,
-        (Slot::Companion, _) => ModPool::Companion,
-    })
+    Some(w.mod_pool)
 }
 
 pub fn sweep(data: &GameData, enemies: &[Option<String>]) -> SweepReport {

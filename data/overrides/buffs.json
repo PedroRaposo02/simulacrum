@@ -1,0 +1,35 @@
+{
+  "_note": "External damage amplifiers. Values are at 100% ability strength unless scalesWithStrength is false. Defaults need in-game verification; the app lets users edit them. abilityDamage = one additive pool applied as a separate final multiplier.",
+  "buffs": [
+    {
+      "id": "roar", "name": "Roar", "source": "Rhino", "scalesWithStrength": true,
+      "modifiers": [{ "source": "Roar", "stat": { "kind": "abilityDamage" }, "value": 0.5 }],
+      "note": "Separate multiplier, like faction damage."
+    },
+    {
+      "id": "eclipse", "name": "Eclipse (light)", "source": "Mirage", "scalesWithStrength": true,
+      "modifiers": [{ "source": "Eclipse", "stat": { "kind": "abilityDamage" }, "value": 2.0 }],
+      "note": "Value at full light; shares the ability-damage pool with Roar. Verify."
+    },
+    {
+      "id": "vex-armor", "name": "Vex Armor (Fury, max)", "source": "Chroma", "scalesWithStrength": true,
+      "modifiers": [{ "source": "Vex Armor", "stat": { "kind": "baseDamage" }, "value": 2.75 }],
+      "note": "Additive with Serration-type base damage mods."
+    },
+    {
+      "id": "nourish", "name": "Nourish", "source": "Grendel", "scalesWithStrength": true,
+      "modifiers": [{ "source": "Nourish", "stat": { "kind": "element", "of": "viral" }, "value": 0.75 }],
+      "note": "Adds Viral as a pre-combined element; also raises Viral proc share."
+    },
+    {
+      "id": "xatas-whisper", "name": "Xata's Whisper", "source": "Xaku", "scalesWithStrength": true,
+      "modifiers": [{ "source": "Xata's Whisper", "stat": { "kind": "element", "of": "void" }, "value": 0.26 }],
+      "note": "Adds Void damage as its own element."
+    },
+    {
+      "id": "arcane-avenger", "name": "Arcane Avenger", "source": "Warframe arcane", "scalesWithStrength": false,
+      "modifiers": [{ "source": "Arcane Avenger", "stat": { "kind": "critChance" }, "value": 0.45 }],
+      "note": "Additive with crit chance mods; assumes full uptime."
+    }
+  ]
+}

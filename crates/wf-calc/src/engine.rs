@@ -36,6 +36,7 @@ struct Pools {
     faction: BTreeMap<Faction, f64>,
     headshot: f64,
     status_duration: f64,
+    ability: f64,
     sources: Vec<(String, Stat, f64)>,
 }
 
@@ -58,6 +59,7 @@ impl Pools {
             Stat::FactionDamage(f) => *self.faction.entry(f).or_default() += v,
             Stat::HeadshotDamage => self.headshot += v,
             Stat::StatusDuration => self.status_duration += v,
+            Stat::AbilityDamage => self.ability += v,
         }
         self.sources.push((m.source.clone(), m.stat, v));
     }
@@ -71,12 +73,25 @@ impl Pools {
     }
 }
 
-struct Resolved<'a> {
-    weapon: &'a Weapon,
-    mods: Vec<&'a Mod>,
-    arcane: Option<&'a Arcane>,
-    enemy: Option<EnemyProfile>,
-    warnings: Vec<String>,
+/// A build with every name looked up. The optimizer builds these directly to skip lookups.
+pub struct Resolved<'a> {
+    pub weapon: &'a Weapon,
+    pub mods: Vec<&'a Mod>,
+    pub arcane: Option<&'a Arcane>,
+    pub enemy: Option<EnemyProfile>,
+    pub warnings: Vec<String>,
+}
+
+pub fn resolve_enemy(data: &GameData, target: &Target) -> Result<Option<EnemyProfile>, CalcError> {
+    Ok(match (&target.profile, &target.enemy) {
+        (Some(p), _) => Some(p.clone()),
+        (None, Some(id)) => Some(
+            data.enemy(id)
+                .cloned()
+                .ok_or_else(|| CalcError::new(ErrorCode::UnknownEnemy, format!("no enemy preset '{id}'")))?,
+        ),
+        _ => None,
+    })
 }
 
 fn resolve<'a>(data: &'a GameData, build: &Build, target: &Target) -> Result<Resolved<'a>, CalcError> {
@@ -118,24 +133,23 @@ fn resolve<'a>(data: &'a GameData, build: &Build, target: &Target) -> Result<Res
         ),
         None => None,
     };
-    let enemy = match (&target.profile, &target.enemy) {
-        (Some(p), _) => Some(p.clone()),
-        (None, Some(id)) => Some(
-            data.enemy(id)
-                .cloned()
-                .ok_or_else(|| CalcError::new(ErrorCode::UnknownEnemy, format!("no enemy preset '{id}'")))?,
-        ),
-        _ => None,
-    };
+    let enemy = resolve_enemy(data, target)?;
     Ok(Resolved { weapon, mods, arcane, enemy, warnings })
 }
 
 fn condition_scale(m: &Modifier, c: &Conditions) -> f64 {
     let stacks = m.max_stacks.max(1) as f64;
-    match m.condition {
+    let cond = match m.condition {
         Condition::Always => 1.0,
+        Condition::OnHeadshot | Condition::OnHeadshotKill if !c.headshot_effects => 0.0,
         _ => c.conditional_uptime.clamp(0.0, 1.0) * stacks,
-    }
+    };
+    let per = match m.per {
+        None => 1.0,
+        Some(PerCount::StatusType) => c.status_types.max(0.0),
+        Some(PerCount::ComboMultiplier) => (c.combo_multiplier - 1.0).max(0.0),
+    };
+    cond * per
 }
 
 fn filter_ok(f: ComponentFilter, kind: HitKind) -> bool {
@@ -148,6 +162,20 @@ fn filter_ok(f: ComponentFilter, kind: HitKind) -> bool {
 
 pub fn compute(data: &GameData, build: &Build, target: &Target) -> Result<BuildResult, CalcError> {
     let r = resolve(data, build, target)?;
+    Ok(compute_resolved(r, build, target))
+}
+
+/// Burst DPS of one attack mode for an already-resolved build (optimizer hot path).
+pub fn evaluate(r: &Resolved, build: &Build, target: &Target, mode: usize) -> Result<f64, CalcError> {
+    let m = r
+        .weapon
+        .modes
+        .get(mode)
+        .ok_or_else(|| CalcError::new(ErrorCode::MissingField, format!("no mode {mode}")))?;
+    compute_mode(r, build, target, m, mode).map(|m| m.burst_dps)
+}
+
+pub fn compute_resolved(r: Resolved, build: &Build, target: &Target) -> BuildResult {
     let mut modes = Vec::new();
     let mut failed_modes = Vec::new();
     for (i, mode) in r.weapon.modes.iter().enumerate() {
@@ -156,14 +184,14 @@ pub fn compute(data: &GameData, build: &Build, target: &Target) -> Result<BuildR
             Err(error) => failed_modes.push(ModeFailure { mode: mode.name.clone(), mode_index: i, error }),
         }
     }
-    Ok(BuildResult {
+    BuildResult {
         weapon: r.weapon.name.clone(),
         weapon_id: r.weapon.id.clone(),
         target: r.enemy.as_ref().map(|e| e.name.clone()).unwrap_or_else(|| "Raw (no enemy)".into()),
         modes,
         failed_modes,
         warnings: r.warnings,
-    })
+    }
 }
 
 fn all_modifiers<'a>(r: &'a Resolved, build: &'a Build) -> impl Iterator<Item = &'a Modifier> {
@@ -193,6 +221,7 @@ struct Partial {
     status_chance: f64,
     crit_hs: f64,
     faction: f64,
+    ability: f64,
     modded_base: f64,
     explain: Vec<Explain>,
 }
@@ -231,7 +260,14 @@ fn compute_mode(
     }
 
     // Rate, magazine, reload.
-    let fr_bonus = if r.weapon.class == WeaponClass::Bow { mode_pools.fire_rate * 2.0 } else { mode_pools.fire_rate };
+    let locked = r.mods.iter().find(|m| m.locks_fire_rate);
+    let fr_bonus = if locked.is_some() {
+        0.0
+    } else if r.weapon.class == WeaponClass::Bow {
+        mode_pools.fire_rate * 2.0
+    } else {
+        mode_pools.fire_rate
+    };
     let fr_mult = (1.0 + fr_bonus).max(0.05);
     let rate = match mode.charge_time_s {
         Some(ct) if ct > 0.0 => {
@@ -260,9 +296,12 @@ fn compute_mode(
         }
     }
     let stacks = |t: DamageType| (procs.get(&t).copied().unwrap_or(0.0) * duration).min(10.0);
-    let viral_n = target.viral_stacks.unwrap_or_else(|| stacks(DamageType::Viral));
-    let corr_n = target.corrosive_stacks.unwrap_or_else(|| stacks(DamageType::Corrosive));
-    let heat_on = target.heat_active.unwrap_or(stacks(DamageType::Heat) >= 1.0);
+    // Outsourced status (allies, abilities) only raises stacks above what the weapon keeps up itself.
+    let own_viral = stacks(DamageType::Viral);
+    let own_corr = stacks(DamageType::Corrosive);
+    let viral_n = target.viral_stacks.map_or(own_viral, |v| v.clamp(0.0, 10.0).max(own_viral));
+    let corr_n = target.corrosive_stacks.map_or(own_corr, |v| v.clamp(0.0, 10.0).max(own_corr));
+    let heat_on = target.heat_active.unwrap_or(false) || stacks(DamageType::Heat) >= 1.0;
 
     // Enemy multipliers.
     let (dr, viral_mult, enemy_explain) = match &r.enemy {
@@ -280,12 +319,18 @@ fn compute_mode(
             }
             let ex = Explain::new(format!("Enemy: {}", e.name), (1.0 - dr) * v).with(vec![
                 Explain::new("Armor (capped)", e.armor.min(ARMOR_CAP)),
-                Explain::new("Corrosive strip", s_corr).detail(format!("{corr_n:.2} stacks")),
+                Explain::new("Corrosive strip", s_corr).detail(format!(
+                    "{corr_n:.2} stacks ({own_corr:.2} from this weapon{})",
+                    target.corrosive_stacks.map(|x| format!(", {x:.0} outsourced")).unwrap_or_default()
+                )),
                 Explain::new("Heat strip", s_heat),
                 Explain::new("External strip", target.armor_strip),
                 Explain::new("Effective armor", eff_armor),
                 Explain::new("Damage reduction", dr).detail("0.9·√(armor/2700)"),
-                Explain::new("Viral multiplier", v).detail(format!("{viral_n:.2} stacks")),
+                Explain::new("Viral multiplier", v).detail(format!(
+                    "{viral_n:.2} stacks ({own_viral:.2} from this weapon{})",
+                    target.viral_stacks.map(|x| format!(", {x:.0} outsourced")).unwrap_or_default()
+                )),
             ]);
             (dr, v, Some(ex))
         }
@@ -295,7 +340,7 @@ fn compute_mode(
     let mut components = Vec::new();
     let (mut shot_raw, mut shot_target, mut status_dps) = (0.0, 0.0, 0.0);
     for p in partials {
-        let raw_hit: f64 = p.damage.values().sum::<f64>() * p.faction * p.crit_hs;
+        let raw_hit: f64 = p.damage.values().sum::<f64>() * p.faction * p.crit_hs * p.ability;
         let target_hit: f64 = p
             .damage
             .iter()
@@ -307,6 +352,7 @@ fn compute_mode(
             .sum::<f64>()
             * p.faction
             * p.crit_hs
+            * p.ability
             * viral_mult;
         let total: f64 = p.damage.values().sum();
         for (t, frac, ticks) in DOTS {
@@ -314,7 +360,7 @@ fn compute_mode(
             let pps = p.status_chance * p.projectiles * rate * share;
             let tick = p.modded_base * frac * p.faction * p.faction * (1.0 + p.crit_chance * (p.crit_mult - 1.0));
             let armor = if t == DamageType::Slash { 1.0 } else { 1.0 - dr };
-            status_dps += pps * ticks * tick * armor * viral_mult;
+            status_dps += pps * ticks * tick * armor * viral_mult * p.ability;
         }
         shot_raw += raw_hit * p.projectiles;
         shot_target += target_hit * p.projectiles;
@@ -359,7 +405,10 @@ fn compute_mode(
         .child(Explain::new("Damage per shot", shot_target).with(components.iter().map(|c| c.explain.clone()).collect()))
         .child(
             Explain::new("Shots per second", rate)
-                .detail(format!("base {} × (1 + {:.3})", mode.charge_time_s.map_or(mode.fire_rate, |c| 1.0 / c), fr_bonus))
+                .detail(match locked {
+                    Some(m) => format!("fire rate locked by {}", m.name),
+                    None => format!("base {} × (1 + {:.3})", mode.charge_time_s.map_or(mode.fire_rate, |c| 1.0 / c), fr_bonus),
+                })
                 .with(mode_pools.sources_for(|s| s == Stat::FireRate)),
         );
     if let Some(e) = enemy_explain {
@@ -452,8 +501,10 @@ fn component(
     }
     damage.retain(|_, v| *v > 0.0);
 
-    // 6. Faction.
+    // 6. Faction, and ability damage buffs (Roar, Eclipse) as their own multiplier.
     let f = 1.0 + p.faction.get(&faction).copied().unwrap_or(0.0);
+    let combo = if comp.rules.combo_scaling { build.conditions.combo_multiplier.max(1.0) } else { 1.0 };
+    let a = (1.0 + p.ability).max(0.0) * combo;
 
     // 7. Crit, with behaviours (Enervate) adding flat crit chance.
     let mut cc = comp.crit_chance * (1.0 + p.crit_chance) + p.crit_chance_flat;
@@ -502,7 +553,9 @@ fn component(
                     .join(", "),
             )
             .with(p.sources_for(|s| matches!(s, Stat::Element(_) | Stat::Physical(_)))),
-        Explain::new("Faction multiplier", f),
+        Explain::new("Faction multiplier", f).with(p.sources_for(|s| matches!(s, Stat::FactionDamage(_)))),
+        Explain::new("Ability damage multiplier", (1.0 + p.ability).max(0.0)).with(p.sources_for(|s| s == Stat::AbilityDamage)),
+        Explain::new("Heavy attack combo multiplier", combo),
         Explain::new("Crit chance", cc).with(crit_children),
         Explain::new("Crit multiplier", cd).with(p.sources_for(|s| matches!(s, Stat::CritDamage | Stat::CritDamageFlat))),
         Explain::new("Expected crit × headshot factor", crit_hs)
@@ -519,6 +572,7 @@ fn component(
         status_chance: sc,
         crit_hs,
         faction: f,
+        ability: a,
         modded_base,
         explain,
     })

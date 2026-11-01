@@ -166,11 +166,13 @@ pub struct HitRules {
     pub can_headshot: bool,
     pub receives_multishot: bool,
     pub gun_co: Option<GunCo>,
+    /// Melee heavy attacks multiply by the combo multiplier they consume.
+    pub combo_scaling: bool,
 }
 
 impl Default for HitRules {
     fn default() -> Self {
-        Self { can_headshot: true, receives_multishot: true, gun_co: None }
+        Self { can_headshot: true, receives_multishot: true, gun_co: None, combo_scaling: false }
     }
 }
 
@@ -214,6 +216,22 @@ pub struct AttackMode {
     pub coverage: Coverage,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// False for side attacks (melee slams, throws, ranged specials) whose rate isn't the weapon's
+    /// attack speed; such modes aren't picked as the weapon's headline number.
+    #[serde(default = "yes", skip_serializing_if = "Clone::clone")]
+    pub headline: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl AttackMode {
+    /// Modes that can headline a weapon's DPS. Heavy attacks consume combo, so a sustained
+    /// rate at full combo is impossible; they stay computable but aren't picked by default.
+    pub fn is_headline(&self) -> bool {
+        self.headline && !self.components.iter().any(|c| c.rules.combo_scaling)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,6 +242,11 @@ pub struct Weapon {
     pub slot: Slot,
     pub class: WeaponClass,
     pub family: String,
+    /// Finer type from the source (e.g. "Nikana", "Heavy Blade") used by class-restricted mods.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtype: Option<String>,
+    /// Which mod pool the weapon takes (companion weapons borrow rifle/shotgun/pistol/melee mods).
+    pub mod_pool: ModPool,
     pub modes: Vec<AttackMode>,
     #[serde(default)]
     pub innate: Vec<Modifier>,
@@ -253,6 +276,8 @@ pub enum Stat {
     FactionDamage(Faction),
     HeadshotDamage,
     StatusDuration,
+    /// Ability damage buffs (Roar, Eclipse): one additive pool, applied as a final multiplier.
+    AbilityDamage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,6 +300,14 @@ pub enum Condition {
     OnStatus,
 }
 
+/// Modifiers whose value repeats per counted thing (Condition Overload, Blood Rush, Galvanized Shot).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PerCount {
+    StatusType,
+    ComboMultiplier,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Modifier {
@@ -287,6 +320,8 @@ pub struct Modifier {
     pub applies_to: ComponentFilter,
     #[serde(default = "always")]
     pub condition: Condition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per: Option<PerCount>,
 }
 
 fn one() -> u8 { 1 }
@@ -319,6 +354,12 @@ pub struct Mod {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclusive_group: Option<String>,
     pub modifiers: Vec<Modifier>,
+    /// Only fits weapons whose primary attack uses this trigger (Cannonade mods: semi-auto).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_trigger: Option<Trigger>,
+    /// While equipped, fire rate bonuses from every source are ignored.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locks_fire_rate: bool,
     /// Stat lines the ingest parser could not turn into modifiers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unparsed: Vec<String>,
@@ -354,6 +395,88 @@ pub struct EnemyProfile {
     pub note: Option<String>,
 }
 
+/// Riven types; each weapon maps to one through its mod pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RivenType {
+    Rifle,
+    Shotgun,
+    Pistol,
+    ArchGun,
+    Melee,
+}
+
+impl RivenType {
+    pub fn for_pool(pool: ModPool) -> RivenType {
+        match pool {
+            ModPool::Primary | ModPool::Companion => RivenType::Rifle,
+            ModPool::Shotgun => RivenType::Shotgun,
+            ModPool::Secondary => RivenType::Pistol,
+            ModPool::ArchGun => RivenType::ArchGun,
+            ModPool::Melee => RivenType::Melee,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RivenStatDef {
+    pub key: String,
+    pub label: String,
+    /// None for stats with no damage effect (zoom, recoil...): valid as harmless negatives.
+    pub stat: Option<Stat>,
+    /// Base value (fraction) per riven type, before disposition and layout. Missing = can't roll.
+    pub base: BTreeMap<RivenType, f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RivenLayout {
+    pub positives: u8,
+    pub negative: bool,
+    pub positive_mult: f64,
+    pub negative_mult: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RivenTable {
+    pub disposition: f64,
+    pub roll_min: f64,
+    pub roll_max: f64,
+    pub layouts: Vec<RivenLayout>,
+    pub stats: Vec<RivenStatDef>,
+}
+
+impl RivenTable {
+    pub fn layout(&self, positives: usize, negative: bool) -> Option<&RivenLayout> {
+        self.layouts.iter().find(|l| l.positives as usize == positives && l.negative == negative)
+    }
+
+    /// (min, max) of a stat's rolled value for this riven type and layout; negatives are returned as negative numbers.
+    pub fn range(&self, key: &str, ty: RivenType, layout: &RivenLayout, negative: bool) -> Option<(f64, f64)> {
+        let def = self.stats.iter().find(|s| s.key == key)?;
+        let base = *def.base.get(&ty)?;
+        let mult = if negative { -layout.negative_mult } else { layout.positive_mult };
+        let v = base * self.disposition * mult;
+        let (a, b) = (v * self.roll_min, v * self.roll_max);
+        Some((a.min(b), a.max(b)))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuffDef {
+    pub id: String,
+    pub name: String,
+    pub source: String,
+    /// Values are at 100% ability strength when true.
+    pub scales_with_strength: bool,
+    pub modifiers: Vec<Modifier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameData {
@@ -366,6 +489,10 @@ pub struct GameData {
     pub arcanes: Vec<Arcane>,
     #[serde(default)]
     pub enemies: Vec<EnemyProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub riven: Option<RivenTable>,
+    #[serde(default)]
+    pub buffs: Vec<BuffDef>,
 }
 
 impl GameData {
@@ -397,23 +524,29 @@ impl GameData {
 
 impl Mod {
     pub fn fits(&self, w: &Weapon) -> bool {
-        let pool_ok = match self.pool {
-            ModPool::Primary => w.slot == Slot::Primary && w.class != WeaponClass::Shotgun,
-            ModPool::Shotgun => w.class == WeaponClass::Shotgun,
-            ModPool::Secondary => w.slot == Slot::Secondary,
-            ModPool::Melee => w.slot == Slot::Melee,
-            ModPool::ArchGun => w.slot == Slot::ArchGun,
-            ModPool::Companion => w.slot == Slot::Companion,
-        };
-        if !pool_ok {
+        if self.pool != w.mod_pool {
             return false;
+        }
+        if let Some(t) = self.requires_trigger {
+            if w.modes.first().map(|m| m.trigger) != Some(t) {
+                return false;
+            }
         }
         match self.compat.as_deref() {
             None => true,
             Some("sniper") => w.class == WeaponClass::Sniper,
             Some("bow") => w.class == WeaponClass::Bow,
             Some("assault rifle") => w.class == WeaponClass::Rifle,
-            Some(name) => w.name.to_lowercase() == name || w.family.to_lowercase() == name,
+            Some(name) => {
+                w.name.to_lowercase() == name
+                    || w.family.to_lowercase() == name
+                    || w.subtype.as_deref().is_some_and(|t| t.to_lowercase() == name)
+            }
         }
+    }
+
+    /// True when the mod changes something the damage engine models.
+    pub fn affects_damage(&self) -> bool {
+        self.modifiers.iter().any(|m| !matches!(m.stat, Stat::StatusDuration))
     }
 }

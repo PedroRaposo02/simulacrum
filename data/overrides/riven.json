@@ -1,0 +1,40 @@
+{
+  "_note": "Rolled value = base x disposition x layout multiplier x U(rollMin, rollMax). Disposition is fixed at 1.2 since Hotfix 44.1.3. Base values per riven type are from the wiki's riven calculation table as remembered; verify against Riven Mods/Calculations before relying on exact ranges. Stats with stat=null have no damage effect and are offered as harmless negatives.",
+  "disposition": 1.2,
+  "rollMin": 0.9,
+  "rollMax": 1.1,
+  "layouts": [
+    { "positives": 2, "negative": false, "positiveMult": 0.99, "negativeMult": 0 },
+    { "positives": 2, "negative": true, "positiveMult": 1.2375, "negativeMult": 0.495 },
+    { "positives": 3, "negative": false, "positiveMult": 0.75, "negativeMult": 0 },
+    { "positives": 3, "negative": true, "positiveMult": 0.9375, "negativeMult": 0.75 }
+  ],
+  "stats": [
+    { "key": "DMG", "label": "Damage", "stat": { "kind": "baseDamage" }, "base": { "rifle": 1.65, "shotgun": 1.647, "pistol": 2.199, "archGun": 0.999, "melee": 1.647 } },
+    { "key": "MS", "label": "Multishot", "stat": { "kind": "multishot" }, "base": { "rifle": 0.9, "shotgun": 1.197, "pistol": 1.197, "archGun": 0.603 } },
+    { "key": "CC", "label": "Critical Chance", "stat": { "kind": "critChance" }, "base": { "rifle": 1.5, "shotgun": 0.9, "pistol": 1.499, "archGun": 0.999, "melee": 1.8 } },
+    { "key": "CD", "label": "Critical Damage", "stat": { "kind": "critDamage" }, "base": { "rifle": 1.2, "shotgun": 0.9, "pistol": 0.9, "archGun": 0.801, "melee": 0.9 } },
+    { "key": "SC", "label": "Status Chance", "stat": { "kind": "statusChance" }, "base": { "rifle": 0.9, "shotgun": 0.9, "pistol": 0.9, "archGun": 0.603, "melee": 0.9 } },
+    { "key": "FR", "label": "Fire Rate / Attack Speed", "stat": { "kind": "fireRate" }, "base": { "rifle": 0.6, "shotgun": 0.891, "pistol": 0.747, "archGun": 0.603, "melee": 0.549 } },
+    { "key": "MAG", "label": "Magazine Capacity", "stat": { "kind": "magazine" }, "base": { "rifle": 0.5, "shotgun": 0.5, "pistol": 0.5, "archGun": 0.603 } },
+    { "key": "RLS", "label": "Reload Speed", "stat": { "kind": "reloadSpeed" }, "base": { "rifle": 0.5, "shotgun": 0.495, "pistol": 0.5, "archGun": 0.999 } },
+    { "key": "HEAT", "label": "Heat", "stat": { "kind": "element", "of": "heat" }, "base": { "rifle": 0.9, "shotgun": 0.9, "pistol": 0.9, "archGun": 1.197, "melee": 0.9 } },
+    { "key": "COLD", "label": "Cold", "stat": { "kind": "element", "of": "cold" }, "base": { "rifle": 0.9, "shotgun": 0.9, "pistol": 0.9, "archGun": 1.197, "melee": 0.9 } },
+    { "key": "ELEC", "label": "Electricity", "stat": { "kind": "element", "of": "electricity" }, "base": { "rifle": 0.9, "shotgun": 0.9, "pistol": 0.9, "archGun": 1.197, "melee": 0.9 } },
+    { "key": "TOX", "label": "Toxin", "stat": { "kind": "element", "of": "toxin" }, "base": { "rifle": 0.9, "shotgun": 0.9, "pistol": 0.9, "archGun": 1.197, "melee": 0.9 } },
+    { "key": "IMP", "label": "Impact", "stat": { "kind": "physical", "of": "impact" }, "base": { "rifle": 1.2, "shotgun": 1.2, "pistol": 1.2, "archGun": 0.9, "melee": 1.2 } },
+    { "key": "PUNC", "label": "Puncture", "stat": { "kind": "physical", "of": "puncture" }, "base": { "rifle": 1.2, "shotgun": 1.2, "pistol": 1.2, "archGun": 0.9, "melee": 1.2 } },
+    { "key": "SLASH", "label": "Slash", "stat": { "kind": "physical", "of": "slash" }, "base": { "rifle": 1.2, "shotgun": 1.2, "pistol": 1.2, "archGun": 0.9, "melee": 1.2 } },
+    { "key": "GRN", "label": "Damage to Grineer", "stat": { "kind": "factionDamage", "of": "grineer" }, "base": { "rifle": 0.45, "shotgun": 0.45, "pistol": 0.45, "archGun": 0.45, "melee": 0.45 } },
+    { "key": "CRP", "label": "Damage to Corpus", "stat": { "kind": "factionDamage", "of": "corpus" }, "base": { "rifle": 0.45, "shotgun": 0.45, "pistol": 0.45, "archGun": 0.45, "melee": 0.45 } },
+    { "key": "INF", "label": "Damage to Infested", "stat": { "kind": "factionDamage", "of": "infested" }, "base": { "rifle": 0.45, "shotgun": 0.45, "pistol": 0.45, "archGun": 0.45, "melee": 0.45 } },
+    { "key": "SD", "label": "Status Duration", "stat": { "kind": "statusDuration" }, "base": { "rifle": 0.999, "shotgun": 0.99, "pistol": 0.999, "archGun": 0.999, "melee": 0.99 } },
+    { "key": "ZOOM", "label": "Zoom", "stat": null, "base": { "rifle": 0.6, "pistol": 0.8, "archGun": 0.597 } },
+    { "key": "REC", "label": "Weapon Recoil", "stat": null, "base": { "rifle": 0.9, "shotgun": 0.9, "pistol": 0.9, "archGun": 0.9 } },
+    { "key": "AMMO", "label": "Ammo Maximum", "stat": null, "base": { "rifle": 0.499, "shotgun": 0.9, "pistol": 0.9, "archGun": 0.999 } },
+    { "key": "PT", "label": "Punch Through", "stat": null, "base": { "rifle": 2.7, "shotgun": 2.7, "pistol": 2.7, "archGun": 2.7 } },
+    { "key": "PFS", "label": "Projectile Speed", "stat": null, "base": { "rifle": 0.9, "shotgun": 0.9, "pistol": 0.9 } },
+    { "key": "RANGE", "label": "Range", "stat": null, "base": { "melee": 1.941 } },
+    { "key": "CDUR", "label": "Combo Duration", "stat": null, "base": { "melee": 8.1 } }
+  ]
+}

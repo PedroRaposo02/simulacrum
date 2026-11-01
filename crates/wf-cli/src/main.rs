@@ -5,6 +5,10 @@ use std::process::ExitCode;
 use wf_calc::sweep::{diff, sweep, SweepReport};
 use wf_calc::{compute, Build, Explain, Target};
 use wf_data::GameData;
+use wf_opt::{optimize, OptimizeOptions, OptimizeResult, RivenPick};
+use rayon::prelude::*;
+use serde::Serialize;
+use std::collections::BTreeMap;
 
 #[derive(Parser)]
 #[command(name = "wfcalc", about = "Warframe build calculator engine CLI")]
@@ -41,6 +45,19 @@ enum Cmd {
         previous: Option<PathBuf>,
         #[arg(long, default_value_t = 0.10)]
         threshold: f64,
+    },
+    /// Find the theoretical best build for one weapon, or for every weapon with --all.
+    Optimize {
+        weapon: Option<String>,
+        #[arg(long)]
+        enemy: Option<String>,
+        #[arg(long)]
+        riven: bool,
+        /// Every weapon x (raw + every enemy preset) x (with and without riven), written to --out.
+        #[arg(long)]
+        all: bool,
+        #[arg(long, default_value = "data/best-builds.json")]
+        out: PathBuf,
     },
     /// Run golden tests in data/golden.
     Golden {
@@ -102,6 +119,71 @@ struct GoldenCase {
 
 fn tol() -> f64 {
     0.01
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BestEntry {
+    mode_index: usize,
+    burst_dps: f64,
+    mods: Vec<String>,
+    arcane: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    riven: Vec<RivenPick>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    riven_negative: Option<RivenPick>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BestPair {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plain: Option<BestEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    riven: Option<BestEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BestBuilds {
+    data_version: String,
+    generated_at_unix: u64,
+    conditions: wf_calc::Conditions,
+    /// target id ("raw" or enemy preset id) -> weapon id -> best builds
+    targets: BTreeMap<String, BTreeMap<String, BestPair>>,
+}
+
+fn entry(r: OptimizeResult) -> BestEntry {
+    BestEntry {
+        mode_index: r.mode_index,
+        burst_dps: r.burst_dps,
+        mods: r.mods,
+        arcane: r.arcane,
+        riven: r.riven,
+        riven_negative: r.riven_negative,
+    }
+}
+
+fn print_optimized(r: &OptimizeResult) {
+    println!("{} / {}: {} burst DPS ({} evaluations)", r.weapon, r.mode, fmt(r.burst_dps), r.evaluations);
+    for (i, m) in r.mods.iter().enumerate() {
+        println!("  {}. {m}", i + 1);
+    }
+    if let Some(a) = &r.arcane {
+        println!("  arcane: {a}");
+    }
+    for p in &r.riven {
+        println!("  riven +{:.1}% {}", p.value * 100.0, p.label);
+    }
+    if let Some(n) = &r.riven_negative {
+        println!("  riven {:.1}% {} (harmless)", n.value * 100.0, n.label);
+    }
+    println!("  marginal value (DPS lost without it):");
+    for m in &r.marginal {
+        println!("    {:>6.1}%  {}", m.loss * 100.0, m.label);
+    }
 }
 
 fn run() -> Result<bool, String> {
@@ -191,6 +273,63 @@ fn run() -> Result<bool, String> {
                 }
             }
             Ok(regressions == 0)
+        }
+        Cmd::Optimize { weapon, enemy, riven, all, out } => {
+            let data = load(&cli.data)?;
+            if !all {
+                let w = weapon.ok_or("give a weapon name or --all")?;
+                let target = Target { enemy, ..Default::default() };
+                let t0 = std::time::Instant::now();
+                let r = optimize(&data, &w, &Build::default(), &target, &OptimizeOptions { riven, ..Default::default() })
+                    .map_err(|e| e.to_string())?;
+                print_optimized(&r);
+                println!("  took {:.2}s", t0.elapsed().as_secs_f64());
+                return Ok(true);
+            }
+            let mut targets: Vec<(String, Target)> = vec![("raw".into(), Target::default())];
+            targets.extend(data.enemies.iter().map(|e| (e.id.clone(), Target { enemy: Some(e.id.clone()), ..Default::default() })));
+            let t0 = std::time::Instant::now();
+            let jobs: Vec<(usize, usize)> = (0..targets.len()).flat_map(|t| (0..data.weapons.len()).map(move |w| (t, w))).collect();
+            let done = std::sync::atomic::AtomicUsize::new(0);
+            let results: Vec<(usize, String, BestPair)> = jobs
+                .par_iter()
+                .map(|&(ti, wi)| {
+                    let w = &data.weapons[wi];
+                    let t = &targets[ti].1;
+                    let run = |riven| optimize(&data, &w.id, &Build::default(), t, &OptimizeOptions { riven, ..Default::default() });
+                    let pair = match run(false) {
+                        Ok(p) => BestPair { plain: Some(entry(p)), riven: run(true).ok().map(entry), error: None },
+                        Err(e) => BestPair { plain: None, riven: None, error: Some(e.message) },
+                    };
+                    let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    if n % 200 == 0 {
+                        eprintln!("  {n}/{} ({:.0}s)", jobs.len(), t0.elapsed().as_secs_f64());
+                    }
+                    (ti, w.id.clone(), pair)
+                })
+                .collect();
+            let mut out_map: BTreeMap<String, BTreeMap<String, BestPair>> = BTreeMap::new();
+            let mut errors = 0;
+            for (ti, wid, pair) in results {
+                errors += usize::from(pair.error.is_some());
+                out_map.entry(targets[ti].0.clone()).or_default().insert(wid, pair);
+            }
+            let best = BestBuilds {
+                data_version: data.version.clone(),
+                generated_at_unix: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
+                conditions: wf_calc::Conditions::default(),
+                targets: out_map,
+            };
+            std::fs::write(&out, serde_json::to_string(&best).unwrap()).map_err(|e| e.to_string())?;
+            println!(
+                "{} weapons x {} targets optimized in {:.1}s ({} weapon/target pairs not computable) -> {}",
+                data.weapons.len(),
+                targets.len(),
+                t0.elapsed().as_secs_f64(),
+                errors,
+                out.display()
+            );
+            Ok(true)
         }
         Cmd::Golden { dir } => {
             let data = load(&cli.data)?;

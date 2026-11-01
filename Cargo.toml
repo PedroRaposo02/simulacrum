@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/wf-data", "crates/wf-calc", "crates/wf-cli", "crates/wf-wasm"]
+members = ["crates/wf-data", "crates/wf-calc", "crates/wf-opt", "crates/wf-cli", "crates/wf-wasm"]
 
 [workspace.package]
 edition = "2021"
-version = "0.1.0-beta.1"
+version = "0.2.0-beta.1"
 license = "MIT"
 
 [workspace.dependencies]
@@ -12,6 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 wf-data = { path = "crates/wf-data" }
 wf-calc = { path = "crates/wf-calc" }
+wf-opt = { path = "crates/wf-opt" }
 
 [profile.release]
 opt-level = 3

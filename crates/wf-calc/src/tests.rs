@@ -6,7 +6,7 @@ fn fixture() -> GameData {
     serde_json::from_value(json!({
         "version": "test", "generatedAt": "", "sources": {},
         "weapons": [{
-            "id": "/Test/Laetum", "name": "Laetum", "slot": "secondary", "class": "pistol", "family": "Laetum",
+            "id": "/Test/Laetum", "name": "Laetum", "slot": "secondary", "class": "pistol", "family": "Laetum", "modPool": "secondary",
             "modes": [{
                 "name": "Normal Attack", "trigger": "semi", "fireRate": 2.5, "magazine": 12, "reloadS": 2.0,
                 "ammoPool": {"kind": "magazine"}, "coverage": "computed",
@@ -185,4 +185,80 @@ fn crit_multiplier_linear_in_crit_chance() {
         vals.push(r.modes[0].per_shot);
     }
     assert!(close(vals[1] - vals[0], vals[2] - vals[1]));
+}
+
+#[test]
+fn outsourced_viral_never_lowers_own_stacks() {
+    let mut d = fixture();
+    // Pure viral weapon at high status keeps 10 stacks by itself.
+    let c = &mut d.weapons[0].modes[0].components[0];
+    c.damage = [(wf_data::DamageType::Viral, 160.0)].into_iter().collect();
+    c.status_chance = 5.0;
+    let build = Build { weapon: "Laetum".into(), ..Default::default() };
+    let t = |v: Option<f64>| Target { enemy: Some("sp-grineer".into()), armor_strip: 1.0, viral_stacks: v, ..Default::default() };
+    let own = compute(&d, &build, &t(None)).unwrap().modes[0].viral_stacks;
+    let low = compute(&d, &build, &t(Some(2.0))).unwrap().modes[0].viral_stacks;
+    assert!(close(own, 10.0));
+    assert!(close(low, own));
+}
+
+#[test]
+fn outsourced_viral_applies_to_non_viral_weapon() {
+    let t = Target { enemy: Some("sp-grineer".into()), armor_strip: 1.0, viral_stacks: Some(10.0), ..Default::default() };
+    let m = &run(&[], t).modes[0];
+    assert!(close(m.viral_stacks, 10.0));
+    assert!(close(m.per_shot, m.per_shot_raw * 4.25));
+}
+
+#[test]
+fn ability_damage_is_a_separate_multiplier() {
+    let roar = wf_data::Modifier {
+        source: "Roar".into(),
+        stat: wf_data::Stat::AbilityDamage,
+        value: 0.5,
+        max_stacks: 1,
+        applies_to: wf_data::ComponentFilter::All,
+        condition: wf_data::Condition::Always,
+        per: None,
+    };
+    let base = Build { weapon: "Laetum".into(), mods: vec!["Hornet Strike".into()], ..Default::default() };
+    let buffed = Build { buffs: vec![roar], ..base.clone() };
+    let a = compute(&fixture(), &base, &Target::default()).unwrap().modes[0].per_shot;
+    let b = compute(&fixture(), &buffed, &Target::default()).unwrap().modes[0].per_shot;
+    assert!(close(b, a * 1.5));
+}
+
+#[test]
+fn fire_rate_lock_ignores_fire_rate_bonuses() {
+    let mut d = fixture();
+    let mut lock = d.mods[0].clone();
+    lock.id = "cannon".into();
+    lock.name = "Semi-Pistol Cannonade".into();
+    lock.modifiers[0].value = 3.0;
+    lock.locks_fire_rate = true;
+    lock.requires_trigger = Some(wf_data::Trigger::Semi);
+    let mut speed = d.mods[0].clone();
+    speed.id = "gs".into();
+    speed.name = "Gunslinger".into();
+    speed.modifiers[0].stat = wf_data::Stat::FireRate;
+    speed.modifiers[0].value = 0.72;
+    d.mods.push(lock);
+    d.mods.push(speed);
+    let b = Build { weapon: "Laetum".into(), mods: vec!["Semi-Pistol Cannonade".into(), "Gunslinger".into()], ..Default::default() };
+    let r = compute(&d, &b, &Target::default()).unwrap();
+    assert!(close(r.modes[0].fire_rate, 2.5));
+    // Incarnon mode is "auto" in the fixture but the weapon's primary trigger is semi, so the mod fits.
+    assert!(d.find_mod("Semi-Pistol Cannonade").unwrap().fits(&d.weapons[0]));
+}
+
+#[test]
+fn headshot_effects_toggle() {
+    let mut d = fixture();
+    d.mods[0].modifiers[0].condition = wf_data::Condition::OnHeadshotKill;
+    let mut b = Build { weapon: "Laetum".into(), mods: vec!["Hornet Strike".into()], ..Default::default() };
+    let on = compute(&d, &b, &Target::default()).unwrap().modes[0].per_shot;
+    b.conditions.headshot_effects = false;
+    let off = compute(&d, &b, &Target::default()).unwrap().modes[0].per_shot;
+    assert!(close(off, 160.0 * 1.264));
+    assert!(on > off);
 }

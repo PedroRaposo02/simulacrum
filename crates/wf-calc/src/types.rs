@@ -9,11 +9,17 @@ pub struct Conditions {
     pub conditional_uptime: f64,
     /// Share of hits that land on a headshot / weak point (only where allowed).
     pub headshot_share: f64,
+    /// Distinct status types on the target, for "per status type" effects.
+    pub status_types: f64,
+    /// Melee combo multiplier (1 = no combo, 12 = max).
+    pub combo_multiplier: f64,
+    /// Whether on-headshot / on-weak-point-kill effects are active (Deadhead, Galvanized Crosshairs).
+    pub headshot_effects: bool,
 }
 
 impl Default for Conditions {
     fn default() -> Self {
-        Self { conditional_uptime: 1.0, headshot_share: 0.0 }
+        Self { conditional_uptime: 1.0, headshot_share: 0.0, status_types: 4.0, combo_multiplier: 12.0, headshot_effects: true }
     }
 }
 
@@ -38,9 +44,11 @@ pub struct Target {
     pub profile: Option<EnemyProfile>,
     /// External armor strip 0..1 (abilities, shattering impact...).
     pub armor_strip: f64,
-    /// Override steady-state stack counts instead of deriving them from the build.
+    /// Outsourced status from allies or abilities. The engine uses the higher of this and
+    /// the stacks the weapon keeps up by itself.
     pub viral_stacks: Option<f64>,
     pub corrosive_stacks: Option<f64>,
+    /// Heat proc kept on the target externally (halves armor).
     pub heat_active: Option<bool>,
 }
 
