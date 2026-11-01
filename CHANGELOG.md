@@ -2,6 +2,15 @@
 
 Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the version lives in `Cargo.toml` (workspace) and the `package.json` files, and each release is tagged `v<version>`.
 
+## Unreleased
+
+- **Data fixes**: attacks use their own multishot from the wiki (81 attacks were using the weapon's; Ballistica Prime Incarnon was 4x too high, Coda Bubonico and Boar Incarnon too); unreleased datamined mods (Soaring Truth and 4 others) dropped.
+- **Raw target** is now an unarmored target that still takes Viral, so armor can only reduce damage.
+- **GunCO**: per-status damage (Galvanized, Condition Overload, Fatal Affliction) adds or multiplies per attack, with its factor, from the Galvanized GunCO sheet (rainy, tests by Prof_Blocks_007).
+- **Balanced objective** (new default): sustained DPS with fire rate above a comfortable rate ignored; best builds spend slots on damage and status.
+- **Companion weapons**: aim-only and headshot-triggered effects ignored; Tenacious Bond and Fired Up buffs; Tenacious Bond threshold check and optimizer option; Contagious Bond spread shown.
+- **UI**: bodyshot and headshot rows, burst vs sustained explained, full stat sheet, weapon type labels, Corrosive Projection slider, pagination, stronger primed and galvanized card frames, card layout, home page, logo and favicon, "Warframe Simulacrum" title, footer, best-build disclaimer.
+
 ## 0.4.0-beta.1 — 2026-11-01
 
 - **CI and releases**: GitHub Actions run the Rust tests, golden values, sweep and web build on every push; tagging `v*` publishes a release with the website bundle and `wfcalc` for Linux, Windows and macOS.

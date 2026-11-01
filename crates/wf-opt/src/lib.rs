@@ -55,8 +55,11 @@ fn evolution_combos(weapon: &Weapon, enabled: bool, faction: Faction, allow_fact
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum Objective {
-    /// Damage per second while firing.
+    /// Sustained DPS where fire rate above a comfortable rate counts for nothing, so slots go to
+    /// damage and status instead of runaway fire rate. Melee: burst DPS.
     #[default]
+    Balanced,
+    /// Damage per second while firing.
     Burst,
     /// Damage per second including reloads.
     Sustained,
@@ -73,6 +76,9 @@ pub struct OptimizeOptions {
     pub objective: Objective,
     /// Comfort for guns: builds above this fire rate (shots/s) rank below builds within it.
     pub max_fire_rate: Option<f64>,
+    /// Builds below this crit chance rank below builds that reach it (Tenacious Bond needs 50%
+    /// on the companion's weapon).
+    pub min_crit_chance: Option<f64>,
     /// Attack mode to optimize; None picks the mode with the highest unmodded burst DPS.
     pub mode: Option<usize>,
     pub riven: bool,
@@ -106,8 +112,9 @@ impl Default for OptimizeOptions {
             range_tolerance: None,
             capacity: None,
             spliced_riven: true,
-            objective: Objective::Burst,
+            objective: Objective::Balanced,
             max_fire_rate: None,
+            min_crit_chance: None,
             fixed_riven: vec![],
             allow_faction: false,
             evolutions: true,
@@ -259,6 +266,9 @@ pub fn riven_modifiers(data: &GameData, picks: &[RivenPick]) -> Vec<Modifier> {
                 condition: wf_data::Condition::Always,
                 per: None,
                 threshold: None,
+                aiming: false,
+                only_slots: vec![],
+                not_slots: vec![],
             })
         })
         .collect()
@@ -289,13 +299,41 @@ struct Ctx<'a> {
     evals: u64,
     min_attack_speed: Option<f64>,
     max_fire_rate: Option<f64>,
+    min_crit_chance: Option<f64>,
     objective: Objective,
+    rate_cap: f64,
     capacity: Option<CapacityOptions>,
     evolutions: Vec<&'a wf_data::Evolution>,
 }
 
-fn objective_value(objective: Objective, m: &wf_calc::ModeResult) -> f64 {
+/// Shots per second above which more fire rate stops being useful for a gun mode.
+pub fn comfort_rate_cap(mode: &wf_data::AttackMode) -> f64 {
+    use wf_data::Trigger::*;
+    let by_trigger: f64 = match mode.trigger {
+        Semi | Charge => 6.0,
+        Burst => 8.0,
+        _ => 10.0,
+    };
+    by_trigger.max(mode.fire_rate * 1.25)
+}
+
+fn objective_value(objective: Objective, m: &wf_calc::ModeResult, cap: f64) -> f64 {
     match objective {
+        Objective::Balanced => {
+            if m.attack_speed.is_some() || m.fire_rate <= cap || m.fire_rate <= 0.0 {
+                return m.sustained_dps;
+            }
+            // Same shots, but only `cap` of them per second count; reloads still apply.
+            let per_shot = m.burst_dps / m.fire_rate;
+            match m.magazine {
+                Some(mag) if m.sustained_dps < m.burst_dps * (1.0 - 1e-9) => {
+                    let mag = mag as f64;
+                    let reload = mag / m.fire_rate * (m.burst_dps / m.sustained_dps - 1.0);
+                    per_shot * mag / (mag / cap + reload)
+                }
+                _ => per_shot * cap,
+            }
+        }
         Objective::Burst => m.burst_dps,
         Objective::Sustained => m.sustained_dps,
         Objective::PerShot => m.per_shot,
@@ -319,8 +357,8 @@ impl<'a> Ctx<'a> {
     }
 
     fn raw(&mut self, mods: &[&'a Mod], arcane: Option<&'a Arcane>, riven: &[RivenStat]) -> f64 {
-        let objective = self.objective;
-        self.mode_result(mods, arcane, riven).map_or(0.0, |x| objective_value(objective, &x))
+        let (objective, cap) = (self.objective, self.rate_cap);
+        self.mode_result(mods, arcane, riven).map_or(0.0, |x| objective_value(objective, &x, cap))
     }
 
     /// The objective value. Comfort bounds (attack speed floor, fire rate cap) make builds outside
@@ -341,7 +379,13 @@ impl<'a> Ctx<'a> {
                         return -(m.fire_rate - max) - 1.0;
                     }
                 }
-                objective_value(self.objective, &m)
+                if let Some(min) = self.min_crit_chance {
+                    let cc = m.components.iter().map(|c| c.crit_chance).fold(0.0, f64::max);
+                    if cc < min - 1e-9 {
+                        return -(min - cc) - 1.0;
+                    }
+                }
+                objective_value(self.objective, &m, self.rate_cap)
             }
         }
     }
@@ -699,7 +743,9 @@ fn optimize_mode(
         evals: 0,
         min_attack_speed: opts.min_attack_speed,
         max_fire_rate: opts.max_fire_rate,
+        min_crit_chance: opts.min_crit_chance,
         objective: opts.objective,
+        rate_cap: f64::INFINITY,
         capacity: opts.capacity.clone(),
         evolutions: vec![],
     };
@@ -719,6 +765,7 @@ fn optimize_mode(
         }
     };
     ctx.mode = mode;
+    ctx.rate_cap = weapon.modes.get(mode).map_or(f64::INFINITY, comfort_rate_cap);
     let mode_def = weapon
         .modes
         .get(mode)
@@ -815,6 +862,9 @@ fn optimize_mode(
                                 condition: wf_data::Condition::Always,
                                 per: None,
                                 threshold: None,
+                                aiming: false,
+                                only_slots: vec![],
+                                not_slots: vec![],
                             },
                         })
                     })
@@ -883,7 +933,7 @@ fn optimize_mode(
 
     let final_mode = ctx.mode_result(&mods, arcane, &riven);
     if let Some(m) = &final_mode {
-        best = objective_value(opts.objective, m);
+        best = objective_value(opts.objective, m, ctx.rate_cap);
     }
 
     // Marginal value of each piece, on raw DPS (not the attack-speed-floor score).
@@ -921,7 +971,8 @@ fn optimize_mode(
     let below_floor = match (opts.min_attack_speed, &final_mode) {
         (Some(min), Some(m)) => m.attack_speed.unwrap_or(m.fire_rate) < min - 1e-9,
         _ => false,
-    } || matches!((opts.max_fire_rate, &final_mode), (Some(max), Some(m)) if m.attack_speed.is_none() && m.fire_rate > max + 1e-9);
+    } || matches!((opts.max_fire_rate, &final_mode), (Some(max), Some(m)) if m.attack_speed.is_none() && m.fire_rate > max + 1e-9)
+        || matches!((opts.min_crit_chance, &final_mode), (Some(min), Some(m)) if m.components.iter().map(|c| c.crit_chance).fold(0.0, f64::max) < min - 1e-9);
     let drain = opts.capacity.as_ref().map(|c| total_drain(&mods, normal_slots, c));
 
     let fm = final_mode.as_ref();

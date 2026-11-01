@@ -65,16 +65,20 @@ const POLARITY_GLYPH: Record<string, string> = {
 
 // ---- Card frames (Warframe-style, independent of the page theme) -----------------------------
 
-type Frame = { border: string; glow: string; bg: string; text: string };
+type Frame = { border: string; glow: string; bg: string; text: string; width?: number; inner?: string };
 const FRAMES: Record<string, Frame> = {
   common: { border: "#b07d55", glow: "rgba(176,125,85,.35)", bg: "linear-gradient(180deg,#3b2b20,#17110c)", text: "#f0d6bf" },
   uncommon: { border: "#c4ccd8", glow: "rgba(196,204,216,.35)", bg: "linear-gradient(180deg,#2f343d,#121519)", text: "#e8edf4" },
   rare: { border: "#e0bb4f", glow: "rgba(224,187,79,.4)", bg: "linear-gradient(180deg,#3d3218,#17130a)", text: "#fbe7a8" },
-  legendary: { border: "#ece7ff", glow: "rgba(236,231,255,.55)", bg: "linear-gradient(180deg,#3a3846,#16151c)", text: "#ffffff" },
+  // Primed: thick platinum frame with a strong glow, so it stands out from gold Rares.
+  legendary: { border: "#f4f1ff", glow: "rgba(236,231,255,.85)", bg: "linear-gradient(180deg,#45425a,#17161d)", text: "#ffffff", width: 3, inner: "rgba(255,255,255,.55)" },
+  // Galvanized: steel frame with a cyan inner line, like the in-game card.
+  galvanized: { border: "#9db4c9", glow: "rgba(110,200,230,.45)", bg: "linear-gradient(180deg,#26323d,#0d1217)", text: "#e3f4ff", width: 3, inner: "rgba(90,210,240,.75)" },
   riven: { border: "#b583ff", glow: "rgba(181,131,255,.5)", bg: "linear-gradient(180deg,#2d1d42,#120b1c)", text: "#eadbff" },
   arcane: { border: "#4fd1c5", glow: "rgba(79,209,197,.45)", bg: "linear-gradient(180deg,#14322f,#081413)", text: "#d4fffa" },
 };
-const frameFor = (rarity?: string) => FRAMES[(rarity ?? "common").toLowerCase()] ?? FRAMES.common;
+const frameFor = (rarity?: string, name?: string) =>
+  name?.startsWith("Galvanized ") ? FRAMES.galvanized : FRAMES[(rarity ?? "common").toLowerCase()] ?? FRAMES.common;
 
 function Pips({ n }: { n: number }) {
   const count = Math.min(n, 10);
@@ -107,19 +111,30 @@ function Card({ frame, title, lines, image, corner, pips, label, onClick }: Card
       aria-label={`${label}: ${title}`}
       title={`${title}\n${lines.join("\n")}`}
       className="group relative flex aspect-[3/4] w-full flex-col overflow-hidden rounded-lg text-left transition-transform hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
-      style={{ background: frame.bg, border: `2px solid ${frame.border}`, boxShadow: `0 0 12px ${frame.glow}`, color: frame.text }}
+      style={{
+        background: frame.bg,
+        border: `${frame.width ?? 2}px solid ${frame.border}`,
+        boxShadow: `0 0 ${frame.width ? 18 : 12}px ${frame.glow}${frame.inner ? `, inset 0 0 0 2px ${frame.inner}` : ""}`,
+        color: frame.text,
+      }}
     >
       {corner && (
         <span className="absolute right-1.5 top-1 z-10 rounded bg-black/50 px-1 text-[11px] font-semibold tabular-nums">{corner}</span>
       )}
-      <div className="relative h-[42%] w-full overflow-hidden" style={{ borderBottom: `1px solid ${frame.border}` }}>
+      <div className="relative flex h-[52%] w-full items-end justify-center overflow-hidden px-2 pt-5" style={{ borderBottom: `1px solid ${frame.border}` }}>
         {image && imgOk ? (
-          <img src={image} alt="" loading="lazy" onError={() => setImgOk(false)} className="h-full w-full object-cover opacity-90 group-hover:opacity-100" />
+          <img
+            src={image}
+            alt=""
+            loading="lazy"
+            onError={() => setImgOk(false)}
+            className="h-[88%] w-full rounded-sm object-cover object-center opacity-90 group-hover:opacity-100"
+          />
         ) : (
           <div className="h-full w-full" style={{ background: `radial-gradient(circle at 50% 40%, ${frame.glow}, transparent 70%)` }} />
         )}
       </div>
-      <div className="flex flex-1 flex-col items-center px-1.5 pb-1.5 pt-1 text-center">
+      <div className="flex flex-1 flex-col items-center px-1.5 pb-1.5 pt-1.5 text-center">
         <div className="line-clamp-2 text-[12px] font-semibold leading-tight">{title}</div>
         <div className="mt-0.5 line-clamp-4 text-[10.5px] leading-snug opacity-85">
           {lines.map((l) => (
@@ -203,7 +218,7 @@ function Picker({
         <input ref={input} className="field" placeholder="Search by name or effect…" value={q} onChange={(e) => setQ(e.target.value)} />
         <ul className="-mx-1 flex-1 overflow-y-auto">
           {shown.map((i) => {
-            const f = frameFor(i.rarity);
+            const f = frameFor(i.rarity, i.name);
             return (
               <li key={i.id}>
                 <button
@@ -270,7 +285,7 @@ export default function ModGrid({
       <Card
         key={i}
         label={label}
-        frame={frameFor(m.rarity)}
+        frame={frameFor(m.rarity, m.name)}
         title={m.name}
         lines={m.modifiers.map((x) => statLine(x, melee)).concat(m.locksFireRate ? ["Fire rate locked"] : [])}
         image={m.image}

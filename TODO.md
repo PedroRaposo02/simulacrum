@@ -1,5 +1,16 @@
 # TODO
 
+See also `TODO-userinput.md` (the user's list, ticked as items land).
+
+## Next (priority order)
+1. Forma and capacity planner in the card view (user #23): drain per slot, capacity used vs 60, suggested polarities and forma count, updated live; best builds always fill the exilus.
+2. Riven roll ranking per weapon (user #31): every 2-3 positive combination ranked by best-build DPS, so rolling can stop early.
+3. Export JSON + Markdown (user #24): Markdown laid out like the cards; JSON re-importable.
+4. Favorites for weapons and builds (user #25) with a favorites section.
+5. Niche builds page (user #17): curated / user-entered builds by purpose (primer, Heat inherit, Gas/Blast nukes).
+6. Melee arcanes (user #20): Melee Influence, Melee Duplicate, Melee Crescendo etc. with their crit thresholds; zaws excluded.
+7. Donate button: needs a link in `apps/web/src/site.ts`.
+
 Working list after 0.2.0-beta.1. Checked items are done; notes say what "done" means and what's left.
 
 ## Rivens

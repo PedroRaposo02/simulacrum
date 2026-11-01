@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@wfcd/items": "1.1276.46",
-    "luaparse": "0.3.1"
+    "luaparse": "0.3.1",
+    "xlsx": "0.18.5"
   }
 }

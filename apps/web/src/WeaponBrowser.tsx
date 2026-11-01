@@ -1,4 +1,17 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { weaponTypeLabel } from "./labels";
+import BestBuildDisclaimer from "./Disclaimer";
+
+const PAGE_KEY = "simulacrum.pageSize";
+const PAGE_SIZES = [25, 50, 100, 0] as const;
+function savedPageSize(): number {
+  try {
+    const n = Number(localStorage.getItem(PAGE_KEY));
+    return (PAGE_SIZES as readonly number[]).includes(n) ? n : 25;
+  } catch {
+    return 25;
+  }
+}
 import { fmt, rank, scenarioBuild, targetKey, useStore, type BrowserBuild } from "./store";
 import { CoverageBadge, Segmented } from "./Common";
 import type { BestEntry, Slot } from "./types";
@@ -19,6 +32,18 @@ export default function WeaponBrowser() {
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("burstDps");
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [pageSize, setPageSizeState] = useState<number>(savedPageSize);
+  const [page, setPage] = useState(0);
+  const setPageSize = (n: number) => {
+    setPageSizeState(n);
+    setPage(0);
+    try {
+      localStorage.setItem(PAGE_KEY, String(n));
+    } catch {
+      // not persisted
+    }
+  };
+  const weaponById = useMemo(() => new Map(data!.weapons.map((w) => [w.id, w])), [data]);
 
   // Best builds were optimized per enemy preset; look up the one for the current enemy.
   const bestForTarget = best?.targets[targetKey(scenario.target)];
@@ -49,6 +74,10 @@ export default function WeaponBrowser() {
     const q = query.toLowerCase();
     return rows.filter((r) => r.slot === slot && (!q || r.name.toLowerCase().includes(q))).sort((a, b) => b[sortKey] - a[sortKey]);
   }, [rows, slot, query, sortKey]);
+  useEffect(() => setPage(0), [slot, query, sortKey]);
+  const pages = pageSize ? Math.max(1, Math.ceil(shown.length / pageSize)) : 1;
+  const pageRows = pageSize ? shown.slice(page * pageSize, (page + 1) * pageSize) : shown;
+  const firstRank = pageSize ? page * pageSize : 0;
 
   const th = (key: SortKey, label: string) => (
     <th className="cursor-pointer whitespace-nowrap px-2 py-2 text-right font-medium hover:text-indigo-600" onClick={() => setSortKey(key)}>
@@ -100,6 +129,7 @@ export default function WeaponBrowser() {
           {bestStale && " Game data changed since these were generated; rerun pnpm optimize."}
         </p>
       )}
+      {usingBest && best && <BestBuildDisclaimer compact />}
 
       <div className="card overflow-x-auto p-0">
         <table className="w-full text-sm">
@@ -115,7 +145,8 @@ export default function WeaponBrowser() {
             </tr>
           </thead>
           <tbody>
-            {shown.map((r, i) => {
+            {pageRows.map((r, idx) => {
+              const i = firstRank + idx;
               const e = entryFor(r.weaponId);
               const isOpen = expanded === r.weaponId;
               return (
@@ -127,7 +158,8 @@ export default function WeaponBrowser() {
                     <td className="num px-2 py-1.5 text-zinc-400">{i + 1}</td>
                     <td className="px-2 py-1.5 font-medium">
                       {usingBest && e && <span className="mr-1 text-zinc-400">{isOpen ? "▾" : "▸"}</span>}
-                      {r.name} <span className="text-xs font-normal capitalize text-zinc-500">{r.class}</span>
+                      {r.name}{" "}
+                      <span className="text-xs font-normal text-zinc-500">{weaponById.get(r.weaponId) ? weaponTypeLabel(weaponById.get(r.weaponId)!) : r.class}</span>
                     </td>
                     <td className="px-2 py-1.5 text-zinc-600 dark:text-zinc-400">{r.failed ?? r.mode}</td>
                     <td className="num px-2 py-1.5 text-right">{fmt(r.perShot)}</td>
@@ -180,6 +212,37 @@ export default function WeaponBrowser() {
             })}
           </tbody>
         </table>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <label className="flex items-center gap-2 text-zinc-500">
+          Per page
+          <select className="field w-auto py-1" value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
+            {PAGE_SIZES.map((n) => (
+              <option key={n} value={n}>
+                {n || "All"}
+              </option>
+            ))}
+          </select>
+        </label>
+        {pageSize > 0 && pages > 1 && (
+          <div className="ml-auto flex items-center gap-1">
+            <button className="rounded px-2 py-1 hover:bg-zinc-200 disabled:opacity-40 dark:hover:bg-zinc-800" disabled={page === 0} onClick={() => setPage(0)} aria-label="First page">
+              «
+            </button>
+            <button className="rounded px-2 py-1 hover:bg-zinc-200 disabled:opacity-40 dark:hover:bg-zinc-800" disabled={page === 0} onClick={() => setPage(page - 1)} aria-label="Previous page">
+              ‹
+            </button>
+            <span className="px-2 tabular-nums text-zinc-500">
+              {page + 1} / {pages}
+            </span>
+            <button className="rounded px-2 py-1 hover:bg-zinc-200 disabled:opacity-40 dark:hover:bg-zinc-800" disabled={page >= pages - 1} onClick={() => setPage(page + 1)} aria-label="Next page">
+              ›
+            </button>
+            <button className="rounded px-2 py-1 hover:bg-zinc-200 disabled:opacity-40 dark:hover:bg-zinc-800" disabled={page >= pages - 1} onClick={() => setPage(pages - 1)} aria-label="Last page">
+              »
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

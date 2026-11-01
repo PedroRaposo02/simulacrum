@@ -6,6 +6,7 @@ import RivenEditor from "./RivenEditor";
 import MeleeSummary from "./MeleeSummary";
 import OptimizerControls, { type ComfortSettings, type OptimizerState } from "./OptimizerControls";
 import SavedBuilds from "./SavedBuilds";
+import { weaponTypeLabel } from "./labels";
 import ModGrid, { modSummary as cardSummary } from "./ModGrid";
 
 type ModView = "cards" | "list";
@@ -124,32 +125,93 @@ function ModSlot({ value, options, used, onChange, label }: {
   );
 }
 
-function ModeCard({ m }: { m: ModeResult }) {
-  const stats: [string, number | null][] = [
-    ["Per shot", m.perShot],
-    ["Burst DPS", m.burstDps],
-    ["Sustained DPS", m.sustainedDps],
-    ["Per Incarnon charge", m.perCharge],
-    ["Status DPS (approx.)", m.statusDps],
+const TYPE_LABEL: Record<string, string> = {
+  impact: "Impact", puncture: "Puncture", slash: "Slash", heat: "Heat", cold: "Cold", electricity: "Electricity", toxin: "Toxin",
+  blast: "Blast", radiation: "Radiation", gas: "Gas", magnetic: "Magnetic", viral: "Viral", corrosive: "Corrosive", void: "Void", tau: "Tau", true: "True",
+};
+
+/** Arsenal-style stat list for one attack mode. */
+function StatSheet({ m }: { m: ModeResult }) {
+  const row = (label: string, value: string) => (
+    <div key={label} className="flex justify-between gap-3 border-b border-zinc-100 py-0.5 dark:border-zinc-800">
+      <span className="text-zinc-500">{label}</span>
+      <span className="num font-medium">{value}</span>
+    </div>
+  );
+  const general: [string, string][] = [
+    [m.attackSpeed != null ? "Attack speed" : "Fire rate", m.attackSpeed != null ? m.attackSpeed.toFixed(2) : `${m.fireRate.toFixed(2)} /s`],
+    ...(m.magazine != null ? ([["Magazine", String(m.magazine)], ["Reload", `${m.reloadS.toFixed(2)} s`]] as [string, string][]) : []),
+    ...(m.rangeM != null ? ([["Range", `${m.rangeM.toFixed(2)} m`]] as [string, string][]) : []),
+    ...(m.comboMultiplier != null ? ([["Combo multiplier", `${m.comboMultiplier}×`]] as [string, string][]) : []),
+    ["Viral stacks on target", m.viralStacks.toFixed(1)],
+    ["Corrosive stacks on target", m.corrosiveStacks.toFixed(1)],
   ];
+  return (
+    <div className="grid gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+      {m.components.map((c) => {
+        const total = Object.values(c.damage).reduce((a, b) => a + b, 0);
+        return (
+          <div key={c.name}>
+            <div className="mb-1 font-semibold text-zinc-600 dark:text-zinc-300">{m.components.length > 1 ? c.name : "Damage (per projectile, before enemy)"}</div>
+            {Object.entries(c.damage)
+              .sort((a, b) => b[1] - a[1])
+              .map(([t, v]) => row(TYPE_LABEL[t] ?? t, fmt(v)))}
+            {row("Total", fmt(total))}
+            {row("Critical chance", `${(c.critChance * 100).toFixed(1)}%`)}
+            {row("Critical multiplier", `${c.critMult.toFixed(2)}×`)}
+            {row("Status chance", `${(c.statusChance * 100).toFixed(1)}%`)}
+            {row("Projectiles (multishot)", c.projectiles.toFixed(2))}
+          </div>
+        );
+      })}
+      <div>
+        <div className="mb-1 font-semibold text-zinc-600 dark:text-zinc-300">General</div>
+        {general.map(([l, v]) => row(l, v))}
+      </div>
+    </div>
+  );
+}
+
+const BURST_HELP = "Burst DPS: damage per second while firing continuously, ignoring reloads.";
+const SUSTAINED_HELP =
+  "Sustained DPS: average over a full cycle of emptying the magazine and reloading (for Incarnon forms, the charge; recharge time isn't modelled, so it equals burst).";
+
+function ModeCard({ m, body, head }: { m: ModeResult; body?: ModeResult; head?: ModeResult }) {
+  const b = body ?? m;
+  const tile = (label: string, v: number | null | undefined, help?: string) => (
+    <div key={label} className="rounded-md bg-zinc-100 px-3 py-2 dark:bg-zinc-800/60" title={help}>
+      <div className="text-[11px] uppercase text-zinc-500">
+        {label}
+        {help ? " ⓘ" : ""}
+      </div>
+      <div className="num text-lg font-semibold">{v == null ? "—" : fmt(v)}</div>
+    </div>
+  );
+  const row = (title: string, r: ModeResult) => (
+    <div>
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">{title}</div>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {tile("Per shot", r.perShot)}
+        {tile("Burst DPS", r.burstDps, BURST_HELP)}
+        {tile("Sustained DPS", r.sustainedDps, SUSTAINED_HELP)}
+        {m.perCharge != null ? tile("Per Incarnon charge", r.perCharge) : tile("Status DPS (approx.)", r.statusDps)}
+      </div>
+    </div>
+  );
   return (
     <div className="card space-y-3">
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="font-semibold">{m.mode}</h3>
         <CoverageBadge c={m.coverage} />
         <span className="num ml-auto text-xs text-zinc-500">
-          {fmt(m.fireRate)} shots/s · mag {m.magazine ?? "—"} · reload {fmt(m.reloadS)}s · viral {fmt(m.viralStacks)} · corrosive{" "}
-          {fmt(m.corrosiveStacks)}
+          {fmt(m.fireRate)} shots/s · mag {m.magazine ?? "—"} · reload {fmt(m.reloadS)}s
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-        {stats.map(([l, v]) => (
-          <div key={l} className="rounded-md bg-zinc-100 px-3 py-2 dark:bg-zinc-800/60">
-            <div className="text-[11px] uppercase text-zinc-500">{l}</div>
-            <div className="num text-lg font-semibold">{v == null ? "—" : fmt(v)}</div>
-          </div>
-        ))}
-      </div>
+      {row("Bodyshots", b)}
+      {head && row("Headshots", head)}
+      <p className="text-[11px] text-zinc-500">
+        Burst = while firing, no reloads. Sustained = averaged over magazine + reload. Headshots only apply to attacks that can headshot (explosions can&apos;t).
+      </p>
       {m.approximations.length > 0 && (
         <ul className="list-inside list-disc text-xs text-amber-700 dark:text-amber-400">
           {m.approximations.map((a) => (
@@ -157,12 +219,44 @@ function ModeCard({ m }: { m: ModeResult }) {
           ))}
         </ul>
       )}
+      <details open>
+        <summary className="cursor-pointer text-sm text-indigo-600">Stats</summary>
+        <div className="mt-2">
+          <StatSheet m={b} />
+        </div>
+      </details>
       <details>
         <summary className="cursor-pointer text-sm text-indigo-600">How this number is computed</summary>
         <div className="mt-2 border-l border-zinc-200 pl-2 dark:border-zinc-700">
           <ExplainTree node={m.explain} />
         </div>
       </details>
+    </div>
+  );
+}
+
+/** Companion weapon thresholds: Tenacious Bond (crit >= 50%) and what Contagious Bond would spread. */
+function CompanionSummary({ m }: { m: ModeResult }) {
+  const cc = Math.max(...m.components.map((c) => c.critChance));
+  const ok = cc >= 0.5 - 1e-9;
+  const spread = (n: number) => (n >= 2 ? Math.floor(n / 2) : 0);
+  const badge = ok
+    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300"
+    : "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300";
+  return (
+    <div className="card space-y-2 text-sm">
+      <h3 className="font-semibold">Companion bonds</h3>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${badge}`}>{ok ? "Tenacious Bond active" : "Tenacious Bond inactive"}</span>
+        <span className="text-zinc-500">
+          crit chance {(cc * 100).toFixed(1)}% (needs 50% or more). When active, your own weapons get +1.2× final crit multiplier: enable Tenacious Bond in Scenario › Damage buffs.
+        </span>
+      </div>
+      <p className="text-zinc-500">
+        Contagious Bond: when this companion kills an enemy, half of each status with 2+ stacks spreads within 9 m. At this build&apos;s steady state that is Viral{" "}
+        {spread(m.viralStacks)} and Corrosive {spread(m.corrosiveStacks)} stacks per spread.
+      </p>
+      <p className="text-[11px] text-zinc-500">Companion AI doesn&apos;t aim or reliably headshot, so aim-only mods and headshot-triggered effects are ignored for this weapon.</p>
     </div>
   );
 }
@@ -311,6 +405,16 @@ export default function BuildEditor() {
     if (!weapon) return null;
     return compute(engine!, engineBuild(data!, build, scenario), scenario.target);
   }, [engine, data, build, scenario, weapon]);
+  // Bodyshot and headshot views (headshot share 0 and 1), whatever the scenario's share is.
+  const [bodyRes, headRes] = useMemo(() => {
+    if (!weapon) return [null, null];
+    const at = (share: number) => {
+      const s2 = { ...scenario, conditions: { ...scenario.conditions, headshotShare: share } };
+      return compute(engine!, engineBuild(data!, build, s2), s2.target).ok ?? null;
+    };
+    return [at(0), weapon.slot === "companion" ? null : at(1)];
+  }, [engine, data, build, scenario, weapon]);
+  const forMode = (r: { modes: ModeResult[] } | null, i: number) => r?.modes.find((x) => x.modeIndex === i);
 
   const precomputed = weapon ? best?.targets[scenario.target.enemy ?? "raw"]?.[weapon.id] : undefined;
 
@@ -402,8 +506,8 @@ export default function BuildEditor() {
             {weapon.image && <img src={weapon.image} alt="" className="h-12 w-auto" onError={(e) => (e.currentTarget.style.display = "none")} />}
             <div>
               <h2 className="text-xl font-semibold">{weapon.name}</h2>
-              <p className="text-xs capitalize text-zinc-500">
-                {weapon.slot} · {weapon.class} · vs {result?.ok?.target ?? "—"}
+              <p className="text-xs text-zinc-500">
+                <span className="capitalize">{weapon.slot}</span> · {weaponTypeLabel(weapon)} · vs {result?.ok?.target ?? "—"}
               </p>
             </div>
             <button
@@ -453,6 +557,7 @@ export default function BuildEditor() {
           />
         )}
         {weapon?.melee && <MeleeSummary weapon={weapon} build={build} comfortSpeed={comfort.minAttackSpeed} />}
+        {weapon?.slot === "companion" && result?.ok?.modes[0] && <CompanionSummary m={result.ok.modes[0]} />}
         {result?.error && <div className="card text-red-600">{result.error.message}</div>}
         {result?.ok?.warnings.map((w) => (
           <p key={w} className="text-xs text-amber-700 dark:text-amber-400">
@@ -462,7 +567,7 @@ export default function BuildEditor() {
         {weapon?.melee && result?.ok ? (
           <MeleeModeTable modes={result.ok.modes} weapon={weapon} />
         ) : (
-          result?.ok?.modes.map((m) => <ModeCard key={m.modeIndex} m={m} />)
+          result?.ok?.modes.map((m) => <ModeCard key={m.modeIndex} m={m} body={forMode(bodyRes, m.modeIndex)} head={forMode(headRes, m.modeIndex)} />)
         )}
         {result?.ok?.failedModes.map((f) => (
           <div key={f.modeIndex} className="card">

@@ -5,7 +5,8 @@ import { Toggle } from "./Common";
 import type { EditorBuild, Objective, OptimizeOptions, OptimizeResult, Weapon } from "./types";
 
 const OBJECTIVES: [Objective, string, string][] = [
-  ["burst", "Burst DPS", "Damage per second while firing"],
+  ["balanced", "Balanced (recommended)", "Sustained DPS where fire rate above a comfortable rate adds nothing: slots go to damage and status"],
+  ["burst", "Burst DPS", "Damage per second while firing, ignoring reloads"],
   ["sustained", "Sustained DPS", "Includes reloads"],
   ["perShot", "Damage per shot / combo", "Ignores fire rate entirely"],
   ["perCharge", "Damage per magazine / Incarnon charge", "Fire rate adds nothing: favours damage stats"],
@@ -49,7 +50,9 @@ export default function OptimizerControls({
   const [polarities, setPolarities] = useState<(string | null)[]>(Array(SLOT_COUNT + 1).fill(null));
   const [grade, setGrade] = useState<{ ratio: number; god: number; mine: number } | null>(null);
   const [allowFaction, setAllowFaction] = useState(false);
-  const [objective, setObjective] = useState<Objective>("burst");
+  const [objective, setObjective] = useState<Objective>("balanced");
+  const isCompanion = weapon.slot === "companion";
+  const [tenacious, setTenacious] = useState(false);
   const [spliced, setSpliced] = useState(true);
 
   const isMelee = !!weapon.melee;
@@ -61,6 +64,7 @@ export default function OptimizerControls({
     mode: mode === "auto" ? null : mode,
     minAttackSpeed: comfort.on && isMelee ? comfort.minAttackSpeed : null,
     maxFireRate: comfort.on && !isMelee ? comfort.maxFireRate : null,
+    minCritChance: isCompanion && tenacious ? 0.5 : null,
     rangeTolerance: comfort.on && isMelee ? comfort.rangeTolerance : null,
     capacity: realistic ? { capacity, polarities, rivenDrain: 9 } : null,
     allowFaction,
@@ -157,6 +161,14 @@ export default function OptimizerControls({
           />
 
           <Toggle label="Allow spliced riven stats (Viral, Corrosive…; one per riven)" checked={spliced} onChange={setSpliced} />
+          {isCompanion && (
+            <Toggle
+              label="Reach the Tenacious Bond threshold (companion crit chance ≥ 50%)"
+              checked={tenacious}
+              onChange={setTenacious}
+              title="Tenacious Bond gives your own weapons +1.2x final crit multiplier while the companion's crit chance is at least 50%"
+            />
+          )}
 
           <Toggle
             label={isMelee ? "Comfortable build (attack speed floor, range if cheap)" : "Comfortable build (fire rate cap)"}

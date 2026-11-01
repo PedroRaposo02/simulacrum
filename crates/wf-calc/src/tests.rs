@@ -221,6 +221,9 @@ fn ability_damage_is_a_separate_multiplier() {
         condition: wf_data::Condition::Always,
         per: None,
         threshold: None,
+        aiming: false,
+        only_slots: vec![],
+        not_slots: vec![],
     };
     let base = Build { weapon: "Laetum".into(), mods: vec!["Hornet Strike".into()], ..Default::default() };
     let buffed = Build { buffs: vec![roar], ..base.clone() };
@@ -449,6 +452,9 @@ fn roar_is_faction_type_and_adds_to_bane() {
         condition: wf_data::Condition::Always,
         per: None,
         threshold: None,
+        aiming: false,
+        only_slots: vec![],
+        not_slots: vec![],
     };
     let t = Target { enemy: Some("sp-grineer".into()), armor_strip: 1.0, ..Default::default() };
     let base = compute(&fixture(), &Build { weapon: "Laetum".into(), ..Default::default() }, &t).unwrap().modes[0].per_shot;
@@ -471,6 +477,9 @@ fn with_mod(stat: wf_data::Stat, value: f64, condition: wf_data::Condition, thre
             condition,
             per: None,
             threshold,
+            aiming: false,
+            only_slots: vec![],
+            not_slots: vec![],
         }],
         ..Default::default()
     }
@@ -534,4 +543,68 @@ fn status_from_crit_link_is_capped() {
     };
     assert!(close(sc(0.5, 1.0), 0.22 + 0.11));
     assert!(close(sc(0.5, 0.05), 0.22 + 0.05));
+}
+
+#[test]
+fn raw_is_an_upper_bound_for_armored_targets() {
+    let mut d = fixture();
+    // A Viral/Corrosive weapon that strips armor and stacks Viral on its own.
+    let c = &mut d.weapons[0].modes[0].components[0];
+    c.damage = [(wf_data::DamageType::Viral, 80.0), (wf_data::DamageType::Corrosive, 80.0)].into_iter().collect();
+    c.status_chance = 3.0;
+    let b = Build { weapon: "Laetum".into(), ..Default::default() };
+    let raw = compute(&d, &b, &Target::default()).unwrap().modes[0].clone();
+    let sp = compute(&d, &b, &Target { enemy: Some("sp-grineer".into()), ..Default::default() }).unwrap().modes[0].clone();
+    assert!(raw.viral_stacks > 9.9, "self-applied viral counts on the raw target too");
+    assert!(sp.burst_dps <= raw.burst_dps, "armor can only reduce damage: {} vs {}", sp.burst_dps, raw.burst_dps);
+}
+
+#[test]
+fn gunco_adds_or_multiplies_per_attack() {
+    use wf_data::{Condition::Always, Stat};
+    let galv = |d: &GameData| {
+        let mut b = with_mod(Stat::BaseDamage, 0.4, Always, None);
+        b.buffs[0].per = Some(wf_data::PerCount::StatusType);
+        b.buffs.push(wf_data::Modifier { stat: Stat::BaseDamage, value: 1.0, per: None, source: "serration".into(), ..b.buffs[0].clone() });
+        b.conditions.status_types = 2.0;
+        compute(d, &b, &Target::default()).unwrap().modes[0].per_shot
+    };
+    let base = 160.0 * 1.264;
+    // Default (not in sheet): adds -> 1 + 1.0 + 0.8.
+    assert!(close(galv(&fixture()), base * 2.8));
+    // Multiplies: (1 + 1.0) x (1 + 0.8).
+    let mut d = fixture();
+    d.weapons[0].modes[0].components[0].rules.gun_co = Some(wf_data::GunCo { factor: 1.0, mode: wf_data::GunCoMode::Multiplies });
+    assert!(close(galv(&d), base * 2.0 * 1.8));
+    // Factor scales the bonus: adds 0.5 x 0.8.
+    d.weapons[0].modes[0].components[0].rules.gun_co = Some(wf_data::GunCo { factor: 0.5, mode: wf_data::GunCoMode::Adds });
+    assert!(close(galv(&d), base * 2.4));
+}
+
+#[test]
+fn companion_weapons_ignore_aiming_and_headshot_effects() {
+    use wf_data::{Condition, Stat};
+    let mut d = fixture();
+    d.weapons[0].slot = wf_data::Slot::Companion;
+    let mut aim = with_mod(Stat::BaseDamage, 1.0, Condition::Always, None);
+    aim.buffs[0].aiming = true;
+    let base = compute(&d, &Build { weapon: "Laetum".into(), ..Default::default() }, &Target::default()).unwrap().modes[0].per_shot;
+    assert!(close(compute(&d, &aim, &Target::default()).unwrap().modes[0].per_shot, base), "aim-only bonus ignored");
+    let hs = with_mod(Stat::BaseDamage, 1.0, Condition::OnHeadshotKill, None);
+    assert!(close(compute(&d, &hs, &Target::default()).unwrap().modes[0].per_shot, base), "headshot-kill bonus ignored");
+    // The same aim bonus does count on a player weapon.
+    assert!(compute(&fixture(), &aim, &Target::default()).unwrap().modes[0].per_shot > base * 1.9);
+}
+
+#[test]
+fn slot_scoped_buffs() {
+    use wf_data::{Condition::Always, Slot, Stat};
+    let d = fixture();
+    let base = compute(&d, &Build { weapon: "Laetum".into(), ..Default::default() }, &Target::default()).unwrap().modes[0].per_shot;
+    let mut only_companion = with_mod(Stat::BaseDamage, 1.0, Always, None);
+    only_companion.buffs[0].only_slots = vec![Slot::Companion];
+    assert!(close(compute(&d, &only_companion, &Target::default()).unwrap().modes[0].per_shot, base));
+    let mut not_secondary = with_mod(Stat::BaseDamage, 1.0, Always, None);
+    not_secondary.buffs[0].not_slots = vec![Slot::Secondary];
+    assert!(close(compute(&d, &not_secondary, &Target::default()).unwrap().modes[0].per_shot, base));
 }

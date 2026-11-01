@@ -60,6 +60,7 @@ export interface EvolutionTier { tier: number; options: Evolution[] }
 
 export interface WeaponMode {
   name: string;
+  trigger?: string;
   incarnonForm?: boolean;
   coverage: Coverage;
   notes?: string[];
@@ -150,6 +151,8 @@ export interface EngineBuild {
 export interface Target {
   enemy: string | null;
   armorStrip: number;
+  /** Corrosive Projection auras in the squad (0-4). */
+  corrosiveProjection: number;
   viralStacks: number | null;
   corrosiveStacks: number | null;
   heatActive: boolean;
@@ -259,11 +262,12 @@ export interface OptimizeResult {
 }
 
 export interface CapacityOptions { capacity: number; polarities: (string | null)[]; rivenDrain: number }
-export type Objective = "burst" | "sustained" | "perShot" | "perCharge";
+export type Objective = "balanced" | "burst" | "sustained" | "perShot" | "perCharge";
 
 export interface OptimizeOptions {
   objective?: Objective;
   maxFireRate?: number | null;
+  minCritChance?: number | null;
   mode?: number | null;
   riven?: boolean;
   arcane?: boolean;

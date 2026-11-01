@@ -3,8 +3,11 @@ import { useStore } from "./store";
 import WeaponBrowser from "./WeaponBrowser";
 import BuildEditor from "./BuildEditor";
 import ScenarioPanel from "./Scenario";
+import Home from "./Home";
+import Logo from "./Logo";
 import { APP_VERSION } from "./version";
 import ThemePicker from "./ThemePicker";
+import { SITE } from "./site";
 
 export default function App() {
   const { status, error, tab, setTab, data, load } = useStore();
@@ -27,25 +30,55 @@ export default function App() {
   );
 
   return (
-    <div className="mx-auto max-w-[1600px] px-4 py-4">
+    <div className="mx-auto flex min-h-screen max-w-[1600px] flex-col px-4 py-4">
       <header className="mb-4 flex flex-wrap items-center gap-3">
-        <h1 className="text-lg font-semibold">Simulacrum</h1>
+        <button onClick={() => setTab("home")} className="flex items-center gap-2" title={SITE.tagline}>
+          <Logo />
+          <h1 className="text-lg font-semibold">{SITE.title}</h1>
+        </button>
         <span className="mr-4 rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-800 dark:bg-amber-900/50 dark:text-amber-300">
           BETA v{APP_VERSION}
         </span>
-        {tabBtn("browser", "Weapon browser")}
+        {tabBtn("browser", "Weapons")}
         {tabBtn("build", "Build editor")}
-        <span className="ml-auto text-xs text-zinc-500">
+        <span className="ml-auto hidden text-xs text-zinc-500 md:inline">
           data {data?.version} · {data?.weapons.length} weapons · {data?.mods.length} mods
         </span>
         <ThemePicker />
       </header>
-      <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
-        <ScenarioPanel />
-        <main className="min-w-0">{tab === "browser" ? <WeaponBrowser /> : <BuildEditor />}</main>
-      </div>
-      <footer className="mt-8 text-xs text-zinc-500">
-        Weapon and mod data: {Object.values(data?.sources ?? {}).join(" · ")}. Not affiliated with Digital Extremes.
+      {tab === "home" ? (
+        <main className="min-w-0 flex-1">
+          <Home />
+        </main>
+      ) : (
+        <div className="grid flex-1 gap-4 lg:grid-cols-[300px_1fr]">
+          <ScenarioPanel />
+          <main className="min-w-0">{tab === "browser" ? <WeaponBrowser /> : <BuildEditor />}</main>
+        </div>
+      )}
+      <footer className="mt-8 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-zinc-200 pt-4 text-xs text-zinc-500 dark:border-zinc-800">
+        <span>
+          Made by{" "}
+          <a className="text-indigo-600 hover:underline dark:text-indigo-400" href={SITE.authorUrl} target="_blank" rel="noreferrer">
+            {SITE.author}
+          </a>
+        </span>
+        <a className="text-indigo-600 hover:underline dark:text-indigo-400" href={SITE.repoUrl} target="_blank" rel="noreferrer">
+          Source code
+        </a>
+        {SITE.donateUrl && (
+          <a
+            className="rounded-md bg-amber-500 px-3 py-1 font-semibold text-black hover:bg-amber-400"
+            href={SITE.donateUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            ♥ Donate
+          </a>
+        )}
+        <span className="basis-full">
+          Data: {Object.values(data?.sources ?? {}).join(" · ")}. Warframe is a trademark of Digital Extremes; this project isn&apos;t affiliated with them.
+        </span>
       </footer>
     </div>
   );

@@ -82,7 +82,7 @@ export interface Scenario {
 }
 
 export const defaultScenario = (): Scenario => ({
-  target: { enemy: "sp-grineer", armorStrip: 0, viralStacks: null, corrosiveStacks: null, heatActive: false },
+  target: { enemy: "sp-grineer", armorStrip: 0, corrosiveProjection: 0, viralStacks: null, corrosiveStacks: null, heatActive: false },
   conditions: defaultConditions(),
   strength: 1,
   buffs: {},
@@ -97,7 +97,7 @@ interface State {
   engine?: Engine;
   best?: BestBuilds;
   bestStale: boolean;
-  tab: "browser" | "build";
+  tab: "home" | "browser" | "build";
   build: EditorBuild;
   scenario: Scenario;
   browserBuild: BrowserBuild;
@@ -181,7 +181,7 @@ export const targetKey = (t: Target) => t.enemy ?? "raw";
 export const useStore = create<State>((set, get) => ({
   status: "loading",
   bestStale: false,
-  tab: "browser",
+  tab: "home",
   build: emptyBuild(),
   scenario: defaultScenario(),
   browserBuild: "unmodded",

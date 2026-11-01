@@ -34,14 +34,24 @@ export default function ScenarioPanel() {
 
       <Section title="Enemy">
         <select className="field" value={target.enemy ?? ""} onChange={(e) => setT({ enemy: e.target.value || null })}>
-          <option value="">Raw (no enemy)</option>
+          <option value="">Raw (unarmored target)</option>
           {data!.enemies.map((e) => (
             <option key={e.id} value={e.id}>
               {e.name}
             </option>
           ))}
         </select>
-        <Slider label="External armor strip" value={target.armorStrip} onChange={(v) => setT({ armorStrip: v })} disabled={!target.enemy} />
+        <Slider
+          label="Corrosive Projection auras"
+          value={target.corrosiveProjection ?? 0}
+          min={0}
+          max={4}
+          step={1}
+          display={`${target.corrosiveProjection ?? 0} (−${(target.corrosiveProjection ?? 0) * 18}% armor)`}
+          onChange={(v) => setT({ corrosiveProjection: v })}
+          disabled={!target.enemy}
+        />
+        <Slider label="Other armor strip (abilities…)" value={target.armorStrip} onChange={(v) => setT({ armorStrip: v })} disabled={!target.enemy} />
       </Section>
 
       <Section title="Outsourced status">

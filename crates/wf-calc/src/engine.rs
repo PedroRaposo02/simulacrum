@@ -7,6 +7,8 @@ use wf_data::*;
 const ARMOR_CAP: f64 = 2700.0;
 const MAX_DR: f64 = 0.9;
 const STATUS_DURATION_S: f64 = 6.0;
+/// Armor removed per Corrosive Projection aura at max rank.
+const CORROSIVE_PROJECTION: f64 = 0.18;
 
 /// DoT statuses: (type, fraction of modded base damage per tick, ticks per proc).
 /// Approximate values from the wiki's status table; kept here until moved to overrides.
@@ -33,6 +35,9 @@ struct Pools {
     crit_mult_base: f64,
     status_chance_base: f64,
     multishot_damage: f64,
+    /// Per-status-type damage (Galvanized Shot/Aptitude, Condition Overload, Fatal Affliction):
+    /// added to base damage or applied as its own multiplier depending on the attack (GunCO).
+    gunco: f64,
     /// (ratio, cap) links: status from crit, crit from status.
     status_from_crit: Vec<(f64, f64)>,
     crit_from_status: Vec<(f64, f64)>,
@@ -59,6 +64,11 @@ impl Pools {
         let v = m.value * scale;
         if m.condition == Condition::CritChanceBelow {
             self.below_crit.push((m.threshold.unwrap_or(0.0), m.stat, m.value, m.source.clone()));
+            return;
+        }
+        if m.per == Some(PerCount::StatusType) && m.stat == Stat::BaseDamage {
+            self.gunco += v;
+            self.sources.push((m.source.clone(), m.stat, v));
             return;
         }
         match m.stat {
@@ -193,7 +203,7 @@ fn condition_scale(m: &Modifier, c: &Conditions) -> f64 {
                 0.0
             }
         }
-        Condition::OnHeadshot | Condition::OnHeadshotKill if !c.headshot_effects => 0.0,
+        Condition::OnHeadshot | Condition::OnHeadshotKill if !c.headshot_effects || c.companion => 0.0,
         _ => c.conditional_uptime.clamp(0.0, 1.0) * stacks,
     };
     let per = match m.per {
@@ -255,7 +265,7 @@ pub fn compute_resolved(r: Resolved, build: &Build, target: &Target) -> BuildRes
     BuildResult {
         weapon: r.weapon.name.clone(),
         weapon_id: r.weapon.id.clone(),
-        target: r.enemy.as_ref().map(|e| e.name.clone()).unwrap_or_else(|| "Raw (no enemy)".into()),
+        target: r.enemy.as_ref().map(|e| e.name.clone()).unwrap_or_else(|| "Raw (unarmored target)".into()),
         modes,
         failed_modes,
         warnings: r.warnings,
@@ -263,6 +273,9 @@ pub fn compute_resolved(r: Resolved, build: &Build, target: &Target) -> BuildRes
 }
 
 fn all_modifiers<'a>(r: &'a Resolved, build: &'a Build, mode: &'a AttackMode) -> impl Iterator<Item = &'a Modifier> {
+    let slot = r.weapon.slot;
+    // Companion weapons are fired by AI: never aiming.
+    let companion = slot == Slot::Companion;
     r.weapon
         .innate
         .iter()
@@ -271,6 +284,8 @@ fn all_modifiers<'a>(r: &'a Resolved, build: &'a Build, mode: &'a AttackMode) ->
         .chain(r.evolutions.iter().filter(move |e| form_ok(e.forms, mode)).flat_map(|e| e.modifiers.iter()))
         .chain(build.riven.iter())
         .chain(build.buffs.iter())
+        .filter(move |m| !(companion && m.aiming))
+        .filter(move |m| (m.only_slots.is_empty() || m.only_slots.contains(&slot)) && !m.not_slots.contains(&slot))
 }
 
 fn finite(v: f64, what: &str) -> Result<f64, CalcError> {
@@ -314,9 +329,16 @@ fn compute_mode(
     }
     let faction = r.enemy.as_ref().map(|e| e.faction).unwrap_or(Faction::None);
 
+    // Companion weapons: AI fire, so no aiming, headshot effects or headshot share.
+    let companion = r.weapon.slot == Slot::Companion;
+    let base_cond = Conditions {
+        companion,
+        headshot_share: if companion { 0.0 } else { build.conditions.headshot_share },
+        ..build.conditions.clone()
+    };
     let mut partials = Vec::new();
-    let mode_combo = mode.components.first().map_or(build.conditions.combo_multiplier, |c| combo_for(&build.conditions, &c.rules));
-    let mode_cond = with_combo(&build.conditions, mode_combo);
+    let mode_combo = mode.components.first().map_or(base_cond.combo_multiplier, |c| combo_for(&base_cond, &c.rules));
+    let mode_cond = with_combo(&base_cond, mode_combo);
     let mut mode_pools = Pools::default();
     for m in all_modifiers(r, build, mode) {
         mode_pools.add(m, condition_scale(m, &mode_cond));
@@ -351,12 +373,12 @@ fn compute_mode(
         .filter_map(|e| e.behaviour.as_ref().map(|b| (e.name.as_str(), b)))
         .collect();
     for comp in &mode.components {
-        let cond = with_combo(&build.conditions, combo_for(&build.conditions, &comp.rules));
+        let cond = with_combo(&base_cond, combo_for(&base_cond, &comp.rules));
         let mut p = Pools::default();
         for m in all_modifiers(r, build, mode).filter(|m| filter_ok(m.applies_to, comp)) {
             p.add(m, condition_scale(m, &cond));
         }
-        partials.push(component(r, build, comp, &p, faction, &cond, rate, &behaviours, &mut approx)?);
+        partials.push(component(r, comp, &p, faction, &cond, rate, &behaviours, &mut approx)?);
     }
 
     let magazine = mode.magazine.map(|m| ((m as f64) * (1.0 + mode_pools.magazine)).round().max(1.0) as u32);
@@ -387,7 +409,9 @@ fn compute_mode(
         Some(e) => {
             let s_corr = if corr_n >= 1.0 { (0.26 + 0.06 * (corr_n - 1.0)).min(0.8) } else { 0.26 * corr_n };
             let s_heat = if heat_on { 0.5 } else { 0.0 };
-            let eff_armor = e.armor.min(ARMOR_CAP) * (1.0 - s_heat) * (1.0 - s_corr) * (1.0 - target.armor_strip.clamp(0.0, 1.0));
+            let s_cp = (CORROSIVE_PROJECTION * target.corrosive_projection.clamp(0.0, 4.0)).min(1.0);
+            let eff_armor =
+                e.armor.min(ARMOR_CAP) * (1.0 - s_heat) * (1.0 - s_corr) * (1.0 - s_cp) * (1.0 - target.armor_strip.clamp(0.0, 1.0));
             let dr = MAX_DR * (eff_armor / ARMOR_CAP).sqrt();
             let v = if viral_n >= 1.0 { 2.0 + 0.25 * (viral_n.min(10.0) - 1.0) } else { 1.0 + viral_n };
             if viral_n > 0.0 && viral_n < 1.0 {
@@ -403,6 +427,7 @@ fn compute_mode(
                     target.corrosive_stacks.map(|x| format!(", {x:.0} outsourced")).unwrap_or_default()
                 )),
                 Explain::new("Heat strip", s_heat),
+                Explain::new("Corrosive Projection", s_cp).detail(format!("{} aura(s) x 18%", target.corrosive_projection)),
                 Explain::new("External strip", target.armor_strip),
                 Explain::new("Effective armor", eff_armor),
                 Explain::new("Damage reduction", dr).detail("0.9·√(armor/2700)"),
@@ -413,7 +438,15 @@ fn compute_mode(
             ]);
             (dr, v, Some(ex))
         }
-        None => (0.0, 1.0, None),
+        // No enemy = an unarmored target: status effects still apply (Viral), armor doesn't.
+        None => {
+            let v = if viral_n >= 1.0 { 2.0 + 0.25 * (viral_n.min(10.0) - 1.0) } else { 1.0 + viral_n };
+            let ex = (viral_n > 0.0).then(|| {
+                Explain::new("Target: unarmored (raw)", v)
+                    .child(Explain::new("Viral multiplier", v).detail(format!("{viral_n:.2} stacks ({own_viral:.2} from this weapon)")))
+            });
+            (0.0, v, ex)
+        }
     };
 
     let mut components = Vec::new();
@@ -538,7 +571,6 @@ fn compute_mode(
 #[allow(clippy::too_many_arguments)]
 fn component(
     r: &Resolved,
-    build: &Build,
     comp: &HitComponent,
     p: &Pools,
     faction: Faction,
@@ -622,8 +654,17 @@ fn component(
         modded_cc
     };
 
-    // 1-2. Base damage pool (Overwhelming Attrition stacks join it additively).
-    let b = (1.0 + p.base_damage + oa_bonus).max(0.0);
+    // GunCO: per-status damage adds to the base damage pool, or multiplies on its own, per attack.
+    let (co_factor, co_multiplies) = comp
+        .rules
+        .gun_co
+        .as_ref()
+        .map_or((1.0, false), |g| (g.factor, g.mode == GunCoMode::Multiplies));
+    let co_bonus = p.gunco * co_factor;
+    let co_mult = if co_multiplies { 1.0 + co_bonus } else { 1.0 };
+
+    // 1-2. Base damage pool (Overwhelming Attrition stacks and additive GunCO join it).
+    let b = (1.0 + p.base_damage + oa_bonus + if co_multiplies { 0.0 } else { co_bonus }).max(0.0);
     let modded_base = base_total * b;
 
     // 3. Physical mods scale their own type; 4. elements add a share of the pooled base.
@@ -662,7 +703,7 @@ fn component(
     let combo = if comp.rules.combo_scaling { cond.combo_multiplier.max(1.0) } else { 1.0 };
     // Multishot-only damage bonus applies to the extra projectiles: averaged over all of them.
     let ms_bonus = if ms > 1.0 && p.multishot_damage != 0.0 { (1.0 + (ms - 1.0) * (1.0 + p.multishot_damage)) / ms } else { 1.0 };
-    let a = (1.0 + p.ability).max(0.0) * combo * ms_bonus;
+    let a = (1.0 + p.ability).max(0.0) * combo * ms_bonus * co_mult;
 
     // 7. Crit. Expected multiplier split into its non-crit and crit parts so behaviours that act
     // on non-critical hits (Devouring Attrition) and critical headshots can be applied.
@@ -707,18 +748,21 @@ fn component(
     }
 
     // 8. Headshots: headshot ×2, critical headshots a further ×2.
-    let h = if comp.rules.can_headshot { build.conditions.headshot_share.clamp(0.0, 1.0) } else { 0.0 };
+    let h = if comp.rules.can_headshot { cond.headshot_share.clamp(0.0, 1.0) } else { 0.0 };
     let body = (1.0 - p_crit) * non_crit + crit_part;
     let head = (1.0 - p_crit) * non_crit + 2.0 * crit_part;
     let crit_hs = (1.0 - h) * body + h * 2.0 * (1.0 + p.headshot) * head;
 
-    // 9. GunCO behaviour hook.
-    if comp.rules.gun_co.is_some() {
-        approx.push("Galvanized Shot / GunCO interaction not modelled yet".into());
-    }
 
     let mut base_children = p.sources_for(|s| s == Stat::BaseDamage);
     base_children.extend(oa_explain);
+    if p.gunco != 0.0 {
+        base_children.push(Explain::new("Per-status damage (GunCO)", co_bonus).detail(format!(
+            "{} (factor {co_factor}); {}",
+            if co_multiplies { "multiplies separately" } else { "adds to base damage" },
+            if comp.rules.gun_co.is_some() { "per GunCO sheet" } else { "default (not in the sheet)" }
+        )));
+    }
     let mut crit_factor = Explain::new("Expected crit × headshot factor", crit_hs)
         .detail(format!("1 + CC·(CD−1) = {m_crit:.3}; headshot share {h:.2}"));
     if let Some(e) = da_explain {

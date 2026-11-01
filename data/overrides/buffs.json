@@ -1,35 +1,145 @@
 {
-  "_note": "External damage amplifiers, values at 100% ability strength (wiki, read 2026-11-01). subsumedValue = Helminth version. Stacking: Roar is a faction-type bonus (additive with Bane/Expel mods, double-dips on status ticks, multiplicative with everything else); Eclipse multiplies almost all other damage buffs; Nourish works like an extra Viral mod.",
+  "_note": "External damage amplifiers, values at 100% ability strength (wiki, read 2026-11-01). subsumedValue = Helminth version. Stacking: Roar is a faction-type bonus (additive with Bane/Expel mods, double-dips on status ticks, multiplicative with everything else); Eclipse multiplies almost all other damage buffs; Nourish works like an extra Viral mod. Tenacious Bond applies to your weapons only; Fired Up to companion weapons only.",
   "buffs": [
     {
-      "id": "roar", "name": "Roar", "source": "Rhino", "scalesWithStrength": true, "subsumedValue": 0.3,
-      "modifiers": [{ "source": "Roar", "stat": { "kind": "factionDamageAll" }, "value": 0.5 }],
+      "id": "roar",
+      "name": "Roar",
+      "source": "Rhino",
+      "scalesWithStrength": true,
+      "subsumedValue": 0.3,
+      "modifiers": [
+        {
+          "source": "Roar",
+          "stat": {
+            "kind": "factionDamageAll"
+          },
+          "value": 0.5
+        }
+      ],
       "note": "Faction-type bonus vs every enemy: adds to Bane/Expel mods, counts twice on status ticks. Rhino 50%, subsumed 30%."
     },
     {
-      "id": "eclipse", "name": "Eclipse (Solar)", "source": "Mirage", "scalesWithStrength": true, "subsumedValue": 0.3,
-      "modifiers": [{ "source": "Eclipse", "stat": { "kind": "abilityDamage" }, "value": 2.0 }],
+      "id": "eclipse",
+      "name": "Eclipse (Solar)",
+      "source": "Mirage",
+      "scalesWithStrength": true,
+      "subsumedValue": 0.3,
+      "modifiers": [
+        {
+          "source": "Eclipse",
+          "stat": {
+            "kind": "abilityDamage"
+          },
+          "value": 2.0
+        }
+      ],
       "note": "Multiplicative with almost all other damage buffs. Mirage 200% at max rank, subsumed 30%."
     },
     {
-      "id": "nourish", "name": "Nourish", "source": "Grendel", "scalesWithStrength": true, "subsumedValue": 0.45,
-      "modifiers": [{ "source": "Nourish", "stat": { "kind": "element", "of": "viral" }, "value": 0.75 }],
+      "id": "nourish",
+      "name": "Nourish",
+      "source": "Grendel",
+      "scalesWithStrength": true,
+      "subsumedValue": 0.45,
+      "modifiers": [
+        {
+          "source": "Nourish",
+          "stat": {
+            "kind": "element",
+            "of": "viral"
+          },
+          "value": 0.75
+        }
+      ],
       "note": "Works like an extra Viral mod. Grendel 75%, subsumed 45%."
     },
     {
-      "id": "vex-armor", "name": "Vex Armor (Fury, max)", "source": "Chroma", "scalesWithStrength": true,
-      "modifiers": [{ "source": "Vex Armor", "stat": { "kind": "baseDamage" }, "value": 2.75 }],
+      "id": "vex-armor",
+      "name": "Vex Armor (Fury, max)",
+      "source": "Chroma",
+      "scalesWithStrength": true,
+      "modifiers": [
+        {
+          "source": "Vex Armor",
+          "stat": {
+            "kind": "baseDamage"
+          },
+          "value": 2.75
+        }
+      ],
       "note": "Additive with Serration-type base damage mods. Verify value."
     },
     {
-      "id": "xatas-whisper", "name": "Xata's Whisper", "source": "Xaku", "scalesWithStrength": true,
-      "modifiers": [{ "source": "Xata's Whisper", "stat": { "kind": "element", "of": "void" }, "value": 0.26 }],
+      "id": "xatas-whisper",
+      "name": "Xata's Whisper",
+      "source": "Xaku",
+      "scalesWithStrength": true,
+      "modifiers": [
+        {
+          "source": "Xata's Whisper",
+          "stat": {
+            "kind": "element",
+            "of": "void"
+          },
+          "value": 0.26
+        }
+      ],
       "note": "Adds Void damage as its own element. Verify value."
     },
     {
-      "id": "arcane-avenger", "name": "Arcane Avenger", "source": "Warframe arcane", "scalesWithStrength": false,
-      "modifiers": [{ "source": "Arcane Avenger", "stat": { "kind": "critChance" }, "value": 0.45 }],
+      "id": "arcane-avenger",
+      "name": "Arcane Avenger",
+      "source": "Warframe arcane",
+      "scalesWithStrength": false,
+      "modifiers": [
+        {
+          "source": "Arcane Avenger",
+          "stat": {
+            "kind": "critChance"
+          },
+          "value": 0.45
+        }
+      ],
       "note": "Additive with crit chance mods; assumes full uptime."
+    },
+    {
+      "id": "tenacious-bond",
+      "name": "Tenacious Bond",
+      "source": "Companion mod",
+      "scalesWithStrength": false,
+      "modifiers": [
+        {
+          "source": "Tenacious Bond",
+          "stat": {
+            "kind": "critDamageFlat"
+          },
+          "value": 1.2,
+          "notSlots": [
+            "companion"
+          ]
+        }
+      ],
+      "note": "+1.2x final crit multiplier on your weapons while the companion's crit chance is at least 50% (check it on the companion weapon). Not the companion's own weapon."
+    },
+    {
+      "id": "fired-up",
+      "name": "Fired Up (max stacks)",
+      "source": "Sentinel mod",
+      "scalesWithStrength": false,
+      "modifiers": [
+        {
+          "source": "Fired Up",
+          "stat": {
+            "kind": "element",
+            "of": "heat"
+          },
+          "value": 1.0,
+          "onlySlots": [
+            "companion"
+          ]
+        }
+      ],
+      "note": "Sentinel weapons only: +5% Heat per hit up to +100% (20 hits), resets after 5s without hits."
     }
   ]
 }

@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { fetchWiki, wikiJson } from "./fetch-wiki.ts";
 import { meleeModes, wikiMeleeEntry } from "./melee.ts";
 import { scrapeEvolutions, type ScrapedEvolution } from "./evolutions.ts";
+import { matchGunCo, readGunCo } from "./gunco.ts";
+import { existsSync } from "node:fs";
 
 await fetchWiki();
 
@@ -17,7 +19,7 @@ const load = (f: string) => JSON.parse(readFileSync(join(wfcdDir, f), "utf8"));
 const override = (f: string) => JSON.parse(readFileSync(join(root, "data/overrides", f), "utf8"));
 
 type Stat = { kind: string; of?: string };
-type Modifier = { source: string; stat: Stat; value: number; maxStacks?: number; condition?: string; per?: string; appliesTo?: string; threshold?: number };
+type Modifier = { source: string; stat: Stat; value: number; maxStacks?: number; condition?: string; per?: string; appliesTo?: string; threshold?: number; aiming?: boolean };
 
 /** Split off "per Status Type" / "per Combo Multiplier" qualifiers. */
 function splitPer(text: string): [string, string | undefined] {
@@ -108,8 +110,16 @@ function parseMeleeLine(source: string, line: string): Modifier[] | null {
   return null;
 }
 
-/** Parse one stat line into modifiers; returns null when it can't be read. */
+/** Parse one stat line into modifiers; "when Aiming" effects are flagged (companion AI never aims). */
 function parseLine(source: string, raw: string): Modifier[] | null {
+  if (/ when Aiming/i.test(raw)) {
+    const r = parseLineInner(source, raw.replace(/ when Aiming/gi, ""));
+    return r && r.map((m) => ({ ...m, aiming: true }));
+  }
+  return parseLineInner(source, raw);
+}
+
+function parseLineInner(source: string, raw: string): Modifier[] | null {
   const line = raw.replace(/<[^>]+>/g, "").replace(/\\n/g, "\n").trim();
   const melee = parseMeleeLine(source, line.replace(/\s+/g, " "));
   if (melee) return melee;
@@ -302,7 +312,11 @@ function exclusiveGroup(name: string, pool: string): string | undefined {
 }
 
 function buildMods() {
-  const mods = (load("Mods.json") as any[]).filter((m) => POOLS[m.type] && (m.levelStats?.length || /Enables Tennokai/i.test(m.description ?? "")));
+  const all = (load("Mods.json") as any[]).filter((m) => POOLS[m.type] && (m.levelStats?.length || /Enables Tennokai/i.test(m.description ?? "")));
+  // Datamined, unreleased mods (e.g. "Soaring Truth"): no wiki page and no drop source.
+  const unreleased = all.filter((m) => !m.wikiaUrl && !(m.drops?.length));
+  console.log(`unreleased mods dropped (${unreleased.length}): ${unreleased.map((m) => m.name).join(", ")}`);
+  const mods = all.filter((m) => !unreleased.includes(m));
   const out = mods.map((m) => {
     const pool = POOLS[m.type];
     const compatRaw = String(m.compatName ?? "").toLowerCase();
@@ -421,9 +435,21 @@ function damageMap(d: Record<string, number>) {
   return out;
 }
 
+// Wiki gun entries by internal path: per-attack multishot (WFCD only has the weapon's).
+const wikiGuns = new Map<string, any>();
+for (const file of ["primary.json", "secondary.json"]) {
+  for (const w of Object.values(wikiJson(file)) as any[]) if (w?.InternalName) wikiGuns.set(w.InternalName, w);
+}
+const normName = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+
 function buildWeapon(w: any, slotFile: string) {
   const isMelee = slotFile === "Melee";
-  const multishot = w.multishot ?? 1;
+  const weaponMultishot = w.multishot ?? 1;
+  const wikiAttacks: any[] = wikiGuns.get(w.uniqueName)?.Attacks ?? [];
+  const attackMultishot = (name: string): number => {
+    const a = wikiAttacks.find((x) => normName(x.AttackName ?? "") === normName(name));
+    return a ? a.Multishot ?? 1 : weaponMultishot;
+  };
   const modes: any[] = [];
   const tags = new Set<string>();
   for (const a of w.attacks ?? []) {
@@ -431,7 +457,7 @@ function buildWeapon(w: any, slotFile: string) {
     const comp = {
       name: a.name, kind: kindOf(a), damage: damageMap(a.damage),
       critChance: (a.crit_chance ?? 0) / 100, critMult: a.crit_mult ?? 1, statusChance: (a.status_chance ?? 0) / 100,
-      multishot, ...(a.falloff ? { falloff: { startM: a.falloff.start, endM: a.falloff.end, reduction: a.falloff.reduction ?? 0 } } : {}),
+      multishot: attackMultishot(a.name), ...(a.falloff ? { falloff: { startM: a.falloff.start, endM: a.falloff.end, reduction: a.falloff.reduction ?? 0 } } : {}),
       rules: { canHeadshot: kindOf(a) !== "radial", receivesMultishot: true, comboScaling: isMelee && /Heavy/i.test(a.name) },
     };
     const prev = modes.at(-1);
@@ -552,6 +578,26 @@ const weapons = buildWeapons();
     w.sources.evolutions = `wiki ${s.page}`;
   }
 }
+// GunCO: additive vs multiplicative per-status damage, per weapon attack (community sheet).
+const gunCoSheet = join(root, "attachments/Galvanized GunCO on Projectiles - 32.2.10 edition.xlsx");
+let gunCoReport: any = { sheet: "missing" };
+if (existsSync(gunCoSheet)) {
+  const rows = readGunCo(gunCoSheet);
+  const guns = weapons.filter((w) => w.slot !== "melee");
+  const { matches, unmatched } = matchGunCo(rows, guns);
+  let applied = 0;
+  for (const m of matches) {
+    const w = guns.find((x) => x.name === m.weapon)!;
+    for (const i of m.modes) {
+      for (const c of w.modes[i].components) {
+        c.rules.gunCo = { factor: m.row.factor, mode: m.row.mode === "multiplies" ? "multiplies" : "adds" };
+        applied++;
+      }
+    }
+  }
+  gunCoReport = { rows: rows.length, matched: matches.length, components: applied, unmatched: unmatched.map((r) => `${r.name} (${r.mode}, ${r.factor}) [${r.edition}]`) };
+  console.log(`GunCO sheet: ${rows.length} rows, ${matches.length} matched (${applied} attack components), ${unmatched.length} unmatched`);
+}
 const mods = buildMods();
 const arcanes = buildArcanes();
 const enemies = override("enemies.json").enemies;
@@ -562,6 +608,7 @@ const hash = createHash("sha256").update(JSON.stringify(body)).digest("hex").sli
 const gamedata = {
   version: hash, generatedAt: new Date().toISOString(),
   sources: {
+    gunco: "Galvanized GunCO on Projectiles sheet (rainy, tests by Prof_Blocks_007)",
     wfcd: `@wfcd/items ${wfcdVersion} (MIT)`,
     wiki: "wiki.warframe.com melee and stance modules (CC BY-NC-SA 3.0)",
     overrides: "data/overrides",
@@ -585,4 +632,4 @@ console.log(`evolutions: ${weapons.filter((w) => w.evolutions).length} weapons, 
 const bySlot = Object.entries(weapons.reduce((a: Record<string, number>, w) => ((a[w.slot] = (a[w.slot] ?? 0) + 1), a), {})).map(([k, v]) => `${v} ${k}`).join(", ");
 console.log(`gamedata ${hash}: ${weapons.length} weapons (${bySlot}), ${modesN} attack modes, ${mods.length} mods, ${arcanes.length} arcanes, ${buffs.length} buffs`);
 console.log(`unsupported modes: ${unsupported.length}; mods with unparsed effects: ${unparsedMods.length}`);
-writeFileSync(join(root, "data/ingest-report.json"), JSON.stringify({ unsupported, unparsedMods: unparsedMods.map((m) => ({ name: m.name, unparsed: m.unparsed })), unparsedEvolutions: evoUnparsed }, null, 2));
+writeFileSync(join(root, "data/ingest-report.json"), JSON.stringify({ unsupported, unparsedMods: unparsedMods.map((m) => ({ name: m.name, unparsed: m.unparsed })), unparsedEvolutions: evoUnparsed, gunCo: gunCoReport }, null, 2));

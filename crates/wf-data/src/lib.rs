@@ -443,6 +443,15 @@ pub struct Modifier {
     /// Threshold for threshold conditions (CritChanceBelow), as a fraction.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold: Option<f64>,
+    /// Only while aiming ("when Aiming"): never active on companion weapons, whose AI doesn't aim.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub aiming: bool,
+    /// Weapon slots this modifier applies to (empty = all). Buffs like Fired Up use it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub only_slots: Vec<Slot>,
+    /// Weapon slots it never applies to (Tenacious Bond: not the companion's own weapon).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_slots: Vec<Slot>,
 }
 
 fn one() -> u8 { 1 }

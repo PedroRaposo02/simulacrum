@@ -17,6 +17,9 @@ pub struct Conditions {
     pub heavy_combo_multiplier: f64,
     /// Whether on-headshot / on-weak-point-kill effects are active (Deadhead, Galvanized Crosshairs).
     pub headshot_effects: bool,
+    /// Set by the engine for companion weapons: their AI doesn't aim or reliably headshot.
+    #[serde(skip)]
+    pub companion: bool,
 }
 
 impl Default for Conditions {
@@ -28,6 +31,7 @@ impl Default for Conditions {
             combo_multiplier: 12.0,
             heavy_combo_multiplier: 5.0,
             headshot_effects: true,
+            companion: false,
         }
     }
 }
@@ -55,6 +59,8 @@ pub struct Target {
     pub profile: Option<EnemyProfile>,
     /// External armor strip 0..1 (abilities, shattering impact...).
     pub armor_strip: f64,
+    /// Corrosive Projection auras in the squad (0-4), -18% armor each at max rank.
+    pub corrosive_projection: f64,
     /// Outsourced status from allies or abilities. The engine uses the higher of this and
     /// the stacks the weapon keeps up by itself.
     pub viral_stacks: Option<f64>,

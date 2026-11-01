@@ -31,6 +31,9 @@ enum Cmd {
         mods: Vec<String>,
         #[arg(long)]
         arcane: Option<String>,
+        /// Incarnon evolutions, comma separated.
+        #[arg(long, value_delimiter = ',')]
+        evolutions: Vec<String>,
         #[arg(long)]
         enemy: Option<String>,
         #[arg(long)]
@@ -61,8 +64,8 @@ enum Cmd {
         heavy: bool,
         #[arg(long, default_value_t = 5.0)]
         heavy_combo: f64,
-        /// Objective: burst | sustained | per-shot | per-charge.
-        #[arg(long, default_value = "burst")]
+        /// Objective: balanced | burst | sustained | per-shot | per-charge.
+        #[arg(long, default_value = "balanced")]
         objective: String,
         /// Comfort for guns: maximum fire rate (shots/s).
         #[arg(long)]
@@ -242,7 +245,7 @@ fn print_optimized(r: &OptimizeResult) {
 fn run() -> Result<bool, String> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Explain { weapon, build, mods, arcane, enemy, json } => {
+        Cmd::Explain { weapon, build, mods, arcane, evolutions, enemy, json } => {
             let data = load(&cli.data)?;
             let mut b: Build = match build {
                 Some(p) => serde_json::from_str(&std::fs::read_to_string(&p).map_err(|e| e.to_string())?)
@@ -255,6 +258,9 @@ fn run() -> Result<bool, String> {
             }
             if arcane.is_some() {
                 b.arcane = arcane;
+            }
+            if !evolutions.is_empty() {
+                b.evolutions = evolutions.into_iter().map(|e| e.trim().to_string()).collect();
             }
             let target = Target { enemy, ..Default::default() };
             let res = compute(&data, &b, &target).map_err(|e| e.to_string())?;
@@ -351,7 +357,8 @@ fn run() -> Result<bool, String> {
                     "sustained" => wf_opt::Objective::Sustained,
                     "per-shot" => wf_opt::Objective::PerShot,
                     "per-charge" => wf_opt::Objective::PerCharge,
-                    _ => wf_opt::Objective::Burst,
+                    "burst" => wf_opt::Objective::Burst,
+                    _ => wf_opt::Objective::Balanced,
                 };
                 let opts = OptimizeOptions { riven, mode, objective, max_fire_rate, min_attack_speed, range_tolerance, capacity: cap, ..Default::default() };
                 let t0 = std::time::Instant::now();

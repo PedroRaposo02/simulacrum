@@ -77,7 +77,7 @@ fn reported_dps_matches_engine() {
     let r = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &OptimizeOptions::default()).unwrap();
     let b = r.to_build(&d, &Build::default());
     assert!((burst(&d, &b, &Target::default(), r.mode_index) - r.burst_dps).abs() < 1e-6 * r.burst_dps);
-    assert_eq!(r.mods.len(), 8, "all normal slots used: {:?}", r.mods);
+    assert!(r.mods.len() >= 8, "all normal slots used: {:?}", r.mods);
 }
 
 #[test]
@@ -200,8 +200,8 @@ fn matching_polarities_halve_drain() {
 #[test]
 fn attack_speed_floor_is_met_when_possible() {
     let d = fixture();
-    let plain = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &OptimizeOptions::default()).unwrap();
-    let o = OptimizeOptions { min_attack_speed: Some(5.5), ..Default::default() };
+    let plain = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &OptimizeOptions { objective: Objective::Burst, ..Default::default() }).unwrap();
+    let o = OptimizeOptions { min_attack_speed: Some(5.5), objective: Objective::Burst, ..Default::default() };
     let r = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &o).unwrap();
     let b = r.to_build(&d, &Build::default());
     let fire_rate = compute(&d, &b, &Target::default()).unwrap().modes[0].fire_rate;
@@ -224,6 +224,9 @@ fn fixed_riven_grades_below_or_at_god_roll() {
         condition: wf_data::Condition::Always,
         per: None,
         threshold: None,
+        aiming: false,
+        only_slots: vec![],
+        not_slots: vec![],
     }];
     let graded = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { fixed_riven: weak, ..Default::default() }).unwrap();
     assert!(graded.burst_dps < god.burst_dps);
@@ -235,12 +238,25 @@ fn fixed_riven_grades_below_or_at_god_roll() {
 #[test]
 fn objective_per_charge_ignores_fire_rate_and_cap_is_respected() {
     let d = fixture();
-    let t = Target::default();
-    let burst = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions::default()).unwrap();
+    // Viral held at 10 stacks, so fire rate can't add value through faster stacking.
+    let t = Target { viral_stacks: Some(10.0), ..Default::default() };
+    let burst = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { objective: Objective::Burst, ..Default::default() }).unwrap();
     let per = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { objective: Objective::PerCharge, ..Default::default() }).unwrap();
     assert!(per.per_shot >= burst.per_shot, "damage per magazine favours damage over fire rate");
     assert!(!per.mods.iter().any(|m| m == "Gunslinger"), "{:?}", per.mods);
-    let capped = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { max_fire_rate: Some(3.0), ..Default::default() }).unwrap();
+    let capped = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { max_fire_rate: Some(3.0), objective: Objective::Burst, ..Default::default() }).unwrap();
     assert!(capped.fire_rate <= 3.0 + 1e-9, "fire rate {}", capped.fire_rate);
     assert!(!capped.below_attack_speed_floor);
+}
+
+#[test]
+fn balanced_objective_ignores_fire_rate_above_the_comfort_cap() {
+    let mut d = fixture();
+    // Make base fire rate already above the semi-auto cap (6/s): extra fire rate is worthless.
+    d.weapons[0].modes[0].fire_rate = 8.0;
+    let t = Target { viral_stacks: Some(10.0), ..Default::default() };
+    let r = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions::default()).unwrap();
+    assert_eq!(r.objective, Objective::Balanced);
+    assert!(!r.mods.iter().any(|m| m == "Gunslinger" || m == "Lethal Torrent"), "{:?}", r.mods);
+    assert!((comfort_rate_cap(&d.weapons[0].modes[0]) - 10.0).abs() < 1e-9, "base x1.25 beats the semi cap");
 }
