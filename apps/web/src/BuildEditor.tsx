@@ -7,6 +7,8 @@ import MeleeSummary from "./MeleeSummary";
 import OptimizerControls, { type ComfortSettings, type OptimizerState } from "./OptimizerControls";
 import SavedBuilds from "./SavedBuilds";
 import { weaponTypeLabel } from "./labels";
+import { buildJson, buildMarkdown } from "./exportBuild";
+import { downloadJson } from "./store";
 import ModGrid, { modSummary as cardSummary } from "./ModGrid";
 
 type ModView = "cards" | "list";
@@ -520,6 +522,35 @@ export default function BuildEditor() {
             >
               {copied ? "Link copied" : "Copy share link"}
             </button>
+            <select
+              className="field w-auto py-1.5 text-sm"
+              value=""
+              aria-label="Export build"
+              onChange={(e) => {
+                const kind = e.target.value;
+                e.target.value = "";
+                const name = `${weapon.name} build`;
+                const slug = weapon.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+                const note = `${scenario.target.enemy ?? "raw target"} · conditional uptime ${Math.round(scenario.conditions.conditionalUptime * 100)}%`;
+                if (kind === "json" || kind === "both") downloadJson(`${slug}.json`, buildJson(name, build));
+                if (kind === "md" || kind === "both") {
+                  const md = buildMarkdown(data!, weapon, build, result?.ok, note);
+                  const url = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${slug}.md`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }
+              }}
+            >
+              <option value="" disabled>
+                Export…
+              </option>
+              <option value="json">JSON (re-importable)</option>
+              <option value="md">Markdown</option>
+              <option value="both">Both</option>
+            </select>
           </div>
         )}
         {weapon && (
