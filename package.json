@@ -7,7 +7,7 @@
     "dev": "pnpm --filter @wf/web run dev",
     "build:wasm": "pnpm --filter @wf/web run build:wasm",
     "build": "pnpm --filter @wf/web run build",
-    "optimize": "cargo run --release -p wf-cli -- optimize --all && node -e \"require('fs').copyFileSync('data/best-builds.json','apps/web/public/best-builds.json')\"",
+    "optimize": "cargo run --release -p wf-cli -- optimize --all && node -e \"const f=require('fs');f.mkdirSync('apps/web/public',{recursive:true});f.copyFileSync('data/best-builds.json','apps/web/public/best-builds.json')\"",
     "test": "cargo test --workspace"
   }
 }

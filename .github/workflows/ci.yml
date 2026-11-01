@@ -41,5 +41,5 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:wasm
-      - run: cp data/gamedata.json apps/web/public/gamedata.json
+      - run: mkdir -p apps/web/public && cp data/gamedata.json apps/web/public/gamedata.json
       - run: pnpm build

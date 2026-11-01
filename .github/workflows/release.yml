@@ -39,6 +39,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:wasm
+      - run: mkdir -p apps/web/public
       - name: Precompute best builds
         run: pnpm optimize
       - run: cp data/gamedata.json apps/web/public/gamedata.json
