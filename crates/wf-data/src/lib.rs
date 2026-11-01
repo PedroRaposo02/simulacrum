@@ -267,6 +267,9 @@ pub struct Evolution {
     pub modifiers: Vec<Modifier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behaviour: Option<BehaviourDef>,
+    /// Effect text the ingest couldn't turn into modifiers (shown as "not modelled").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unparsed: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -357,6 +360,18 @@ pub enum Stat {
     CritChanceFlat,
     /// Flat status chance added after mods (Elemental Excess).
     StatusChanceFlat,
+    /// Added to the attack's base damage before any mod (Incarnon "Increase Base Damage by +X").
+    BaseDamageFlat,
+    /// Added to the base crit chance / crit multiplier / status chance, then multiplied by mods.
+    CritChanceBase,
+    CritMultBase,
+    StatusChanceBase,
+    /// Separate multiplier on the extra projectiles from multishot only ("Multishot … +60% Damage").
+    MultishotDamage,
+    /// Base status chance += value x current crit chance, capped at `threshold`.
+    StatusChanceBaseFromCrit,
+    /// Base crit chance += value x current status chance, capped at `threshold`.
+    CritChanceBaseFromStatus,
     CritDamage,
     CritDamageFlat,
     StatusChance,
@@ -364,6 +379,8 @@ pub enum Stat {
     Magazine,
     ReloadSpeed,
     FactionDamage(Faction),
+    /// Faction-type bonus against every enemy (Roar): additive with faction mods, double-dips on DoTs.
+    FactionDamageAll,
     HeadshotDamage,
     StatusDuration,
     /// Ability damage buffs (Roar, Eclipse): one additive pool, applied as a final multiplier.
@@ -389,6 +406,10 @@ pub enum ComponentFilter {
 #[serde(rename_all = "camelCase")]
 pub enum Condition {
     Always,
+    /// Active only while the build's crit chance is below `threshold` (Prelude of Might).
+    CritChanceBelow,
+    /// Active while the target has fewer than `threshold` status types (Conditions.status_types).
+    StatusTypesBelow,
     OnKill,
     OnHeadshot,
     OnHeadshotKill,
@@ -419,6 +440,9 @@ pub struct Modifier {
     pub condition: Condition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per: Option<PerCount>,
+    /// Threshold for threshold conditions (CritChanceBelow), as a fraction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threshold: Option<f64>,
 }
 
 fn one() -> u8 { 1 }
@@ -463,6 +487,11 @@ pub struct Mod {
     /// Stat lines the ingest parser could not turn into modifiers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unparsed: Vec<String>,
+    /// Common / Uncommon / Rare / Legendary (card frame colour in the UI).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rarity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -475,6 +504,10 @@ pub struct Arcane {
     #[serde(default)]
     pub modifiers: Vec<Modifier>,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rarity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -581,6 +614,9 @@ pub struct BuffDef {
     /// Values are at 100% ability strength when true.
     pub scales_with_strength: bool,
     pub modifiers: Vec<Modifier>,
+    /// Value of the first modifier when the ability is subsumed onto another frame (Helminth).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subsumed_value: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }

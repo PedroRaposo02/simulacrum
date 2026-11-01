@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fetchWiki, wikiJson } from "./fetch-wiki.ts";
 import { meleeModes, wikiMeleeEntry } from "./melee.ts";
+import { scrapeEvolutions, type ScrapedEvolution } from "./evolutions.ts";
 
 await fetchWiki();
 
@@ -16,7 +17,7 @@ const load = (f: string) => JSON.parse(readFileSync(join(wfcdDir, f), "utf8"));
 const override = (f: string) => JSON.parse(readFileSync(join(root, "data/overrides", f), "utf8"));
 
 type Stat = { kind: string; of?: string };
-type Modifier = { source: string; stat: Stat; value: number; maxStacks?: number; condition?: string; per?: string; appliesTo?: string };
+type Modifier = { source: string; stat: Stat; value: number; maxStacks?: number; condition?: string; per?: string; appliesTo?: string; threshold?: number };
 
 /** Split off "per Status Type" / "per Combo Multiplier" qualifiers. */
 function splitPer(text: string): [string, string | undefined] {
@@ -47,7 +48,12 @@ const DAMAGE_KEYS: Record<string, string> = { ...ELEMENTS, ...PHYSICAL, Void: "v
 // Stats that never change damage output; dropped instead of reported as unparsed.
 const IRRELEVANT = /Punch Through|Recoil|Ammo Maximum|Ammo Pick Up|Projectile Speed|Zoom|Accuracy|Health Orbs|Minimap|Movement Speed|Holstered|Heal Rate|Shield Recharge|hear gunfire|Beam Range|Blast Range|Flight Speed|Holster|Chance to Explode|'\w+'|Ammo Efficiency|Spread|Sprint Speed|Dodge Speed|Revive Speed|Combo Count|Life Steal|Mobility|Slide|Combo Duration|Heavy Attack Efficiency|Wind Up|Finisher|Range|Bounce|Initial Combo|Channeling|Block|Parry|Throw/i;
 
-function statOf(name: string): Stat | null {
+function statOf(rawName: string): Stat | null {
+  // Case-insensitive match against the canonical stat names.
+  const canon = ["Damage", "Direct Damage", "Melee Damage", "Attack Speed", "Multishot", "Critical Chance", "Critical Damage", "Status Chance", "Fire Rate", "Magazine Capacity", "Reload Speed", "Status Duration", "Headshot Damage", "Weak Point Damage"];
+  let name = rawName;
+  const hit = canon.find((c) => c.toLowerCase() === rawName.trim().toLowerCase());
+  if (hit) name = hit;
   // Drop qualifiers such as "(x2 for Bows)" or "(x2 for Heavy Attacks)"; the base effect is what normal attacks get.
   name = name.trim().replace(/\s*\(x\d+ for [^)]+\)/, "");
   if (name === "Damage" || name === "Direct Damage" || name === "Melee Damage") return { kind: "baseDamage" };
@@ -131,6 +137,156 @@ function parseLine(source: string, raw: string): Modifier[] | null {
   return IRRELEVANT.test(line) ? [] : null;
 }
 
+// ---- Incarnon evolutions -------------------------------------------------------------------
+
+// Effects that never change damage output.
+const EVO_IRRELEVANT = /Ammo|Magazine|Transmutation|Overshield|Accuracy|Punch Through|Recoil|Projectile Speed|Movement|Holster|Reload Speed|Sprint|Parkour|Aim Glid|Slide|Finisher|Parry|Block|Armor Over|Bounce|Zoom|Range|Instant Reload|Health|Shield Gate|Energy restored|Radar|Ammo Efficiency/i;
+
+const EVO_CONDITIONS: [RegExp, string][] = [
+  [/^On Kill/i, "onKill"],
+  [/^On Headshot Kill|^On Weak ?point Kill/i, "onHeadshotKill"],
+  [/^On Headshot|^On Weak ?point Hit|^On Consecutive Weakpoint/i, "onHeadshot"],
+  [/^On Reload/i, "onReload"],
+];
+
+/** One evolution sentence -> modifiers; null if it can't be read. `cond` is a "With …:" / "On …:" prefix in effect. */
+function parseEvolutionSentence(source: string, text: string, cond: string | null): Modifier[] | null {
+  let t = text.trim().replace(/\.$/, "");
+  let maxStacks = 1;
+  const stacks = t.match(/\s*Stacks? up to (\d+)(?:x| times)\.?$/i);
+  if (stacks) {
+    maxStacks = +stacks[1];
+    t = t.slice(0, stacks.index).trim().replace(/\.$/, "");
+  }
+  t = t
+    .replace(/\s*Effect doubles in Incarnon Form\.?$/i, "")
+    .replace(/ for [\d.]+ ?s(?:econds?)?$/i, "")
+    .replace(/ for Incarnon Form$/i, "")
+    .trim();
+  const undamaged = / on undamaged enemies$/i.test(t);
+  if (undamaged) {
+    t = t.replace(/ on undamaged enemies$/i, "");
+    cond ??= "On undamaged enemies";
+  }
+  const withCond = (m: Modifier): Modifier => {
+    if (maxStacks > 1) m.maxStacks = maxStacks;
+    if (!cond) return m;
+    const below = cond.match(/Critical Chance Below ([\d.]+)%/i);
+    if (below) return { ...m, condition: "critChanceBelow", threshold: +below[1] / 100 };
+    const known = EVO_CONDITIONS.find(([re]) => re.test(cond));
+    // Other situational triggers ("With Channeled Ability active", "On Shield Break"...) use the uptime slider.
+    return { ...m, source: `${m.source} (${cond.toLowerCase()})`, condition: known ? known[1] : "onKill" };
+  };
+  let m: RegExpMatchArray | null;
+  if ((m = t.match(/^Increase (?:Base )?Damage by \+?([\d.]+)$/i))) return [withCond({ source, stat: { kind: "baseDamageFlat" }, value: +m[1] })];
+  if ((m = t.match(/^Increase Critical Chance by \+?([\d.]+)%$/i))) return [withCond({ source, stat: { kind: "critChance" }, value: +m[1] / 100 })];
+  if ((m = t.match(/^Increase Status Chance by \+?([\d.]+)%$/i))) return [withCond({ source, stat: { kind: "statusChance" }, value: +m[1] / 100 })];
+  if ((m = t.match(/^Increase Base Status Chance by \+?([\d.]+)% of current Critical Chance, up to \+?([\d.]+)%$/i)))
+    return [withCond({ source, stat: { kind: "statusChanceBaseFromCrit" }, value: +m[1] / 100, threshold: +m[2] / 100 })];
+  if ((m = t.match(/^Increase Base Critical Chance by \+?([\d.]+)% of current Status Chance, up to \+?([\d.]+)%$/i)))
+    return [withCond({ source, stat: { kind: "critChanceBaseFromStatus" }, value: +m[1] / 100, threshold: +m[2] / 100 })];
+  if ((m = t.match(/^Increase Base Critical Chance by \+?([\d.]+)%$/i))) return [withCond({ source, stat: { kind: "critChanceBase" }, value: +m[1] / 100 })];
+  if ((m = t.match(/^Increase Base Critical (?:Damage )?Multiplier by \+?([\d.]+)x$/i))) return [withCond({ source, stat: { kind: "critMultBase" }, value: +m[1] })];
+  if ((m = t.match(/^Increase Base Status(?: Chance)? by \+?([\d.]+)%(?: per projectile)?$/i))) return [withCond({ source, stat: { kind: "statusChanceBase" }, value: +m[1] / 100 })];
+  if ((m = t.match(/^Multishot consumes ammo directly from Capacity and (?:does|increases Damage by) \+?([\d.]+)%(?: Damage)?$/i)))
+    return [withCond({ source, stat: { kind: "multishotDamage" }, value: +m[1] / 100 })];
+  if ((m = t.match(/^\+?([\d.]+) (?:Base )?Multishot$/i))) return [withCond({ source, stat: { kind: "multishot" }, value: +m[1] })];
+  // "Enemies suffering from fewer than 3 Status Effects will receive: +100% Critical Damage"
+  if ((m = t.match(/^Enemies suffering from fewer than (\d+) Status Effects will receive:?\s*\+?([\d.]+)% ([A-Za-z ]+)$/i))) {
+    const stat = statOf(m[3]);
+    if (stat) return [{ source: `${source} (fewer than ${m[1]} statuses)`, stat, value: +m[2] / 100, condition: "statusTypesBelow", threshold: +m[1] }];
+  }
+  // "+25% Multishot if no enemies are within 5m": situational, uses the uptime slider.
+  if ((m = t.match(/^([+-]?[\d.]+)% ([A-Za-z ]+?) if (.+)$/))) {
+    const stat = statOf(m[2]);
+    if (stat) return [{ source: `${source} (if ${m[3]})`, stat, value: +m[1] / 100, condition: "onKill" }];
+  }
+  // A timed bonus with no trigger named ("+50% Headshot damage for 8 seconds") is situational too.
+  if (!cond && (m = text.trim().replace(/\.$/, "").match(/^([+-]?[\d.]+)% ([A-Za-z ]+?) for [\d.]+ ?s(?:econds?)?$/i))) {
+    const stat = statOf(m[2]);
+    if (stat) return [{ source: `${source} (timed)`, stat, value: +m[1] / 100, condition: "onKill" }];
+  }
+  // A plain stat behind any trigger ("On Firing: +20% Multishot").
+  if (cond && (m = t.match(/^([+-]?[\d.]+)% ([A-Za-z ]+)$/))) {
+    const stat = statOf(m[2]);
+    if (stat) return [withCond({ source, stat, value: +m[1] / 100 })];
+    if (EVO_IRRELEVANT.test(m[2])) return [];
+  }
+  // Standard stat lines ("+20% Fire Rate", "+40% Direct Damage per Status Type…").
+  const std = parseLine(source, cond && !/Critical Chance Below/i.test(cond) ? `${cond}:\n${t}${maxStacks > 1 ? ` Stacks up to ${maxStacks}x.` : ""}` : t);
+  if (std && std.length) {
+    if (cond && /Critical Chance Below/i.test(cond)) return std.map(withCond);
+    return std;
+  }
+  if (std && !std.length) return [];
+  return EVO_IRRELEVANT.test(t) ? [] : null;
+}
+
+const NAMED_BEHAVIOURS: Record<string, (text: string) => any | null> = {
+  "Devouring Attrition": (t) => {
+    const m = t.match(/([\d.]+)% chance to deal \+?([\d.]+)% damage on non-critical/i);
+    return m ? { kind: "devouringAttrition", chance: +m[1] / 100, bonus: +m[2] / 100, ignoredByBosses: true } : null;
+  },
+  "Overwhelming Attrition": (t) => {
+    const m = t.match(/\+?([\d.]+)% damage for ([\d.]+) ?s(?:econds?)?\. Stacks up to (\d+)/i);
+    return m ? { kind: "overwhelmingAttrition", bonus: +m[1] / 100, maxStacks: +m[3], durationS: +m[2] } : null;
+  },
+};
+
+function evolutionForms(e: ScrapedEvolution): string {
+  const all = [...e.effects, ...e.notes].join(" ");
+  if (/(does not|doesn't) (apply|affect)(?: to)? (?:the )?Incarnon Form|Only affects (?:the )?(?:untransformed|normal)/i.test(all)) return "normal";
+  if (/Only (?:affects|applies to|active in) (?:the )?Incarnon Form|for Incarnon Form/i.test(all) && !/both (forms|modes)/i.test(all)) return "incarnon";
+  return "both";
+}
+
+function parseEvolution(e: ScrapedEvolution) {
+  const text = e.effects.join(" ");
+  // Named mechanics are recognised by their text, since a few weapons reuse them under other names.
+  for (const fn of Object.values(NAMED_BEHAVIOURS)) {
+    const behaviour = fn(text);
+    if (behaviour) return { name: e.name, text, forms: evolutionForms(e), behaviour };
+  }
+  const modifiers: Modifier[] = [];
+  const unparsed: string[] = [];
+  for (const bullet of e.effects) {
+    let cond: string | null = null;
+    let body = bullet.replace(/\s+/g, " ").trim();
+    const prefix = body.match(/^((?:On|With|While)[^:]{2,60}):\s*(.*)$/i);
+    if (prefix) {
+      cond = prefix[1].trim();
+      body = prefix[2];
+    }
+    // Sentences: split on ". " but keep decimals; re-attach "Stacks up to" to the clause before it.
+    const parts = body.split(/\.\s+(?=[A-Z+\-])/).map((x) => x.trim()).filter(Boolean);
+    const merged: string[] = [];
+    for (const part of parts) {
+      if (/^Stacks? up to/i.test(part) && merged.length) merged[merged.length - 1] += `. ${part}`;
+      else merged.push(part);
+    }
+    for (const sentence of merged) {
+      // "+20% Multishot" inside a multishot-damage line is a separate stat.
+      const r = parseEvolutionSentence(e.name, sentence, cond);
+      if (r) modifiers.push(...r);
+      else unparsed.push(sentence);
+    }
+  }
+  // "Bonuses are added after mods as a flat value": crit/status chance become flat additions.
+  if (e.notes.some((n) => /after mods as a flat value|added as a flat/i.test(n))) {
+    for (const m of modifiers) {
+      if (m.stat.kind === "critChance") m.stat = { kind: "critChanceFlat" };
+      else if (m.stat.kind === "statusChance") m.stat = { kind: "statusChanceFlat" };
+    }
+  }
+  return {
+    name: e.name,
+    text,
+    forms: evolutionForms(e),
+    ...(modifiers.length ? { modifiers } : {}),
+    ...(unparsed.length ? { unparsed } : {}),
+  };
+}
+
 const POOLS: Record<string, string> = {
   "Primary Mod": "primary", "Shotgun Mod": "shotgun", "Secondary Mod": "secondary", "Arch-Gun Mod": "archGun",
   "Melee Mod": "melee",
@@ -171,6 +327,8 @@ function buildMods() {
       id: m.uniqueName, name: m.name, pool, compat, polarity: m.polarity ?? "", baseDrain: m.baseDrain ?? 0,
       maxRank: m.fusionLimit ?? 0, isExilus: !!m.isExilus, exclusiveGroup: exclusiveGroup(m.name, pool),
       modifiers, ...(requiresTrigger ? { requiresTrigger } : {}), ...(locksFireRate ? { locksFireRate } : {}), ...(enablesTennokai ? { enablesTennokai } : {}), unparsed,
+      ...(m.rarity ? { rarity: m.rarity } : {}),
+      ...(m.imageName ? { image: `https://cdn.warframestat.us/img/${m.imageName}` } : {}),
     };
   });
   // Same name can appear several times (beginner, PvP variants); keep the full version.
@@ -207,6 +365,8 @@ function buildArcanes() {
       return {
         id: a.uniqueName, name: a.name, slot: a.type.startsWith("Primary") ? "primary" : "secondary",
         behaviour: behaviours[a.name] ?? null, modifiers, description: segs.join(" "),
+        ...(a.rarity ? { rarity: a.rarity } : {}),
+        ...(a.imageName ? { image: `https://cdn.warframestat.us/img/${a.imageName}` } : {}),
       };
     });
 }
@@ -379,6 +539,19 @@ function buildWeapons() {
 }
 
 const weapons = buildWeapons();
+// Incarnon evolutions: scraped from wiki pages, parsed into modifiers; hand-curated entries in
+// data/overrides/incarnon.json win.
+{
+  const incarnonWeapons = weapons.filter((w) => w.modes.some((m: any) => m.incarnonForm));
+  const scraped = await scrapeEvolutions(incarnonWeapons.map((w) => ({ name: w.name, family: w.family })));
+  for (const w of incarnonWeapons) {
+    if (w.evolutions) continue;
+    const s = scraped[w.name];
+    if (!s) continue;
+    w.evolutions = s.tiers.map((t) => ({ tier: t.tier, options: t.options.map(parseEvolution) }));
+    w.sources.evolutions = `wiki ${s.page}`;
+  }
+}
 const mods = buildMods();
 const arcanes = buildArcanes();
 const enemies = override("enemies.json").enemies;
@@ -404,7 +577,12 @@ copyFileSync(outPath, join(root, "apps/web/public/gamedata.json"));
 const modesN = weapons.reduce((n, w) => n + w.modes.length, 0);
 const unsupported = weapons.flatMap((w) => w.modes.filter((m: any) => m.coverage === "unsupported").map((m: any) => `${w.name} / ${m.name}`));
 const unparsedMods = mods.filter((m) => m.unparsed.length);
+const evoUnparsed = weapons.flatMap((w) =>
+  (w.evolutions ?? []).flatMap((t: any) => t.options.filter((o: any) => o.unparsed?.length).map((o: any) => ({ weapon: w.name, tier: t.tier, name: o.name, unparsed: o.unparsed }))),
+);
+const evoTotal = weapons.reduce((n, w) => n + (w.evolutions ?? []).reduce((k: number, t: any) => k + t.options.length, 0), 0);
+console.log(`evolutions: ${weapons.filter((w) => w.evolutions).length} weapons, ${evoTotal} options, ${evoUnparsed.length} with unmodelled damage effects`);
 const bySlot = Object.entries(weapons.reduce((a: Record<string, number>, w) => ((a[w.slot] = (a[w.slot] ?? 0) + 1), a), {})).map(([k, v]) => `${v} ${k}`).join(", ");
 console.log(`gamedata ${hash}: ${weapons.length} weapons (${bySlot}), ${modesN} attack modes, ${mods.length} mods, ${arcanes.length} arcanes, ${buffs.length} buffs`);
 console.log(`unsupported modes: ${unsupported.length}; mods with unparsed effects: ${unparsedMods.length}`);
-writeFileSync(join(root, "data/ingest-report.json"), JSON.stringify({ unsupported, unparsedMods: unparsedMods.map((m) => ({ name: m.name, unparsed: m.unparsed })) }, null, 2));
+writeFileSync(join(root, "data/ingest-report.json"), JSON.stringify({ unsupported, unparsedMods: unparsedMods.map((m) => ({ name: m.name, unparsed: m.unparsed })), unparsedEvolutions: evoUnparsed }, null, 2));

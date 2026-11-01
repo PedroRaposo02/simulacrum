@@ -6,6 +6,17 @@ import RivenEditor from "./RivenEditor";
 import MeleeSummary from "./MeleeSummary";
 import OptimizerControls, { type ComfortSettings, type OptimizerState } from "./OptimizerControls";
 import SavedBuilds from "./SavedBuilds";
+import ModGrid, { modSummary as cardSummary } from "./ModGrid";
+
+type ModView = "cards" | "list";
+const VIEW_KEY = "simulacrum.modView";
+function savedView(): ModView {
+  try {
+    return localStorage.getItem(VIEW_KEY) === "list" ? "list" : "cards";
+  } catch {
+    return "cards";
+  }
+}
 import type { EditorBuild, Mod, ModeResult, OptimizeResult, Weapon } from "./types";
 
 /** The riven drawn in its mod slot, with its rolled stats. */
@@ -53,7 +64,7 @@ function EvolutionPicker({ weapon, build, setBuild }: { weapon: Weapon; build: E
       <div className="space-y-1.5">
         {tiers.map((t, i) => {
           const sel = t.options.find((o) => o.name === chosen(i));
-          const effect = !sel ? "" : sel.modifiers?.length || sel.behaviour ? "" : " (no damage effect)";
+          const effect = !sel ? "" : sel.modifiers?.length || sel.behaviour || sel.unparsed?.length ? "" : " (no damage effect)";
           return (
             <div key={t.tier}>
               <select className="field" value={chosen(i)} onChange={(e) => set(i, e.target.value)} aria-label={`Evolution ${ROMAN[t.tier]}`}>
@@ -61,6 +72,7 @@ function EvolutionPicker({ weapon, build, setBuild }: { weapon: Weapon; build: E
                 {t.options.map((o) => (
                   <option key={o.name} value={o.name} title={o.text}>
                     {ROMAN[t.tier] ?? t.tier}: {o.name}
+                    {o.unparsed?.length ? " (partly modelled)" : ""}
                   </option>
                 ))}
               </select>
@@ -69,6 +81,9 @@ function EvolutionPicker({ weapon, build, setBuild }: { weapon: Weapon; build: E
                   {sel.text}
                   {sel.forms && sel.forms !== "both" ? ` · ${sel.forms === "incarnon" ? "Incarnon form only" : "normal form only"}` : ""}
                   {effect}
+                  {sel.unparsed?.length ? (
+                    <span className="block text-amber-700 dark:text-amber-400">Not modelled: {sel.unparsed.join("; ")}</span>
+                  ) : null}
                 </p>
               )}
             </div>
@@ -102,7 +117,7 @@ function ModSlot({ value, options, used, onChange, label }: {
         .filter((m) => m.id === value || !used.has(m.id))
         .map((m) => (
           <option key={m.id} value={m.id}>
-            {m.name} · {modSummary(m)}
+            {m.name} · {cardSummary(m)}
           </option>
         ))}
     </select>
@@ -219,8 +234,8 @@ function OptimizerPanel({ state, onUndo }: { state: OptimizerState; onUndo: () =
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="font-semibold">{state.label}</h3>
         <span className="text-sm text-zinc-500">
-          {result.mode} · {fmt(result.burstDps)} {result.mode === "Heavy Attack" ? "heavy DPS" : "burst DPS"} · {result.evaluations.toLocaleString()} builds
-          evaluated
+          {result.mode} · {fmt(result.burstDps)} {result.mode === "Heavy Attack" ? "heavy DPS" : "burst DPS"} · {fmt(result.fireRate)} shots/s
+          {result.perCharge != null ? ` · ${fmt(result.perCharge)} per charge` : ""} · {result.evaluations.toLocaleString()} builds evaluated
         </span>
         <button className="ml-auto text-sm text-indigo-600 hover:underline" onClick={onUndo}>
           Undo (restore previous build)
@@ -237,7 +252,7 @@ function OptimizerPanel({ state, onUndo }: { state: OptimizerState; onUndo: () =
         {result.rangeCost != null && <span>range costs {pct(result.rangeCost)} DPS</span>}
         {result.drain != null && <span>capacity used {result.drain}</span>}
       </div>
-      <p className="text-xs text-zinc-500">Applied to the editor. Marginal value = DPS lost if that piece is removed.</p>
+      <p className="text-xs text-zinc-500">Applied to the editor. Marginal value = share of the optimized value lost if that piece is removed.</p>
       <div className="space-y-1">
         {result.marginal.map((m) => (
           <div key={m.label} className="flex items-center gap-2 text-sm">
@@ -264,7 +279,16 @@ export default function BuildEditor() {
   const { data, engine, build, setBuild, scenario, best } = useStore();
   const [copied, setCopied] = useState(false);
   const [opt, setOpt] = useState<OptimizerState | null>(null);
-  const [comfort, setComfort] = useState<ComfortSettings>({ on: false, minAttackSpeed: 1.5, rangeTolerance: 0.05 });
+  const [comfort, setComfort] = useState<ComfortSettings>({ on: false, minAttackSpeed: 1.5, rangeTolerance: 0.05, maxFireRate: 9 });
+  const [view, setViewState] = useState<ModView>(savedView);
+  const setView = (v: ModView) => {
+    setViewState(v);
+    try {
+      localStorage.setItem(VIEW_KEY, v);
+    } catch {
+      // not persisted
+    }
+  };
   const weapon = data!.weapons.find((w) => w.id === build.weapon);
 
   const compatible = useMemo(() => {
@@ -328,6 +352,7 @@ export default function BuildEditor() {
                   {precomputed.riven ? ` / ${fmt(precomputed.riven.burstDps)} with riven` : ""}.
                 </p>
               )}
+              {view === "list" && (
               <div>
                 <label className="label">
                   Mods <span className="normal-case">(slot order matters for elements)</span>
@@ -343,7 +368,9 @@ export default function BuildEditor() {
                   <ModSlot label="Exilus" value={build.slots[SLOT_COUNT]} options={exilusOptions} used={used} onChange={(id) => setSlot(SLOT_COUNT, id)} />
                 </div>
               </div>
+              )}
               <EvolutionPicker weapon={weapon} build={build} setBuild={setBuild} />
+              {view === "list" && (
               <div>
                 <label className="label">Arcane</label>
                 <select className="field" value={build.arcane ?? ""} onChange={(e) => setBuild({ ...build, arcane: e.target.value || null })}>
@@ -359,6 +386,7 @@ export default function BuildEditor() {
                   <p className="mt-1 text-[11px] text-zinc-500">No arcanes modelled for this slot yet.</p>
                 ) : null}
               </div>
+              )}
             </>
           )}
         </div>
@@ -388,6 +416,31 @@ export default function BuildEditor() {
             >
               {copied ? "Link copied" : "Copy share link"}
             </button>
+          </div>
+        )}
+        {weapon && (
+          <div className="card space-y-3">
+            <div className="flex items-center gap-2">
+              <h3 className="font-semibold">Build</h3>
+              <span className="text-xs text-zinc-500">slot order matters for elements</span>
+              <div className="ml-auto inline-flex rounded-md border border-zinc-300 p-0.5 text-xs dark:border-zinc-700" role="group" aria-label="Mod view">
+                {(["cards", "list"] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    aria-pressed={view === v}
+                    className={`rounded px-2 py-0.5 capitalize ${view === v ? "bg-indigo-600 text-white" : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"}`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {view === "cards" ? (
+              <ModGrid weapon={weapon} build={build} setBuild={setBuild} compatible={compatible} arcanes={arcanes} />
+            ) : (
+              <p className="text-xs text-zinc-500">List view: edit mods and the arcane in the left column.</p>
+            )}
           </div>
         )}
         {opt && opt.result.weaponId === weapon?.id && (

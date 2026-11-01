@@ -1,8 +1,8 @@
 @import "tailwindcss";
+@import "./themes.css";
 
-:root {
-  color-scheme: light dark;
-}
+/* Dark styles follow the selected theme, not the OS setting. */
+@custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
 
 body {
   @apply bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100;

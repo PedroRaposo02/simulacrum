@@ -40,3 +40,11 @@ Wiki data is CC BY-NC-SA 3.0, so the app and its data stay non-commercial.
 Requires Rust with `wasm32-unknown-unknown` and `wasm-pack`. After changing `crates/`, run
 `pnpm build:wasm` and `pnpm optimize` (best builds go stale when the engine or data changes;
 the browser warns when the data version differs).
+
+## Releases
+
+Every push to `main` runs CI (`.github/workflows/ci.yml`). Pushing a tag `vX.Y.Z[-beta.N]` runs
+`.github/workflows/release.yml`: it builds the WASM engine, precomputes best builds, bundles the
+website (`simulacrum-web-<tag>.zip`, static files that work from any folder) and builds `wfcalc`
+for Linux, Windows and macOS, then publishes a GitHub Release with notes from `CHANGELOG.md`.
+Tags with a suffix (`-beta.1`) are marked as pre-releases.

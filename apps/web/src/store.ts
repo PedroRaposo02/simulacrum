@@ -62,6 +62,15 @@ export interface BuffState {
   on: boolean;
   /** Value at 100% strength, as a fraction; null = use the data default. */
   value: number | null;
+  /** Helminth version (lower value) instead of the frame's own ability. */
+  subsumed?: boolean;
+}
+
+/** The value a buff's first modifier has at 100% strength, given its state. */
+export function buffBaseValue(b: { modifiers: Modifier[]; subsumedValue?: number }, st: BuffState | undefined): number {
+  if (st?.value != null) return st.value;
+  if (st?.subsumed && b.subsumedValue != null) return b.subsumedValue;
+  return b.modifiers[0]?.value ?? 0;
 }
 
 export interface Scenario {
@@ -141,8 +150,9 @@ export function buffModifiers(data: GameData, s: Scenario): Modifier[] {
     const st = s.buffs[b.id];
     if (!st?.on) continue;
     b.modifiers.forEach((m, i) => {
-      const base = i === 0 && st.value != null ? st.value : m.value;
-      out.push({ ...m, source: `${b.name} (${b.source})`, value: base * (b.scalesWithStrength ? s.strength : 1) });
+      const base = i === 0 ? buffBaseValue(b, st) : m.value;
+      const who = st.subsumed && b.subsumedValue != null ? "subsumed" : b.source;
+      out.push({ ...m, source: `${b.name} (${who})`, value: base * (b.scalesWithStrength ? s.strength : 1) });
     });
   }
   return out;

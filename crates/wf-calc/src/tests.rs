@@ -220,6 +220,7 @@ fn ability_damage_is_a_separate_multiplier() {
         applies_to: wf_data::ComponentFilter::All,
         condition: wf_data::Condition::Always,
         per: None,
+        threshold: None,
     };
     let base = Build { weapon: "Laetum".into(), mods: vec!["Hornet Strike".into()], ..Default::default() };
     let buffed = Build { buffs: vec![roar], ..base.clone() };
@@ -435,4 +436,102 @@ fn overwhelming_attrition_adds_stacked_base_damage() {
 fn unknown_evolution_is_an_error() {
     let b = Build { weapon: "Laetum".into(), evolutions: vec!["Nope".into()], ..Default::default() };
     assert_eq!(compute(&evo_fixture(), &b, &Target::default()).unwrap_err().code, ErrorCode::UnknownEvolution);
+}
+
+#[test]
+fn roar_is_faction_type_and_adds_to_bane() {
+    let m = |stat, value| wf_data::Modifier {
+        source: "x".into(),
+        stat,
+        value,
+        max_stacks: 1,
+        applies_to: wf_data::ComponentFilter::All,
+        condition: wf_data::Condition::Always,
+        per: None,
+        threshold: None,
+    };
+    let t = Target { enemy: Some("sp-grineer".into()), armor_strip: 1.0, ..Default::default() };
+    let base = compute(&fixture(), &Build { weapon: "Laetum".into(), ..Default::default() }, &t).unwrap().modes[0].per_shot;
+    let roar = Build { weapon: "Laetum".into(), buffs: vec![m(wf_data::Stat::FactionDamageAll, 0.5)], ..Default::default() };
+    let both = Build { buffs: vec![m(wf_data::Stat::FactionDamageAll, 0.5), m(wf_data::Stat::FactionDamage(wf_data::Faction::Grineer), 0.55)], ..roar.clone() };
+    assert!(close(compute(&fixture(), &roar, &t).unwrap().modes[0].per_shot, base * 1.5));
+    // Additive with Bane: 1 + 0.5 + 0.55, not 1.5 x 1.55.
+    assert!(close(compute(&fixture(), &both, &t).unwrap().modes[0].per_shot, base * 2.05));
+}
+
+fn with_mod(stat: wf_data::Stat, value: f64, condition: wf_data::Condition, threshold: Option<f64>) -> Build {
+    Build {
+        weapon: "Laetum".into(),
+        buffs: vec![wf_data::Modifier {
+            source: "evo".into(),
+            stat,
+            value,
+            max_stacks: 1,
+            applies_to: wf_data::ComponentFilter::All,
+            condition,
+            per: None,
+            threshold,
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn base_stat_additions_scale_with_mods() {
+    use wf_data::{Condition::Always, Stat};
+    let d = fixture();
+    let shot = |b: &Build| compute(&d, b, &Target::default()).unwrap().modes[0].components[0].clone();
+    // +40 flat base damage on a 160 attack: x1.25 before mods.
+    let base = shot(&Build { weapon: "Laetum".into(), ..Default::default() }).per_projectile_raw;
+    assert!(close(shot(&with_mod(Stat::BaseDamageFlat, 40.0, Always, None)).per_projectile_raw, base * 1.25));
+    // Base crit chance is added before the (here zero) mod multiplier.
+    assert!(close(shot(&with_mod(Stat::CritChanceBase, 0.18, Always, None)).crit_chance, 0.40));
+    assert!(close(shot(&with_mod(Stat::CritMultBase, 0.6, Always, None)).crit_mult, 2.8));
+    assert!(close(shot(&with_mod(Stat::StatusChanceBase, 0.34, Always, None)).status_chance, 0.56));
+}
+
+#[test]
+fn prelude_of_might_checks_final_crit_chance() {
+    use wf_data::{Condition::CritChanceBelow, Stat};
+    let d = fixture();
+    let cd = |thr: f64| {
+        compute(&d, &with_mod(Stat::CritMultBase, 3.0, CritChanceBelow, Some(thr)), &Target::default()).unwrap().modes[0].components[0].crit_mult
+    };
+    assert!(close(cd(0.5), 5.2), "22% < 50%: active");
+    assert!(close(cd(0.2), 2.2), "22% >= 20%: inactive");
+}
+
+#[test]
+fn status_types_below_condition() {
+    use wf_data::{Condition::StatusTypesBelow, Stat};
+    let d = fixture();
+    let mut b = with_mod(Stat::CritDamage, 1.0, StatusTypesBelow, Some(3.0));
+    b.conditions.status_types = 2.0;
+    assert!(close(compute(&d, &b, &Target::default()).unwrap().modes[0].components[0].crit_mult, 4.4));
+    b.conditions.status_types = 4.0;
+    assert!(close(compute(&d, &b, &Target::default()).unwrap().modes[0].components[0].crit_mult, 2.2));
+}
+
+#[test]
+fn multishot_damage_only_boosts_extra_projectiles() {
+    use wf_data::{Condition::Always, Stat};
+    let d = fixture();
+    let mut b = with_mod(Stat::MultishotDamage, 0.6, Always, None);
+    let one = compute(&d, &b, &Target::default()).unwrap().modes[0].per_shot;
+    assert!(close(one, 160.0 * 1.264), "no extra projectiles, no bonus");
+    b.buffs.push(wf_data::Modifier { stat: Stat::Multishot, value: 1.0, source: "ms".into(), ..b.buffs[0].clone() });
+    let two = compute(&d, &b, &Target::default()).unwrap().modes[0].per_shot;
+    // 2 projectiles, the extra one at +60%: 2.6 x one projectile.
+    assert!(close(two, 160.0 * 1.264 * 2.6));
+}
+
+#[test]
+fn status_from_crit_link_is_capped() {
+    use wf_data::{Condition::Always, Stat};
+    let d = fixture();
+    let sc = |ratio: f64, cap: f64| {
+        compute(&d, &with_mod(Stat::StatusChanceBaseFromCrit, ratio, Always, Some(cap)), &Target::default()).unwrap().modes[0].components[0].status_chance
+    };
+    assert!(close(sc(0.5, 1.0), 0.22 + 0.11));
+    assert!(close(sc(0.5, 0.05), 0.22 + 0.05));
 }

@@ -31,11 +31,25 @@ Working list after 0.2.0-beta.1. Checked items are done; notes say what "done" m
 - [x] **Evolution framework.** Evolutions per tier in `data/overrides/incarnon.json` (no wiki data module has them): stat modifiers, form targeting (both / Incarnon / normal), and named behaviours with tunable parameters. Editor picker per tier; optimizer chooses one per tier.
 - [x] **Laetum** (from its wiki page): Rapid Wrath, Lethal Rearmament, Caput Mortuum, Elemental Excess (flat ±), Devouring Attrition (expected value on non-crit hits; off vs bosses), Overwhelming Attrition (simulated stack uptime, jointly with Enervate).
 - [x] Incarnon magazine sizes from the wiki gun modules (67 of 68 weapons); damage per full charge shown.
-- [ ] Evolutions for the other ~67 Incarnon weapons (each needs its wiki page read into `incarnon.json`).
+- [x] Evolutions for all 68 Incarnon weapons, scraped from wiki pages (Genesis pages with per-variant X/Y values) and parsed: flat base damage, base crit/status/crit multiplier, flat-after-mods bonuses, per-status-type damage, multishot-only damage, crit-threshold (Prelude of Might), status-count threshold, crit↔status links, triggered/timed bonuses (uptime slider), Devouring/Overwhelming Attrition by text. Hand-curated entries in `incarnon.json` still win.
+- [ ] 21 options with weapon-unique mechanics are shown as "not modelled" (e.g. Reaver's Rapture, Stalker's Resentment, Flensing Spikes armor strip, King's Gambit, Devastation Cascade, Mounting Momentum). See `data/ingest-report.json` → `unparsedEvolutions`.
+- [ ] Triggered evolution bonuses ("With Channeled Ability active", "On Shield Break"…) use the conditional-uptime slider like on-kill mods; per-trigger toggles would be more precise.
 - [ ] Incarnon recharge (from weakpoint hits) for a true sustained figure.
 
 ## Optimizer preferences
+- [x] Arcane × evolution combinations searched globally (greedy screen of every combination, full search of the best 3, riven on the best 2). Fixes "swapping Deadhead for Enervate gains DPS" and finds low-crit Devouring Attrition builds.
 - [x] Faction mods (Bane / Expel / Smite / Cleanse) and riven faction stats excluded by default; "Allow faction mods" option.
+
+- [x] Objectives (burst / sustained / per shot / per magazine or charge) and a gun fire-rate cap for comfortable builds; spliced riven stats allowed (one per riven).
+  - [ ] Confirm in-game how many spliced stats one riven can hold (currently capped at 1).
+
+## UI
+- [x] Theme selector: 7 dark + 2 light schemes (`apps/web/src/themes.css`, generated).
+- [x] Warframe-style mod cards with art from the WFCD CDN; list view kept as a toggle.
+  - [ ] Real polarity icons instead of text glyphs; drag-and-drop to reorder slots.
+
+## Buffs
+- [x] Roar is a faction-type bonus (additive with Bane/Expel, double-dips on status ticks); Eclipse a separate multiplier (200% Mirage); Nourish an extra Viral mod. Subsumed (Helminth) toggle: Roar 30%, Eclipse 30%, Nourish 45%.
 
 ## Editor
 - [x] The riven occupies the last normal slot in the mod list (a mod already there moves to a free slot).

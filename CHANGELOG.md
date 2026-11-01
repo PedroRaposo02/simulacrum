@@ -2,6 +2,17 @@
 
 Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the version lives in `Cargo.toml` (workspace) and the `package.json` files, and each release is tagged `v<version>`.
 
+## 0.4.0-beta.1 — 2026-11-01
+
+- **CI and releases**: GitHub Actions run the Rust tests, golden values, sweep and web build on every push; tagging `v*` publishes a release with the website bundle and `wfcalc` for Linux, Windows and macOS.
+
+- **Optimizer**: arcane × Incarnon evolution combinations are searched globally (each gets its own mod search), so pairings like Enervate + Overwhelming Attrition and low-crit Devouring Attrition builds are found.
+- **Incarnon evolutions for all 68 Incarnon weapons**, scraped from the wiki and parsed into the engine: flat base damage, base crit/status/crit multiplier, flat-after-mods bonuses, multishot-only damage, Prelude of Might crit threshold, status-count threshold, crit↔status links, triggered bonuses; unmodelled effects are shown in the picker.
+- **Optimizer objectives**: burst DPS, sustained DPS, damage per shot, or damage per magazine / Incarnon charge; a fire rate cap for comfortable gun builds; spliced riven stats (Viral, Corrosive…) allowed by default, at most one per riven.
+- **Themes**: 7 dark and 2 light colour schemes, picked in the header and remembered per browser.
+- **Mod cards**: Warframe-style mod view (rarity frames, art, drain and polarity, stat lines, rank pips) with a searchable picker; riven and arcane cards; the list view remains as a toggle.
+- **Buffs**: Roar modelled as faction-type damage (additive with faction mods, double-dips on DoTs); subsumed (Helminth) toggle for Roar, Eclipse and Nourish with wiki values.
+
 ## 0.3.0-beta.1 — 2026-11-01
 
 - **Rivens**: wiki base values for every riven type, including melee-only and spliced stats (flat stats shown in m / s / count); "Grade my riven" compares the best build around your riven with the best god-roll build.

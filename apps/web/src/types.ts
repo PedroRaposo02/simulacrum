@@ -30,6 +30,8 @@ export interface Mod {
   locksFireRate?: boolean;
   enablesTennokai?: boolean;
   unparsed?: string[];
+  rarity?: string;
+  image?: string;
 }
 
 export type MeleeRole = "light" | "heavy" | "tennokai" | "other";
@@ -51,6 +53,8 @@ export interface Evolution {
   forms?: "both" | "incarnon" | "normal";
   modifiers?: Modifier[];
   behaviour?: { kind: string; [k: string]: unknown };
+  /** Effect text not turned into engine modifiers. */
+  unparsed?: string[];
 }
 export interface EvolutionTier { tier: number; options: Evolution[] }
 
@@ -77,7 +81,16 @@ export interface Weapon {
   modes: WeaponMode[];
 }
 
-export interface Arcane { id: string; name: string; slot: string; behaviour: string | null; modifiers: Modifier[]; description: string }
+export interface Arcane {
+  id: string;
+  name: string;
+  slot: string;
+  behaviour: string | null;
+  modifiers: Modifier[];
+  description: string;
+  rarity?: string;
+  image?: string;
+}
 export interface EnemyProfile { id: string; name: string; faction: string; armor: number; note?: string }
 
 export interface RivenStatDef {
@@ -98,6 +111,7 @@ export interface BuffDef {
   source: string;
   scalesWithStrength: boolean;
   modifiers: Modifier[];
+  subsumedValue?: number;
   note?: string;
 }
 
@@ -230,6 +244,12 @@ export interface OptimizeResult {
   rivenNegative: RivenPick | null;
   marginal: Marginal[];
   evaluations: number;
+  objective: Objective;
+  score: number;
+  fireRate: number;
+  sustainedDps: number;
+  perShot: number;
+  perCharge: number | null;
   evolutions: string[];
   attackSpeed: number | null;
   rangeM: number | null;
@@ -239,7 +259,11 @@ export interface OptimizeResult {
 }
 
 export interface CapacityOptions { capacity: number; polarities: (string | null)[]; rivenDrain: number }
+export type Objective = "burst" | "sustained" | "perShot" | "perCharge";
+
 export interface OptimizeOptions {
+  objective?: Objective;
+  maxFireRate?: number | null;
   mode?: number | null;
   riven?: boolean;
   arcane?: boolean;

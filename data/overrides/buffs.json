@@ -1,30 +1,30 @@
 {
-  "_note": "External damage amplifiers. Values are at 100% ability strength unless scalesWithStrength is false. Defaults need in-game verification; the app lets users edit them. abilityDamage = one additive pool applied as a separate final multiplier.",
+  "_note": "External damage amplifiers, values at 100% ability strength (wiki, read 2026-11-01). subsumedValue = Helminth version. Stacking: Roar is a faction-type bonus (additive with Bane/Expel mods, double-dips on status ticks, multiplicative with everything else); Eclipse multiplies almost all other damage buffs; Nourish works like an extra Viral mod.",
   "buffs": [
     {
-      "id": "roar", "name": "Roar", "source": "Rhino", "scalesWithStrength": true,
-      "modifiers": [{ "source": "Roar", "stat": { "kind": "abilityDamage" }, "value": 0.5 }],
-      "note": "Separate multiplier, like faction damage."
+      "id": "roar", "name": "Roar", "source": "Rhino", "scalesWithStrength": true, "subsumedValue": 0.3,
+      "modifiers": [{ "source": "Roar", "stat": { "kind": "factionDamageAll" }, "value": 0.5 }],
+      "note": "Faction-type bonus vs every enemy: adds to Bane/Expel mods, counts twice on status ticks. Rhino 50%, subsumed 30%."
     },
     {
-      "id": "eclipse", "name": "Eclipse (light)", "source": "Mirage", "scalesWithStrength": true,
+      "id": "eclipse", "name": "Eclipse (Solar)", "source": "Mirage", "scalesWithStrength": true, "subsumedValue": 0.3,
       "modifiers": [{ "source": "Eclipse", "stat": { "kind": "abilityDamage" }, "value": 2.0 }],
-      "note": "Value at full light; shares the ability-damage pool with Roar. Verify."
+      "note": "Multiplicative with almost all other damage buffs. Mirage 200% at max rank, subsumed 30%."
+    },
+    {
+      "id": "nourish", "name": "Nourish", "source": "Grendel", "scalesWithStrength": true, "subsumedValue": 0.45,
+      "modifiers": [{ "source": "Nourish", "stat": { "kind": "element", "of": "viral" }, "value": 0.75 }],
+      "note": "Works like an extra Viral mod. Grendel 75%, subsumed 45%."
     },
     {
       "id": "vex-armor", "name": "Vex Armor (Fury, max)", "source": "Chroma", "scalesWithStrength": true,
       "modifiers": [{ "source": "Vex Armor", "stat": { "kind": "baseDamage" }, "value": 2.75 }],
-      "note": "Additive with Serration-type base damage mods."
-    },
-    {
-      "id": "nourish", "name": "Nourish", "source": "Grendel", "scalesWithStrength": true,
-      "modifiers": [{ "source": "Nourish", "stat": { "kind": "element", "of": "viral" }, "value": 0.75 }],
-      "note": "Adds Viral as a pre-combined element; also raises Viral proc share."
+      "note": "Additive with Serration-type base damage mods. Verify value."
     },
     {
       "id": "xatas-whisper", "name": "Xata's Whisper", "source": "Xaku", "scalesWithStrength": true,
       "modifiers": [{ "source": "Xata's Whisper", "stat": { "kind": "element", "of": "void" }, "value": 0.26 }],
-      "note": "Adds Void damage as its own element."
+      "note": "Adds Void damage as its own element. Verify value."
     },
     {
       "id": "arcane-avenger", "name": "Arcane Avenger", "source": "Warframe arcane", "scalesWithStrength": false,

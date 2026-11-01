@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Slider, Toggle } from "./Common";
-import { defaultScenario, useStore } from "./store";
+import { buffBaseValue, defaultScenario, useStore } from "./store";
 import type { Conditions, Target } from "./types";
 
 function Section({ title, children, defaultOpen = true }: { title: string; children: ReactNode; defaultOpen?: boolean }) {
@@ -84,7 +84,7 @@ export default function ScenarioPanel() {
         />
         {data!.buffs.map((b) => {
           const st = scenario.buffs[b.id] ?? { on: false, value: null };
-          const base = st.value ?? b.modifiers[0]?.value ?? 0;
+          const base = buffBaseValue(b, st);
           const effective = base * (b.scalesWithStrength ? scenario.strength : 1);
           const setB = (next: Partial<typeof st>) => setScenario({ ...scenario, buffs: { ...scenario.buffs, [b.id]: { ...st, ...next } } });
           return (
@@ -93,7 +93,7 @@ export default function ScenarioPanel() {
                 <input type="checkbox" checked={st.on} onChange={(e) => setB({ on: e.target.checked })} className="mt-1 shrink-0 accent-indigo-600" />
                 <span className="min-w-0 leading-tight">
                   <span className="block truncate">{b.name}</span>
-                  <span className="block truncate text-xs text-zinc-500">{b.source}</span>
+                  <span className="block truncate text-xs text-zinc-500">{st.subsumed ? "Helminth (subsumed)" : b.source}</span>
                 </span>
               </label>
               <span className="flex items-center gap-1">
@@ -107,6 +107,17 @@ export default function ScenarioPanel() {
                 />
                 <span className="text-xs text-zinc-500">%</span>
               </span>
+              {b.subsumedValue != null && (
+                <label className="col-span-2 -mt-1 ml-6 flex cursor-pointer items-center gap-1.5 text-xs text-zinc-500">
+                  <input
+                    type="checkbox"
+                    className="accent-indigo-600"
+                    checked={!!st.subsumed}
+                    onChange={(e) => setB({ subsumed: e.target.checked, value: null })}
+                  />
+                  Subsumed (Helminth, {Math.round(b.subsumedValue * 100)}% base)
+                </label>
+              )}
             </div>
           );
         })}

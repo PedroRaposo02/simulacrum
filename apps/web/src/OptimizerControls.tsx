@@ -2,14 +2,25 @@ import { useState } from "react";
 import { rivenModifiers } from "./riven";
 import { buildFromBest, fmt, optimizeInWorker, pct, scenarioBuild, SLOT_COUNT, useStore } from "./store";
 import { Toggle } from "./Common";
-import type { EditorBuild, OptimizeOptions, OptimizeResult, Weapon } from "./types";
+import type { EditorBuild, Objective, OptimizeOptions, OptimizeResult, Weapon } from "./types";
+
+const OBJECTIVES: [Objective, string, string][] = [
+  ["burst", "Burst DPS", "Damage per second while firing"],
+  ["sustained", "Sustained DPS", "Includes reloads"],
+  ["perShot", "Damage per shot / combo", "Ignores fire rate entirely"],
+  ["perCharge", "Damage per magazine / Incarnon charge", "Fire rate adds nothing: favours damage stats"],
+];
 
 const POLARITIES = ["madurai", "vazarin", "naramon", "zenurik", "unairu", "penjaga", "umbra"];
 
 export interface ComfortSettings {
   on: boolean;
+  /** Melee: attack speed floor. */
   minAttackSpeed: number;
+  /** Melee: accept a range mod up to this DPS cost. */
   rangeTolerance: number;
+  /** Guns: fire rate cap, so the magazine doesn't empty instantly. */
+  maxFireRate: number;
 }
 
 export interface OptimizerState {
@@ -38,13 +49,18 @@ export default function OptimizerControls({
   const [polarities, setPolarities] = useState<(string | null)[]>(Array(SLOT_COUNT + 1).fill(null));
   const [grade, setGrade] = useState<{ ratio: number; god: number; mine: number } | null>(null);
   const [allowFaction, setAllowFaction] = useState(false);
+  const [objective, setObjective] = useState<Objective>("burst");
+  const [spliced, setSpliced] = useState(true);
 
   const isMelee = !!weapon.melee;
   const heavyIndex = weapon.modes.findIndex((m) => m.meleeRole === "heavy");
 
   const options = (extra: OptimizeOptions): OptimizeOptions => ({
+    objective,
+    splicedRiven: spliced,
     mode: mode === "auto" ? null : mode,
-    minAttackSpeed: comfort.on ? comfort.minAttackSpeed : null,
+    minAttackSpeed: comfort.on && isMelee ? comfort.minAttackSpeed : null,
+    maxFireRate: comfort.on && !isMelee ? comfort.maxFireRate : null,
     rangeTolerance: comfort.on && isMelee ? comfort.rangeTolerance : null,
     capacity: realistic ? { capacity, polarities, rivenDrain: 9 } : null,
     allowFaction,
@@ -82,7 +98,7 @@ export default function OptimizerControls({
     }
     const god = await run("grade", { riven: true });
     const own = await run("grade", { fixedRiven: mine });
-    if (god && own) setGrade({ ratio: own.burstDps / god.burstDps, god: god.burstDps, mine: own.burstDps });
+    if (god && own) setGrade({ ratio: own.score / god.score, god: god.score, mine: own.score });
   };
 
   const btn = "rounded-md px-3 py-1.5 text-sm text-white disabled:opacity-60";
@@ -112,6 +128,17 @@ export default function OptimizerControls({
         <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-zinc-500">Optimizer options</summary>
         <div className="mt-2 space-y-3">
           <div>
+            <label className="label">Optimize for</label>
+            <select className="field" value={objective} onChange={(e) => setObjective(e.target.value as Objective)}>
+              {OBJECTIVES.map(([v, l, hint]) => (
+                <option key={v} value={v} title={hint}>
+                  {l}
+                </option>
+              ))}
+            </select>
+            <p className="mt-0.5 text-[11px] text-zinc-500">{OBJECTIVES.find((o) => o[0] === objective)?.[2]}</p>
+          </div>
+          <div>
             <label className="label">Attack mode</label>
             <select className="field" value={mode} onChange={(e) => setMode(e.target.value === "auto" ? "auto" : Number(e.target.value))}>
               <option value="auto">Auto (best of the top combos / modes)</option>
@@ -129,23 +156,38 @@ export default function OptimizerControls({
             onChange={setAllowFaction}
           />
 
+          <Toggle label="Allow spliced riven stats (Viral, Corrosive…; one per riven)" checked={spliced} onChange={setSpliced} />
+
           <Toggle
-            label={isMelee ? "Comfortable build (attack speed floor, range if cheap)" : "Fire rate floor"}
+            label={isMelee ? "Comfortable build (attack speed floor, range if cheap)" : "Comfortable build (fire rate cap)"}
             checked={comfort.on}
             onChange={(on) => setComfort({ ...comfort, on })}
           />
           {comfort.on && (
             <div className="grid grid-cols-2 gap-2">
-              <label className="text-xs text-zinc-500">
-                Min {isMelee ? "attack speed" : "shots/s"}
-                <input
-                  type="number"
-                  step={0.05}
-                  className="field mt-1"
-                  value={comfort.minAttackSpeed}
-                  onChange={(e) => setComfort({ ...comfort, minAttackSpeed: Number(e.target.value) })}
-                />
-              </label>
+              {isMelee ? (
+                <label className="text-xs text-zinc-500">
+                  Min attack speed
+                  <input
+                    type="number"
+                    step={0.05}
+                    className="field mt-1"
+                    value={comfort.minAttackSpeed}
+                    onChange={(e) => setComfort({ ...comfort, minAttackSpeed: Number(e.target.value) })}
+                  />
+                </label>
+              ) : (
+                <label className="text-xs text-zinc-500">
+                  Max shots/s
+                  <input
+                    type="number"
+                    step={0.5}
+                    className="field mt-1"
+                    value={comfort.maxFireRate}
+                    onChange={(e) => setComfort({ ...comfort, maxFireRate: Number(e.target.value) })}
+                  />
+                </label>
+              )}
               {isMelee && (
                 <label className="text-xs text-zinc-500">
                   Range: max DPS cost %

@@ -28,6 +28,16 @@ struct Pools {
     crit_chance: f64,
     crit_chance_flat: f64,
     status_chance_flat: f64,
+    base_flat: f64,
+    crit_chance_base: f64,
+    crit_mult_base: f64,
+    status_chance_base: f64,
+    multishot_damage: f64,
+    /// (ratio, cap) links: status from crit, crit from status.
+    status_from_crit: Vec<(f64, f64)>,
+    crit_from_status: Vec<(f64, f64)>,
+    /// Modifiers that depend on the final crit chance: (threshold, stat, value, source).
+    below_crit: Vec<(f64, Stat, f64, String)>,
     crit_damage: f64,
     crit_damage_flat: f64,
     status_chance: f64,
@@ -35,6 +45,7 @@ struct Pools {
     magazine: f64,
     reload: f64,
     faction: BTreeMap<Faction, f64>,
+    faction_all: f64,
     headshot: f64,
     status_duration: f64,
     ability: f64,
@@ -46,6 +57,10 @@ struct Pools {
 impl Pools {
     fn add(&mut self, m: &Modifier, scale: f64) {
         let v = m.value * scale;
+        if m.condition == Condition::CritChanceBelow {
+            self.below_crit.push((m.threshold.unwrap_or(0.0), m.stat, m.value, m.source.clone()));
+            return;
+        }
         match m.stat {
             Stat::BaseDamage => self.base_damage += v,
             Stat::Physical(t) => *self.physical.entry(t).or_default() += v,
@@ -54,6 +69,13 @@ impl Pools {
             Stat::CritChance => self.crit_chance += v,
             Stat::CritChanceFlat => self.crit_chance_flat += v,
             Stat::StatusChanceFlat => self.status_chance_flat += v,
+            Stat::BaseDamageFlat => self.base_flat += v,
+            Stat::CritChanceBase => self.crit_chance_base += v,
+            Stat::CritMultBase => self.crit_mult_base += v,
+            Stat::StatusChanceBase => self.status_chance_base += v,
+            Stat::MultishotDamage => self.multishot_damage += v,
+            Stat::StatusChanceBaseFromCrit => self.status_from_crit.push((v, m.threshold.unwrap_or(f64::INFINITY))),
+            Stat::CritChanceBaseFromStatus => self.crit_from_status.push((v, m.threshold.unwrap_or(f64::INFINITY))),
             Stat::CritDamage => self.crit_damage += v,
             Stat::CritDamageFlat => self.crit_damage_flat += v,
             Stat::StatusChance => self.status_chance += v,
@@ -61,6 +83,7 @@ impl Pools {
             Stat::Magazine => self.magazine += v,
             Stat::ReloadSpeed => self.reload += v,
             Stat::FactionDamage(f) => *self.faction.entry(f).or_default() += v,
+            Stat::FactionDamageAll => self.faction_all += v,
             Stat::HeadshotDamage => self.headshot += v,
             Stat::StatusDuration => self.status_duration += v,
             Stat::AbilityDamage => self.ability += v,
@@ -162,7 +185,14 @@ fn resolve<'a>(data: &'a GameData, build: &Build, target: &Target) -> Result<Res
 fn condition_scale(m: &Modifier, c: &Conditions) -> f64 {
     let stacks = m.max_stacks.max(1) as f64;
     let cond = match m.condition {
-        Condition::Always => 1.0,
+        Condition::Always | Condition::CritChanceBelow => 1.0,
+        Condition::StatusTypesBelow => {
+            if c.status_types < m.threshold.unwrap_or(0.0) {
+                1.0
+            } else {
+                0.0
+            }
+        }
         Condition::OnHeadshot | Condition::OnHeadshotKill if !c.headshot_effects => 0.0,
         _ => c.conditional_uptime.clamp(0.0, 1.0) * stacks,
     };
@@ -517,18 +547,33 @@ fn component(
     behaviours: &[(&str, &BehaviourDef)],
     approx: &mut Vec<String>,
 ) -> Result<Partial, CalcError> {
-    let base_total: f64 = comp.damage.values().sum();
-    if !(base_total > 0.0) {
+    let listed_total: f64 = comp.damage.values().sum();
+    if !(listed_total > 0.0) {
         return Err(CalcError::new(ErrorCode::InvalidValue, format!("{} has no base damage", comp.name)));
     }
     if comp.crit_chance < 0.0 || comp.status_chance < 0.0 || comp.crit_mult < 1.0 {
         return Err(CalcError::new(ErrorCode::InvalidValue, format!("{} has invalid crit/status stats", comp.name)));
     }
+    // Incarnon "+X base damage" scales every damage type of the attack proportionally.
+    let base_scale = ((listed_total + p.base_flat) / listed_total).max(0.0);
+    let base_damage_map: DamageMap = comp.damage.iter().map(|(t, d)| (*t, d * base_scale)).collect();
+    let base_total = listed_total * base_scale;
+    let mut crit0 = comp.crit_chance + p.crit_chance_base;
+    let mut status0 = comp.status_chance + p.status_chance_base;
+    // Linked stats use the other stat's modded value before the link itself (no feedback loop).
+    let pre_cc = (crit0 * (1.0 + p.crit_chance) + p.crit_chance_flat).max(0.0);
+    let pre_sc = (status0 * (1.0 + p.status_chance) + p.status_chance_flat).max(0.0);
+    for (ratio, cap) in &p.status_from_crit {
+        status0 += (ratio * pre_cc).min(*cap);
+    }
+    for (ratio, cap) in &p.crit_from_status {
+        crit0 += (ratio * pre_sc).min(*cap);
+    }
 
     // Multishot, crit and status first: Enervate and Overwhelming Attrition depend on them.
     let ms = if comp.rules.receives_multishot { comp.multishot * (1.0 + p.multishot).max(0.0) } else { 1.0 };
-    let sc = (comp.status_chance * (1.0 + p.status_chance).max(0.0) + p.status_chance_flat).max(0.0);
-    let modded_cc = (comp.crit_chance * (1.0 + p.crit_chance) + p.crit_chance_flat).max(0.0);
+    let sc = (status0 * (1.0 + p.status_chance).max(0.0) + p.status_chance_flat).max(0.0);
+    let modded_cc = (crit0 * (1.0 + p.crit_chance) + p.crit_chance_flat).max(0.0);
     let mut crit_children = p.sources_for(|s| matches!(s, Stat::CritChance | Stat::CritChanceFlat));
 
     let enervate = r.arcane.and_then(|a| a.behaviour.as_deref()) == Some("enervate");
@@ -584,7 +629,7 @@ fn component(
     // 3. Physical mods scale their own type; 4. elements add a share of the pooled base.
     let mut damage = DamageMap::new();
     let mut innate_elements = Vec::new();
-    for (t, d) in &comp.damage {
+    for (t, d) in &base_damage_map {
         if t.is_physical() {
             let v = d * b * (1.0 + p.physical.get(t).copied().unwrap_or(0.0)).max(0.0);
             *damage.entry(*t).or_default() += v;
@@ -613,13 +658,33 @@ fn component(
     damage.retain(|_, v| *v > 0.0);
 
     // 6. Faction, and ability damage buffs (Roar, Eclipse) as their own multiplier.
-    let f = 1.0 + p.faction.get(&faction).copied().unwrap_or(0.0);
+    let f = 1.0 + p.faction.get(&faction).copied().unwrap_or(0.0) + p.faction_all;
     let combo = if comp.rules.combo_scaling { cond.combo_multiplier.max(1.0) } else { 1.0 };
-    let a = (1.0 + p.ability).max(0.0) * combo;
+    // Multishot-only damage bonus applies to the extra projectiles: averaged over all of them.
+    let ms_bonus = if ms > 1.0 && p.multishot_damage != 0.0 { (1.0 + (ms - 1.0) * (1.0 + p.multishot_damage)) / ms } else { 1.0 };
+    let a = (1.0 + p.ability).max(0.0) * combo * ms_bonus;
 
     // 7. Crit. Expected multiplier split into its non-crit and crit parts so behaviours that act
     // on non-critical hits (Devouring Attrition) and critical headshots can be applied.
-    let cd = (comp.crit_mult * (1.0 + p.crit_damage) + p.crit_damage_flat).max(1.0);
+    // Threshold effects (Prelude of Might) check the build's final crit chance.
+    let (mut crit_mult_extra, mut crit_damage_extra) = (0.0, 0.0);
+    let mut threshold_explain = Vec::new();
+    for (thr, stat, v, src) in &p.below_crit {
+        let on = cc < *thr;
+        if on {
+            match stat {
+                Stat::CritMultBase => crit_mult_extra += v,
+                Stat::CritDamage => crit_damage_extra += v,
+                _ => approx.push(format!("{src}: threshold effect on {stat:?} not modelled")),
+            }
+        }
+        threshold_explain.push(Explain::new(src.clone(), if on { *v } else { 0.0 }).detail(format!(
+            "active while crit chance < {:.0}% (now {:.1}%)",
+            thr * 100.0,
+            cc * 100.0
+        )));
+    }
+    let cd = ((comp.crit_mult + p.crit_mult_base + crit_mult_extra) * (1.0 + p.crit_damage + crit_damage_extra) + p.crit_damage_flat).max(1.0);
     let m_crit = 1.0 + cc * (cd - 1.0);
     let p_crit = cc.min(1.0);
     let crit_part = m_crit - (1.0 - p_crit);
@@ -660,7 +725,7 @@ fn component(
         crit_factor = crit_factor.child(e);
     }
     let explain = vec![
-        Explain::new("Base damage", base_total),
+        Explain::new("Base damage", base_total).with(p.sources_for(|s| s == Stat::BaseDamageFlat)),
         Explain::new("Base damage multiplier", b).with(base_children),
         Explain::new("Damage per projectile after mods", damage.values().sum())
             .detail(
@@ -671,11 +736,13 @@ fn component(
                     .join(", "),
             )
             .with(p.sources_for(|s| matches!(s, Stat::Element(_) | Stat::Physical(_)))),
-        Explain::new("Faction multiplier", f).with(p.sources_for(|s| matches!(s, Stat::FactionDamage(_)))),
+        Explain::new("Faction multiplier", f).with(p.sources_for(|s| matches!(s, Stat::FactionDamage(_) | Stat::FactionDamageAll))),
         Explain::new("Ability damage multiplier", (1.0 + p.ability).max(0.0)).with(p.sources_for(|s| s == Stat::AbilityDamage)),
         Explain::new("Heavy attack combo multiplier", combo),
-        Explain::new("Crit chance", cc).with(crit_children),
-        Explain::new("Crit multiplier", cd).with(p.sources_for(|s| matches!(s, Stat::CritDamage | Stat::CritDamageFlat))),
+        Explain::new("Crit chance", cc).with(crit_children).with(p.sources_for(|s| s == Stat::CritChanceBase)),
+        Explain::new("Crit multiplier", cd)
+            .with(p.sources_for(|s| matches!(s, Stat::CritDamage | Stat::CritDamageFlat | Stat::CritMultBase)))
+            .with(threshold_explain),
         crit_factor,
         Explain::new("Status chance", sc).with(p.sources_for(|s| matches!(s, Stat::StatusChance | Stat::StatusChanceFlat))),
         Explain::new("Multishot", ms).with(p.sources_for(|s| s == Stat::Multishot)),

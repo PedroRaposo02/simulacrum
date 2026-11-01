@@ -61,6 +61,12 @@ enum Cmd {
         heavy: bool,
         #[arg(long, default_value_t = 5.0)]
         heavy_combo: f64,
+        /// Objective: burst | sustained | per-shot | per-charge.
+        #[arg(long, default_value = "burst")]
+        objective: String,
+        /// Comfort for guns: maximum fire rate (shots/s).
+        #[arg(long)]
+        max_fire_rate: Option<f64>,
         /// Comfort: minimum modded attack speed / fire rate.
         #[arg(long)]
         min_attack_speed: Option<f64>,
@@ -191,6 +197,15 @@ fn entry(r: OptimizeResult) -> BestEntry {
 
 fn print_optimized(r: &OptimizeResult) {
     println!("{} / {}: {} burst DPS ({} evaluations)", r.weapon, r.mode, fmt(r.burst_dps), r.evaluations);
+    println!(
+        "  {:.2} shots/s, per shot {}, sustained {}{}  [objective {:?}: {}]",
+        r.fire_rate,
+        fmt(r.per_shot),
+        fmt(r.sustained_dps),
+        r.per_charge.map(|c| format!(", per charge {}", fmt(c))).unwrap_or_default(),
+        r.objective,
+        fmt(r.score)
+    );
     if let Some(a) = r.attack_speed {
         println!(
             "  attack speed {:.2}{}, range {:.2} m{}",
@@ -312,7 +327,7 @@ fn run() -> Result<bool, String> {
             }
             Ok(regressions == 0)
         }
-        Cmd::Optimize { weapon, enemy, riven, all, out, mode, heavy, heavy_combo, min_attack_speed, range_tolerance, capacity, polarities } => {
+        Cmd::Optimize { weapon, enemy, riven, all, out, mode, heavy, heavy_combo, objective, max_fire_rate, min_attack_speed, range_tolerance, capacity, polarities } => {
             let data = load(&cli.data)?;
             if !all {
                 let w = weapon.ok_or("give a weapon name or --all")?;
@@ -332,7 +347,13 @@ fn run() -> Result<bool, String> {
                         .collect(),
                     ..Default::default()
                 });
-                let opts = OptimizeOptions { riven, mode, min_attack_speed, range_tolerance, capacity: cap, ..Default::default() };
+                let objective = match objective.as_str() {
+                    "sustained" => wf_opt::Objective::Sustained,
+                    "per-shot" => wf_opt::Objective::PerShot,
+                    "per-charge" => wf_opt::Objective::PerCharge,
+                    _ => wf_opt::Objective::Burst,
+                };
+                let opts = OptimizeOptions { riven, mode, objective, max_fire_rate, min_attack_speed, range_tolerance, capacity: cap, ..Default::default() };
                 let t0 = std::time::Instant::now();
                 let r = optimize(&data, &w, &base, &target, &opts).map_err(|e| e.to_string())?;
                 print_optimized(&r);

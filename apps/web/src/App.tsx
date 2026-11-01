@@ -4,6 +4,7 @@ import WeaponBrowser from "./WeaponBrowser";
 import BuildEditor from "./BuildEditor";
 import ScenarioPanel from "./Scenario";
 import { APP_VERSION } from "./version";
+import ThemePicker from "./ThemePicker";
 
 export default function App() {
   const { status, error, tab, setTab, data, load } = useStore();
@@ -37,6 +38,7 @@ export default function App() {
         <span className="ml-auto text-xs text-zinc-500">
           data {data?.version} · {data?.weapons.length} weapons · {data?.mods.length} mods
         </span>
+        <ThemePicker />
       </header>
       <div className="grid gap-4 lg:grid-cols-[300px_1fr]">
         <ScenarioPanel />

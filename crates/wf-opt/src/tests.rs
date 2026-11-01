@@ -223,10 +223,24 @@ fn fixed_riven_grades_below_or_at_god_roll() {
         applies_to: wf_data::ComponentFilter::All,
         condition: wf_data::Condition::Always,
         per: None,
+        threshold: None,
     }];
     let graded = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { fixed_riven: weak, ..Default::default() }).unwrap();
     assert!(graded.burst_dps < god.burst_dps);
     assert_eq!(graded.riven.len(), 1);
     let normal = graded.mods.iter().filter(|m| !d.find_mod(m).unwrap().is_exilus).count();
     assert!(normal <= 7);
+}
+
+#[test]
+fn objective_per_charge_ignores_fire_rate_and_cap_is_respected() {
+    let d = fixture();
+    let t = Target::default();
+    let burst = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions::default()).unwrap();
+    let per = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { objective: Objective::PerCharge, ..Default::default() }).unwrap();
+    assert!(per.per_shot >= burst.per_shot, "damage per magazine favours damage over fire rate");
+    assert!(!per.mods.iter().any(|m| m == "Gunslinger"), "{:?}", per.mods);
+    let capped = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { max_fire_rate: Some(3.0), ..Default::default() }).unwrap();
+    assert!(capped.fire_rate <= 3.0 + 1e-9, "fire rate {}", capped.fire_rate);
+    assert!(!capped.below_attack_speed_floor);
 }
