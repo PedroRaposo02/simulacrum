@@ -1046,5 +1046,132 @@ fn optimize_mode(
     })
 }
 
+/// One riven roll (its positive stats) and how good it is for a weapon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RivenRoll {
+    pub stats: Vec<RivenPick>,
+    /// Objective value of the weapon's build with this riven (max rolls, harmless negative).
+    pub score: f64,
+    /// `score` as a fraction of the best roll's.
+    pub ratio: f64,
+    pub spliced: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RivenRanking {
+    pub weapon: String,
+    pub mode: String,
+    /// The build the rolls were scored with (the riven takes one normal slot).
+    pub mods: Vec<String>,
+    pub arcane: Option<String>,
+    pub rolls: Vec<RivenRoll>,
+    pub evaluations: u64,
+}
+
+/// Rank every riven roll (2 or 3 positive stats, harmless negative, max rolls) for a weapon.
+/// Rolls are scored against the weapon's best riven build with its riven removed, so ranking
+/// hundreds of rolls stays fast; the mods aren't re-optimized per roll.
+pub fn rank_rivens(data: &GameData, weapon_key: &str, base: &Build, target: &Target, opts: &OptimizeOptions) -> Result<RivenRanking, CalcError> {
+    let best = optimize(data, weapon_key, base, target, &OptimizeOptions { riven: true, ..opts.clone() })?;
+    let weapon = data.weapon(weapon_key).ok_or_else(|| CalcError::new(ErrorCode::UnknownWeapon, weapon_key.to_string()))?;
+    let table = data.riven.as_ref().ok_or_else(|| CalcError::new(ErrorCode::MissingField, "game data has no riven table"))?;
+    let enemy = resolve_enemy(data, target)?;
+    let faction = enemy.as_ref().map_or(Faction::None, |e| e.faction);
+    let ty = RivenType::for_pool(weapon.mod_pool);
+    let mods: Vec<&Mod> = best.mods.iter().filter_map(|n| data.find_mod(n)).collect();
+    let arcane = best.arcane.as_deref().and_then(|a| data.find_arcane(a));
+    let evolutions: Vec<&wf_data::Evolution> = best.evolutions.iter().filter_map(|e| weapon.evolution(e)).collect();
+    let mut ctx = Ctx {
+        weapon,
+        enemy,
+        target,
+        build: Build { weapon: weapon.id.clone(), mods: vec![], arcane: None, riven: vec![], ..base.clone() },
+        mode: best.mode_index,
+        candidates: vec![],
+        evals: 0,
+        min_attack_speed: opts.min_attack_speed,
+        max_fire_rate: opts.max_fire_rate,
+        min_crit_chance: opts.min_crit_chance,
+        objective: opts.objective,
+        rate_cap: weapon.modes.get(best.mode_index).map_or(f64::INFINITY, comfort_rate_cap),
+        capacity: None,
+        evolutions,
+    };
+    let roll = table.roll_max;
+    let pool: Vec<&wf_data::RivenStatDef> = table
+        .stats
+        .iter()
+        .filter(|s| (opts.spliced_riven || !s.spliced) && s.base.contains_key(&ty))
+        .filter(|s| s.stat.is_some_and(|st| stat_matters(st, faction, opts.allow_faction)))
+        .collect();
+    let mut rolls = Vec::new();
+    for positives in [3usize, 2] {
+        let Some(layout) = table.layout(positives, true) else { continue };
+        let mut idx: Vec<usize> = (0..positives).collect();
+        loop {
+            let defs: Vec<&wf_data::RivenStatDef> = idx.iter().map(|&i| pool[i]).collect();
+            let spliced = defs.iter().filter(|d| d.spliced).count();
+            if spliced <= MAX_SPLICED {
+                let stats: Vec<RivenStat> = defs
+                    .iter()
+                    .map(|d| RivenStat {
+                        key: d.key.clone(),
+                        label: d.label.clone(),
+                        spliced: d.spliced,
+                        modifier: Modifier {
+                            source: format!("Riven {}", d.label),
+                            stat: d.stat.unwrap(),
+                            value: d.base[&ty] * table.disposition * layout.positive_mult * roll,
+                            max_stacks: 1,
+                            applies_to: d.applies_to.unwrap_or(wf_data::ComponentFilter::All),
+                            condition: wf_data::Condition::Always,
+                            per: None,
+                            threshold: None,
+                            aiming: false,
+                            only_slots: vec![],
+                            not_slots: vec![],
+                        },
+                    })
+                    .collect();
+                let score = ctx.raw(&mods, arcane, &stats);
+                rolls.push(RivenRoll {
+                    stats: stats.iter().map(|r| RivenPick { key: r.key.clone(), label: r.label.clone(), value: r.modifier.value }).collect(),
+                    score,
+                    ratio: 0.0,
+                    spliced: spliced > 0,
+                });
+            }
+            // Next combination of `positives` indices out of pool.len().
+            let n = pool.len();
+            let mut i = positives;
+            while i > 0 && idx[i - 1] == n - positives + i - 1 {
+                i -= 1;
+            }
+            if i == 0 {
+                break;
+            }
+            idx[i - 1] += 1;
+            for j in i..positives {
+                idx[j] = idx[j - 1] + 1;
+            }
+        }
+    }
+    rolls.sort_by(|a, b| b.score.total_cmp(&a.score));
+    let top = rolls.first().map_or(1.0, |r| r.score.max(f64::MIN_POSITIVE));
+    for r in &mut rolls {
+        r.ratio = r.score / top;
+    }
+    Ok(RivenRanking {
+        weapon: weapon.name.clone(),
+        mode: best.mode,
+        mods: best.mods,
+        arcane: best.arcane,
+        rolls,
+        evaluations: ctx.evals + best.evaluations,
+    })
+}
+
 #[cfg(test)]
 mod tests;

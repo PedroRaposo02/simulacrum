@@ -4,7 +4,7 @@ See also `TODO-userinput.md` (the user's list, ticked as items land).
 
 ## Next (priority order)
 1. ~~Forma and capacity planner~~ done. Follow-ups: stance capacity for melee; let users pin existing forma'd slots.
-2. Riven roll ranking per weapon (user #31): every 2-3 positive combination ranked by best-build DPS, so rolling can stop early.
+2. ~~Riven roll ranking~~ done (scored with fixed mods; re-optimizing per roll would be more exact but ~100x slower).
 3. Export JSON + Markdown (user #24): Markdown laid out like the cards; JSON re-importable.
 4. Favorites for weapons and builds (user #25) with a favorites section.
 5. Niche builds page (user #17): curated / user-entered builds by purpose (primer, Heat inherit, Gas/Blast nukes).

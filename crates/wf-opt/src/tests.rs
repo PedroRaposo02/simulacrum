@@ -260,3 +260,14 @@ fn balanced_objective_ignores_fire_rate_above_the_comfort_cap() {
     assert!(!r.mods.iter().any(|m| m == "Gunslinger" || m == "Lethal Torrent"), "{:?}", r.mods);
     assert!((comfort_rate_cap(&d.weapons[0].modes[0]) - 10.0).abs() < 1e-9, "base x1.25 beats the semi cap");
 }
+
+#[test]
+fn riven_ranking_is_sorted_and_relative() {
+    let d = fixture();
+    let r = rank_rivens(&d, "Test Pistol", &Build::default(), &Target::default(), &OptimizeOptions::default()).unwrap();
+    // 4 damage stats in the fixture's riven table: C(4,3) + C(4,2) = 10 rolls.
+    assert_eq!(r.rolls.len(), 10);
+    assert!((r.rolls[0].ratio - 1.0).abs() < 1e-12);
+    assert!(r.rolls.windows(2).all(|w| w[0].score >= w[1].score));
+    assert!(r.rolls.iter().all(|x| x.ratio <= 1.0 + 1e-12 && x.ratio > 0.0));
+}

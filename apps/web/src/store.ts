@@ -14,6 +14,7 @@ import type {
   OptimizeOptions,
   OptimizeResult,
   RankRow,
+  RivenRanking,
   SavedBuild,
   Target,
   Weapon,
@@ -239,9 +240,10 @@ export function rank(engine: Engine, target: Target, base: EngineBuild, perWeapo
 // Optimizer runs in a worker so the page stays responsive.
 let worker: Worker | null = null;
 let nextId = 0;
-const pending = new Map<number, (r: { ok?: OptimizeResult; error?: CalcError }) => void>();
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const pending = new Map<number, (r: { ok?: any; error?: CalcError }) => void>();
 
-export function optimizeInWorker(weapon: string, base: EngineBuild, target: Target, options: OptimizeOptions): Promise<{ ok?: OptimizeResult; error?: CalcError }> {
+function runInWorker<T>(kind: "optimize" | "rankRivens", weapon: string, base: EngineBuild, target: Target, options: OptimizeOptions): Promise<{ ok?: T; error?: CalcError }> {
   if (!worker) {
     worker = new Worker(new URL("./optimizer.worker.ts", import.meta.url), { type: "module" });
     worker.onmessage = (e: MessageEvent<{ id: number; result: string }>) => {
@@ -252,9 +254,15 @@ export function optimizeInWorker(weapon: string, base: EngineBuild, target: Targ
   const id = nextId++;
   return new Promise((resolve) => {
     pending.set(id, resolve);
-    worker!.postMessage({ id, weapon, base: JSON.stringify(base), target: JSON.stringify(target), options: JSON.stringify(options) });
+    worker!.postMessage({ id, kind, weapon, base: JSON.stringify(base), target: JSON.stringify(target), options: JSON.stringify(options) });
   });
 }
+
+export const optimizeInWorker = (weapon: string, base: EngineBuild, target: Target, options: OptimizeOptions) =>
+  runInWorker<OptimizeResult>("optimize", weapon, base, target, options);
+
+export const rankRivensInWorker = (weapon: string, base: EngineBuild, target: Target, options: OptimizeOptions) =>
+  runInWorker<RivenRanking>("rankRivens", weapon, base, target, options);
 
 export function fmt(v: number): string {
   if (!isFinite(v)) return "—";

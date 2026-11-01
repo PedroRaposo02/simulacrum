@@ -1,7 +1,83 @@
 import { formatRivenValue, layoutOf, rivenType, rowValue, statRange } from "./riven";
 import { useState } from "react";
-import { pct, placeRiven, useStore } from "./store";
-import type { RivenRow, RivenState, Weapon } from "./types";
+import { fmt, pct, placeRiven, rankRivensInWorker, scenarioBuild, useStore } from "./store";
+import type { RivenRanking, RivenRow, RivenState, Weapon } from "./types";
+
+const SHOWN = 30;
+
+/** Every 2-3 positive roll for this weapon, best to worst, scored with its best riven build. */
+function RollRanking({ weapon, onUse }: { weapon: Weapon; onUse: (keys: string[]) => void }) {
+  const { data, scenario } = useStore();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [ranking, setRanking] = useState<RivenRanking | null>(null);
+  const [spliced, setSpliced] = useState(true);
+  const [all, setAll] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    setError(null);
+    const r = await rankRivensInWorker(weapon.id, scenarioBuild(data!, scenario), scenario.target, { splicedRiven: spliced });
+    setBusy(false);
+    if (r.ok) setRanking(r.ok);
+    else setError(r.error?.message ?? "ranking failed");
+  };
+  const rolls = ranking ? (all ? ranking.rolls : ranking.rolls.slice(0, SHOWN)) : [];
+  return (
+    <div className="space-y-2 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="label mb-0">Roll ranking</label>
+        <label className="flex items-center gap-1 text-xs text-zinc-500">
+          <input type="checkbox" className="accent-indigo-600" checked={spliced} onChange={(e) => setSpliced(e.target.checked)} />
+          include spliced stats
+        </label>
+        <button
+          disabled={busy}
+          onClick={run}
+          className="ml-auto rounded-md border border-fuchsia-500 px-2 py-1 text-xs text-fuchsia-700 hover:bg-fuchsia-50 disabled:opacity-60 dark:text-fuchsia-300 dark:hover:bg-fuchsia-950/40"
+        >
+          {busy ? "Ranking…" : ranking ? "Re-rank" : "Rank all rolls"}
+        </button>
+      </div>
+      <p className="text-[11px] text-zinc-500">
+        Every combination of 2–3 positive stats (max rolls, harmless negative), scored with this weapon&apos;s best riven build for the current scenario.
+        Rolls near 100% are worth keeping; anything far below is a reroll.
+      </p>
+      {error && <p className="text-xs text-red-600">{error}</p>}
+      {ranking && (
+        <>
+          <ol className="max-h-80 space-y-0.5 overflow-y-auto text-xs">
+            {rolls.map((r, i) => (
+              <li key={r.stats.map((s) => s.key).join("+")} className="flex items-center gap-2">
+                <span className="w-6 shrink-0 text-right tabular-nums text-zinc-400">{i + 1}</span>
+                <span className="min-w-0 flex-1 truncate" title={r.stats.map((s) => s.label).join(" + ")}>
+                  {r.stats.map((s) => s.label).join(" + ")}
+                  {r.spliced ? <span className="ml-1 text-fuchsia-600 dark:text-fuchsia-400">spliced</span> : null}
+                </span>
+                <span className="h-1.5 w-16 shrink-0 rounded bg-zinc-100 dark:bg-zinc-800">
+                  <span className="block h-1.5 rounded bg-fuchsia-500" style={{ width: `${Math.max(2, r.ratio * 100)}%` }} />
+                </span>
+                <span className="w-12 shrink-0 text-right tabular-nums">{pct(r.ratio, 0)}</span>
+                <button className="shrink-0 text-indigo-600 hover:underline" onClick={() => onUse(r.stats.map((s) => s.key))}>
+                  Use
+                </button>
+              </li>
+            ))}
+          </ol>
+          <div className="flex items-center gap-2 text-[11px] text-zinc-500">
+            <span>
+              {ranking.rolls.length} rolls · best {fmt(ranking.rolls[0]?.score ?? 0)} on {ranking.mode}
+            </span>
+            {ranking.rolls.length > SHOWN && (
+              <button className="ml-auto text-indigo-600 hover:underline" onClick={() => setAll(!all)}>
+                {all ? `Show top ${SHOWN}` : `Show all ${ranking.rolls.length}`}
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 /** Riven with up to 3 positives and 1 negative; each stat has a slider across its real roll range. */
 export default function RivenEditor({ weapon }: { weapon: Weapon }) {
@@ -122,6 +198,13 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
         </button>
       </div>
       {notice && <p className="text-xs text-amber-700 dark:text-amber-400">{notice}</p>}
+      <RollRanking
+        weapon={weapon}
+        onUse={(keys) => {
+          const harmless = table.stats.find((s) => !s.stat && s.base[ty] != null);
+          setRiven({ positives: keys.map((key) => ({ key, roll: 1 })), negative: harmless ? { key: harmless.key, roll: 1 } : null });
+        }}
+      />
       <p className="text-[11px] text-zinc-500">
         Range = base × {table.disposition} disposition × layout × {table.rollMin}–{table.rollMax}. For negatives, the right end is the smallest penalty.
       </p>

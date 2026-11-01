@@ -285,6 +285,9 @@ export interface OptimizeOptions {
 
 export interface SavedBuild { name: string; savedAt: number; build: EditorBuild }
 
+export interface RivenRoll { stats: RivenPick[]; score: number; ratio: number; spliced: boolean }
+export interface RivenRanking { weapon: string; mode: string; mods: string[]; arcane: string | null; rolls: RivenRoll[]; evaluations: number }
+
 export interface BestEntry {
   modeIndex: number;
   burstDps: number;

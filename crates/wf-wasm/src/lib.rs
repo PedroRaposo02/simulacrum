@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use wf_opt::{optimize, riven_modifiers, OptimizeOptions, RivenPick};
+use wf_opt::{optimize, rank_rivens, riven_modifiers, OptimizeOptions, RivenPick};
 use wasm_bindgen::prelude::*;
 use wf_calc::{compute, Build, Target};
 use wf_data::{Coverage, GameData};
@@ -123,6 +123,18 @@ impl Engine {
             }
         }
         to_json(&rows)
+    }
+
+    /// Every riven roll for a weapon ranked best to worst. Returns `{"ok": RivenRanking}` or `{"error": …}`.
+    #[wasm_bindgen(js_name = rankRivens)]
+    pub fn rank_rivens(&self, weapon: &str, base_build_json: &str, target_json: &str, options_json: &str) -> String {
+        let base: Build = serde_json::from_str(base_build_json).unwrap_or_default();
+        let target: Target = serde_json::from_str(target_json).unwrap_or_default();
+        let opts: OptimizeOptions = serde_json::from_str(options_json).unwrap_or_default();
+        match rank_rivens(&self.data, weapon, &base, &target, &opts) {
+            Ok(r) => to_json(&serde_json::json!({ "ok": r })),
+            Err(e) => to_json(&serde_json::json!({ "error": e })),
+        }
     }
 
     /// Theoretical best build for one weapon. Returns `{"ok": OptimizeResult}` or `{"error": CalcError}`.

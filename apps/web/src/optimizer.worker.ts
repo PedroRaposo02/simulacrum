@@ -9,11 +9,12 @@ function getEngine(): Promise<Engine> {
   return engine;
 }
 
-self.onmessage = async (e: MessageEvent<{ id: number; weapon: string; base: string; target: string; options: string }>) => {
-  const { id, weapon, base, target, options } = e.data;
+self.onmessage = async (e: MessageEvent<{ id: number; kind?: "optimize" | "rankRivens"; weapon: string; base: string; target: string; options: string }>) => {
+  const { id, kind, weapon, base, target, options } = e.data;
   try {
     const eng = await getEngine();
-    self.postMessage({ id, result: eng.optimize(weapon, base, target, options) });
+    const result = kind === "rankRivens" ? eng.rankRivens(weapon, base, target, options) : eng.optimize(weapon, base, target, options);
+    self.postMessage({ id, result });
   } catch (err) {
     self.postMessage({ id, result: JSON.stringify({ error: { code: "internal", message: String(err) } }) });
   }
