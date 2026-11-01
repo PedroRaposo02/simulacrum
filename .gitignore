@@ -7,3 +7,4 @@ sweep-report.json
 data/ingest-report.json
 data/best-builds.json
 apps/web/public/best-builds.json
+tools/ingest/.cache/

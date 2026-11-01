@@ -14,6 +14,13 @@ pub struct SweepEntry {
     pub burst_dps: f64,
     pub sustained_dps: f64,
     pub coverage: Coverage,
+    /// False for per-hit gauges (heavy, Tennokai) and side attacks; they skip the outlier check.
+    #[serde(default = "yes")]
+    pub headline: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,7 +49,7 @@ const OUTLIER_RATIO: f64 = 25.0;
 
 fn outliers(entries: &[SweepEntry]) -> Vec<(SweepEntry, f64)> {
     let mut groups: std::collections::BTreeMap<(String, String), Vec<f64>> = Default::default();
-    for e in entries {
+    for e in entries.iter().filter(|e| e.headline) {
         groups.entry((e.build.clone(), e.enemy.clone())).or_default().push(e.burst_dps);
     }
     let medians: std::collections::BTreeMap<_, f64> = groups
@@ -54,6 +61,7 @@ fn outliers(entries: &[SweepEntry]) -> Vec<(SweepEntry, f64)> {
         .collect();
     entries
         .iter()
+        .filter(|e| e.headline)
         .filter_map(|e| {
             let m = medians[&(e.build.clone(), e.enemy.clone())];
             let ratio = e.burst_dps / m.max(f64::MIN_POSITIVE);
@@ -135,6 +143,7 @@ pub fn sweep(data: &GameData, enemies: &[Option<String>]) -> SweepReport {
                                 burst_dps: m.burst_dps,
                                 sustained_dps: m.sustained_dps,
                                 coverage: m.coverage,
+                                headline: w.modes[m.mode_index].is_headline(),
                             });
                         }
                     }

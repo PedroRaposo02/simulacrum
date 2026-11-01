@@ -11,8 +11,10 @@ import type {
   EngineBuild,
   GameData,
   Modifier,
+  OptimizeOptions,
   OptimizeResult,
   RankRow,
+  SavedBuild,
   Target,
   Weapon,
 } from "./types";
@@ -24,13 +26,35 @@ export const emptyBuild = (weapon = ""): EditorBuild => ({
   slots: Array(SLOT_COUNT + 1).fill(""),
   arcane: null,
   riven: emptyRiven(),
+  evolutions: [],
 });
+
+/** The riven sits in the last normal slot. */
+export const RIVEN_SLOT = SLOT_COUNT - 1;
+
+/**
+ * Put a riven into its slot. A mod already there moves to the first free normal slot; if every
+ * slot is taken it's removed. Returns the updated build and the name of a removed mod, if any.
+ */
+export function placeRiven(b: EditorBuild): { build: EditorBuild; displaced: string | null } {
+  if (!b.riven.positives.length || !b.slots[RIVEN_SLOT]) return { build: b, displaced: null };
+  const slots = [...b.slots];
+  const mod = slots[RIVEN_SLOT];
+  slots[RIVEN_SLOT] = "";
+  const free = slots.findIndex((s, i) => i < RIVEN_SLOT && !s);
+  if (free >= 0) {
+    slots[free] = mod;
+    return { build: { ...b, slots }, displaced: null };
+  }
+  return { build: { ...b, slots }, displaced: mod };
+}
 
 export const defaultConditions = (): Conditions => ({
   conditionalUptime: 1,
   headshotShare: 0,
   statusTypes: 4,
   comboMultiplier: 12,
+  heavyComboMultiplier: 5,
   headshotEffects: true,
 });
 
@@ -83,7 +107,7 @@ function readShared(): EditorBuild | null {
   try {
     const b = JSON.parse(decodeURIComponent(atob(location.hash.slice(SHARE_PREFIX.length))));
     const base = emptyBuild(b.weapon ?? "");
-    return { ...base, ...b, slots: [...(b.slots ?? []), ...base.slots].slice(0, SLOT_COUNT + 1) };
+    return { ...base, ...b, evolutions: b.evolutions ?? [], slots: [...(b.slots ?? []), ...base.slots].slice(0, SLOT_COUNT + 1) };
   } catch {
     return null;
   }
@@ -108,7 +132,7 @@ export function slotsFrom(data: GameData, mods: string[], hasRiven: boolean): st
 
 export function buildFromBest(data: GameData, weapon: Weapon, e: BestEntry): EditorBuild {
   const riven = e.riven?.length && data.riven ? rivenFromPicks(data.riven, e.riven, e.rivenNegative, weapon.modPool) : emptyRiven();
-  return { weapon: weapon.id, slots: slotsFrom(data, e.mods, !!e.riven?.length), arcane: e.arcane, riven };
+  return { weapon: weapon.id, slots: slotsFrom(data, e.mods, !!e.riven?.length), arcane: e.arcane, riven, evolutions: e.evolutions ?? [] };
 }
 
 export function buffModifiers(data: GameData, s: Scenario): Modifier[] {
@@ -132,13 +156,14 @@ export function engineBuild(data: GameData, b: EditorBuild, s: Scenario): Engine
     arcane: b.arcane,
     riven: weapon ? rivenModifiers(data, b.riven, weapon.modPool) : [],
     buffs: buffModifiers(data, s),
+    evolutions: (b.evolutions ?? []).filter(Boolean),
     conditions: s.conditions,
   };
 }
 
 /** Base build carrying only the scenario (buffs + conditions), for rank/optimize calls. */
 export function scenarioBuild(data: GameData, s: Scenario): EngineBuild {
-  return { weapon: "", mods: [], arcane: null, riven: [], buffs: buffModifiers(data, s), conditions: s.conditions };
+  return { weapon: "", mods: [], arcane: null, riven: [], buffs: buffModifiers(data, s), evolutions: [], conditions: s.conditions };
 }
 
 export const targetKey = (t: Target) => t.enemy ?? "raw";
@@ -206,7 +231,7 @@ let worker: Worker | null = null;
 let nextId = 0;
 const pending = new Map<number, (r: { ok?: OptimizeResult; error?: CalcError }) => void>();
 
-export function optimizeInWorker(weapon: string, base: EngineBuild, target: Target, riven: boolean): Promise<{ ok?: OptimizeResult; error?: CalcError }> {
+export function optimizeInWorker(weapon: string, base: EngineBuild, target: Target, options: OptimizeOptions): Promise<{ ok?: OptimizeResult; error?: CalcError }> {
   if (!worker) {
     worker = new Worker(new URL("./optimizer.worker.ts", import.meta.url), { type: "module" });
     worker.onmessage = (e: MessageEvent<{ id: number; result: string }>) => {
@@ -217,7 +242,7 @@ export function optimizeInWorker(weapon: string, base: EngineBuild, target: Targ
   const id = nextId++;
   return new Promise((resolve) => {
     pending.set(id, resolve);
-    worker!.postMessage({ id, weapon, base: JSON.stringify(base), target: JSON.stringify(target), options: JSON.stringify({ riven }) });
+    worker!.postMessage({ id, weapon, base: JSON.stringify(base), target: JSON.stringify(target), options: JSON.stringify(options) });
   });
 }
 
@@ -232,3 +257,34 @@ export function fmt(v: number): string {
 }
 
 export const pct = (v: number, digits = 1) => `${(v * 100).toFixed(digits)}%`;
+
+// Saved builds live in this browser only (localStorage); export/import moves them elsewhere.
+const SAVED_KEY = "simulacrum.savedBuilds.v1";
+
+export function loadSaved(): SavedBuild[] {
+  try {
+    const raw = localStorage.getItem(SAVED_KEY);
+    const list = raw ? (JSON.parse(raw) as SavedBuild[]) : [];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+export function storeSaved(list: SavedBuild[]): boolean {
+  try {
+    localStorage.setItem(SAVED_KEY, JSON.stringify(list));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function downloadJson(name: string, data: unknown) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}

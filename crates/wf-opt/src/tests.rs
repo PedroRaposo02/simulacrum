@@ -170,3 +170,63 @@ fn exilus_slot_only_takes_exilus_mods() {
     assert_eq!(r.mods.len(), 9);
     assert_eq!(r.mods.last().map(String::as_str), Some("Hush"));
 }
+
+#[test]
+fn realistic_capacity_is_respected() {
+    let d = fixture();
+    let cap = CapacityOptions { capacity: 60.0, polarities: vec![None; 9], riven_drain: 9.0 };
+    let o = OptimizeOptions { capacity: Some(cap.clone()), ..Default::default() };
+    let r = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &o).unwrap();
+    // Every fixture mod drains 4 + 10 = 14 unpolarized: at most 4 fit in 60.
+    assert!(r.mods.len() <= 4, "{:?}", r.mods);
+    assert!(r.drain.unwrap() <= 60.0);
+    let theoretical = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &OptimizeOptions::default()).unwrap();
+    assert!(r.burst_dps < theoretical.burst_dps);
+}
+
+#[test]
+fn matching_polarities_halve_drain() {
+    let d = fixture();
+    let m = d.find_mod("Hornet Strike").unwrap();
+    assert_eq!(slot_drain(m, None), 14.0);
+    assert_eq!(slot_drain(m, Some("madurai")), 7.0);
+    assert_eq!(slot_drain(m, Some("naramon")), 18.0);
+    let cap = CapacityOptions { capacity: 60.0, polarities: vec![Some("madurai".into()); 9], riven_drain: 9.0 };
+    let o = OptimizeOptions { capacity: Some(cap), ..Default::default() };
+    let r = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &o).unwrap();
+    assert_eq!(r.mods.len(), 8, "8 madurai mods at 7 each fit: {:?}", r.mods);
+}
+
+#[test]
+fn attack_speed_floor_is_met_when_possible() {
+    let d = fixture();
+    let plain = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &OptimizeOptions::default()).unwrap();
+    let o = OptimizeOptions { min_attack_speed: Some(5.5), ..Default::default() };
+    let r = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &o).unwrap();
+    let b = r.to_build(&d, &Build::default());
+    let fire_rate = compute(&d, &b, &Target::default()).unwrap().modes[0].fire_rate;
+    assert!(fire_rate >= 5.5, "fire rate {fire_rate} with {:?}", r.mods);
+    assert!(!r.below_attack_speed_floor);
+    assert!(r.burst_dps <= plain.burst_dps + 1e-9);
+}
+
+#[test]
+fn fixed_riven_grades_below_or_at_god_roll() {
+    let d = fixture();
+    let t = Target::default();
+    let god = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { riven: true, ..Default::default() }).unwrap();
+    let weak = vec![Modifier {
+        source: "Riven Critical Damage".into(),
+        stat: Stat::CritDamage,
+        value: 0.5,
+        max_stacks: 1,
+        applies_to: wf_data::ComponentFilter::All,
+        condition: wf_data::Condition::Always,
+        per: None,
+    }];
+    let graded = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { fixed_riven: weak, ..Default::default() }).unwrap();
+    assert!(graded.burst_dps < god.burst_dps);
+    assert_eq!(graded.riven.len(), 1);
+    let normal = graded.mods.iter().filter(|m| !d.find_mod(m).unwrap().is_exilus).count();
+    assert!(normal <= 7);
+}

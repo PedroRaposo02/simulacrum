@@ -1,5 +1,6 @@
-import { layoutOf, rivenType, rowValue, statRange } from "./riven";
-import { pct, useStore } from "./store";
+import { formatRivenValue, layoutOf, rivenType, rowValue, statRange } from "./riven";
+import { useState } from "react";
+import { pct, placeRiven, useStore } from "./store";
 import type { RivenRow, RivenState, Weapon } from "./types";
 
 /** Riven with up to 3 positives and 1 negative; each stat has a slider across its real roll range. */
@@ -10,7 +11,14 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
   const ty = rivenType(weapon.modPool);
   const riven = build.riven;
   const layout = layoutOf(table, riven);
-  const setRiven = (r: RivenState) => setBuild({ ...build, riven: r });
+  const [notice, setNotice] = useState<string | null>(null);
+  // The riven takes the last normal slot; a mod sitting there moves to a free slot (or is removed).
+  const setRiven = (r: RivenState) => {
+    const { build: next, displaced } = placeRiven({ ...build, riven: r });
+    setBuild(next);
+    const name = displaced && data!.mods.find((m) => m.id === displaced)?.name;
+    setNotice(name ? `${name} was removed: the riven needs a slot and every other slot is full.` : null);
+  };
 
   const available = table.stats.filter((s) => s.base[ty] != null);
   const used = new Set([...riven.positives.map((p) => p.key), riven.negative?.key].filter(Boolean));
@@ -35,15 +43,30 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
             onChange={(e) => setRow(e.target.value ? { key: e.target.value, roll: r?.roll ?? 1 } : null)}
           >
             <option value="">{negative ? "— negative (optional) —" : `— positive ${i + 1} —`}</option>
-            {options.map((s) => (
-              <option key={s.key} value={s.key}>
-                {s.label}
-                {negative && !s.stat ? " (harmless)" : ""}
-              </option>
-            ))}
+            <optgroup label="Stats">
+              {options
+                .filter((s) => !s.spliced)
+                .map((s) => (
+                  <option key={s.key} value={s.key}>
+                    {s.label}
+                    {negative && !s.stat ? " (harmless)" : !s.stat ? " (no modelled effect)" : ""}
+                  </option>
+                ))}
+            </optgroup>
+            {options.some((s) => s.spliced) && (
+              <optgroup label="Spliced only">
+                {options
+                  .filter((s) => s.spliced)
+                  .map((s) => (
+                    <option key={s.key} value={s.key}>
+                      {s.label}
+                    </option>
+                  ))}
+              </optgroup>
+            )}
           </select>
           <span className={`num w-20 shrink-0 self-center text-right text-sm font-medium ${negative ? "text-red-600 dark:text-red-400" : ""}`}>
-            {value == null ? "" : `${value > 0 ? "+" : ""}${(value * 100).toFixed(1)}%`}
+            {value == null || !r ? "" : formatRivenValue(table, r.key, value)}
           </span>
         </div>
         {r && range && (
@@ -59,7 +82,7 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
               aria-label={`${r.key} roll`}
             />
             <span className="num w-28 shrink-0 text-right text-[11px] text-zinc-500">
-              {(range[0] * 100).toFixed(1)}…{(range[1] * 100).toFixed(1)}%
+              {formatRivenValue(table, r.key, range[0])} … {formatRivenValue(table, r.key, range[1])}
             </span>
           </div>
         )}
@@ -73,7 +96,7 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
     riven.positives.length > 0 ? riven.positives.reduce((a, p) => a + p.roll, 0) / riven.positives.length : null;
 
   return (
-    <div className="card space-y-3">
+    <div id="riven-editor" className="card space-y-3">
       <div className="flex items-center justify-between">
         <label className="label mb-0">Riven</label>
         <span className="text-xs text-zinc-500">
@@ -98,6 +121,7 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
           Clear
         </button>
       </div>
+      {notice && <p className="text-xs text-amber-700 dark:text-amber-400">{notice}</p>}
       <p className="text-[11px] text-zinc-500">
         Range = base × {table.disposition} disposition × layout × {table.rollMin}–{table.rollMax}. For negatives, the right end is the smallest penalty.
       </p>

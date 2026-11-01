@@ -53,6 +53,26 @@ enum Cmd {
         enemy: Option<String>,
         #[arg(long)]
         riven: bool,
+        /// Attack mode index (see `explain`); default: best headline mode.
+        #[arg(long)]
+        mode: Option<usize>,
+        /// Optimize the weapon's heavy attack (melee) at --heavy-combo.
+        #[arg(long)]
+        heavy: bool,
+        #[arg(long, default_value_t = 5.0)]
+        heavy_combo: f64,
+        /// Comfort: minimum modded attack speed / fire rate.
+        #[arg(long)]
+        min_attack_speed: Option<f64>,
+        /// Comfort: accept a range mod if it costs at most this DPS fraction (e.g. 0.05).
+        #[arg(long)]
+        range_tolerance: Option<f64>,
+        /// Realistic mode: total mod capacity (e.g. 60); polarities via --polarities.
+        #[arg(long)]
+        capacity: Option<f64>,
+        /// 9 comma-separated slot polarities (8 normal + exilus), "-" for none.
+        #[arg(long, value_delimiter = ',')]
+        polarities: Vec<String>,
         /// Every weapon x (raw + every enemy preset) x (with and without riven), written to --out.
         #[arg(long)]
         all: bool,
@@ -132,6 +152,8 @@ struct BestEntry {
     riven: Vec<RivenPick>,
     #[serde(skip_serializing_if = "Option::is_none")]
     riven_negative: Option<RivenPick>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    evolutions: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -163,16 +185,32 @@ fn entry(r: OptimizeResult) -> BestEntry {
         arcane: r.arcane,
         riven: r.riven,
         riven_negative: r.riven_negative,
+        evolutions: r.evolutions,
     }
 }
 
 fn print_optimized(r: &OptimizeResult) {
     println!("{} / {}: {} burst DPS ({} evaluations)", r.weapon, r.mode, fmt(r.burst_dps), r.evaluations);
+    if let Some(a) = r.attack_speed {
+        println!(
+            "  attack speed {:.2}{}, range {:.2} m{}",
+            a,
+            if r.below_attack_speed_floor { " (below the floor!)" } else { "" },
+            r.range_m.unwrap_or(0.0),
+            r.range_cost.map(|c| format!(" (range costs {:.1}% DPS)", c * 100.0)).unwrap_or_default()
+        );
+    }
+    if let Some(d) = r.drain {
+        println!("  capacity used {d}");
+    }
     for (i, m) in r.mods.iter().enumerate() {
         println!("  {}. {m}", i + 1);
     }
     if let Some(a) = &r.arcane {
         println!("  arcane: {a}");
+    }
+    if !r.evolutions.is_empty() {
+        println!("  evolutions: {}", r.evolutions.join(", "));
     }
     for p in &r.riven {
         println!("  riven +{:.1}% {}", p.value * 100.0, p.label);
@@ -274,14 +312,29 @@ fn run() -> Result<bool, String> {
             }
             Ok(regressions == 0)
         }
-        Cmd::Optimize { weapon, enemy, riven, all, out } => {
+        Cmd::Optimize { weapon, enemy, riven, all, out, mode, heavy, heavy_combo, min_attack_speed, range_tolerance, capacity, polarities } => {
             let data = load(&cli.data)?;
             if !all {
                 let w = weapon.ok_or("give a weapon name or --all")?;
                 let target = Target { enemy, ..Default::default() };
+                let wd = data.weapon(&w).ok_or("unknown weapon")?;
+                let mode = if heavy {
+                    Some(wd.modes.iter().position(|m| m.melee_role == Some(wf_data::MeleeRole::Heavy)).ok_or("no heavy attack mode")?)
+                } else {
+                    mode
+                };
+                let mut base = Build::default();
+                base.conditions.heavy_combo_multiplier = heavy_combo;
+                let cap = capacity.map(|c| wf_opt::CapacityOptions {
+                    capacity: c,
+                    polarities: (0..9)
+                        .map(|i| polarities.get(i).filter(|p| p.as_str() != "-" && !p.is_empty()).cloned())
+                        .collect(),
+                    ..Default::default()
+                });
+                let opts = OptimizeOptions { riven, mode, min_attack_speed, range_tolerance, capacity: cap, ..Default::default() };
                 let t0 = std::time::Instant::now();
-                let r = optimize(&data, &w, &Build::default(), &target, &OptimizeOptions { riven, ..Default::default() })
-                    .map_err(|e| e.to_string())?;
+                let r = optimize(&data, &w, &base, &target, &opts).map_err(|e| e.to_string())?;
                 print_optimized(&r);
                 println!("  took {:.2}s", t0.elapsed().as_secs_f64());
                 return Ok(true);

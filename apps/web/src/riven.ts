@@ -52,7 +52,7 @@ export function rivenModifiers(data: GameData, r: RivenState, pool: ModPool): Mo
     const def = table.stats.find((s) => s.key === row.key);
     const value = rowValue(table, row, ty, layout, neg);
     if (!def?.stat || value == null) continue;
-    out.push({ source: `Riven ${def.label}`, stat: def.stat, value });
+    out.push({ source: `Riven ${def.label}`, stat: def.stat, value, ...(def.appliesTo ? { appliesTo: def.appliesTo } : {}) });
   }
   return out;
 }
@@ -74,4 +74,12 @@ export function rivenFromPicks(table: RivenTable, picks: RivenPick[], negative: 
   state.positives = picks.map((p) => ({ key: p.key, roll: toRoll(p, false) }));
   if (negative) state.negative = { key: negative.key, roll: toRoll(negative, true) };
   return state;
+}
+
+/** Display a rolled value: percentages as %, flat stats with their unit. */
+export function formatRivenValue(table: RivenTable, key: string, value: number): string {
+  const def = table.stats.find((s) => s.key === key);
+  const sign = value > 0 ? "+" : "";
+  if (def?.unit) return `${sign}${value.toFixed(def.unit === "count" ? 1 : 2)}${def.unit === "count" ? "" : ` ${def.unit}`}`;
+  return `${sign}${(value * 100).toFixed(1)}%`;
 }

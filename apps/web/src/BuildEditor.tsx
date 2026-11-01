@@ -1,19 +1,83 @@
-import { useMemo, useState } from "react";
-import {
-  buildFromBest,
-  compute,
-  engineBuild,
-  fmt,
-  optimizeInWorker,
-  pct,
-  scenarioBuild,
-  shareLink,
-  SLOT_COUNT,
-  useStore,
-} from "./store";
+import { Fragment, useMemo, useState } from "react";
+import { compute, engineBuild, fmt, pct, RIVEN_SLOT, shareLink, SLOT_COUNT, useStore } from "./store";
+import { formatRivenValue, layoutOf, rivenType, rowValue } from "./riven";
 import { CoverageBadge, ExplainTree } from "./Common";
 import RivenEditor from "./RivenEditor";
-import type { EditorBuild, Mod, ModeResult, OptimizeResult } from "./types";
+import MeleeSummary from "./MeleeSummary";
+import OptimizerControls, { type ComfortSettings, type OptimizerState } from "./OptimizerControls";
+import SavedBuilds from "./SavedBuilds";
+import type { EditorBuild, Mod, ModeResult, OptimizeResult, Weapon } from "./types";
+
+/** The riven drawn in its mod slot, with its rolled stats. */
+function RivenSlot({ weapon, build }: { weapon: Weapon; build: EditorBuild }) {
+  const { data } = useStore();
+  const table = data!.riven!;
+  const layout = layoutOf(table, build.riven);
+  const ty = rivenType(weapon.modPool);
+  const rows = [...build.riven.positives.map((r) => ({ r, neg: false })), ...(build.riven.negative ? [{ r: build.riven.negative, neg: true }] : [])];
+  return (
+    <button
+      type="button"
+      onClick={() => document.getElementById("riven-editor")?.scrollIntoView({ behavior: "smooth", block: "center" })}
+      className="w-full rounded-md border border-fuchsia-400 bg-fuchsia-50 px-2 py-1.5 text-left text-sm dark:border-fuchsia-700 dark:bg-fuchsia-950/30"
+      title="Edit the riven below"
+    >
+      <span className="font-medium text-fuchsia-700 dark:text-fuchsia-300">Riven</span>
+      <span className="text-zinc-600 dark:text-zinc-300">
+        {" · "}
+        {rows
+          .map(({ r, neg }) => {
+            const def = table.stats.find((s) => s.key === r.key);
+            const v = layout ? rowValue(table, r, ty, layout, neg) : null;
+            return `${v == null ? "" : formatRivenValue(table, r.key, v) + " "}${def?.label ?? r.key}`;
+          })
+          .join(", ")}
+      </span>
+    </button>
+  );
+}
+
+/** One select per Incarnon evolution tier. */
+function EvolutionPicker({ weapon, build, setBuild }: { weapon: Weapon; build: EditorBuild; setBuild: (b: EditorBuild) => void }) {
+  const tiers = weapon.evolutions ?? [];
+  if (!tiers.length) return null;
+  const chosen = (tier: number) => tiers[tier].options.find((o) => (build.evolutions ?? []).includes(o.name))?.name ?? "";
+  const set = (tier: number, name: string) => {
+    const others = (build.evolutions ?? []).filter((n) => !tiers[tier].options.some((o) => o.name === n));
+    setBuild({ ...build, evolutions: name ? [...others, name] : others });
+  };
+  const ROMAN = ["", "I", "II", "III", "IV", "V"];
+  return (
+    <div>
+      <label className="label">Incarnon evolutions</label>
+      <div className="space-y-1.5">
+        {tiers.map((t, i) => {
+          const sel = t.options.find((o) => o.name === chosen(i));
+          const effect = !sel ? "" : sel.modifiers?.length || sel.behaviour ? "" : " (no damage effect)";
+          return (
+            <div key={t.tier}>
+              <select className="field" value={chosen(i)} onChange={(e) => set(i, e.target.value)} aria-label={`Evolution ${ROMAN[t.tier]}`}>
+                <option value="">Evolution {ROMAN[t.tier] ?? t.tier}: none</option>
+                {t.options.map((o) => (
+                  <option key={o.name} value={o.name} title={o.text}>
+                    {ROMAN[t.tier] ?? t.tier}: {o.name}
+                  </option>
+                ))}
+              </select>
+              {sel && (
+                <p className="mt-0.5 text-[11px] text-zinc-500">
+                  {sel.text}
+                  {sel.forms && sel.forms !== "both" ? ` · ${sel.forms === "incarnon" ? "Incarnon form only" : "normal form only"}` : ""}
+                  {effect}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function modSummary(m: Mod) {
   const parts = m.modifiers.map((x) => {
@@ -24,6 +88,7 @@ function modSummary(m: Mod) {
     return `${val} ${what}${per}${cond}`;
   });
   if (m.locksFireRate) parts.push("locks fire rate");
+  if (m.enablesTennokai) parts.push("enables Tennokai");
   return parts.join(", ") || "no modelled effect";
 }
 
@@ -87,19 +152,90 @@ function ModeCard({ m }: { m: ModeResult }) {
   );
 }
 
-function OptimizerPanel({ result, previous, onUndo }: { result: OptimizeResult; previous: EditorBuild | null; onUndo: () => void }) {
+/** Melee weapons have a dozen combos: show them as a table, expandable per row. */
+function MeleeModeTable({ modes, weapon }: { modes: ModeResult[]; weapon: Weapon }) {
+  const [open, setOpen] = useState<number | null>(null);
+  const roleLabel: Record<string, string> = { light: "Light", heavy: "Heavy", tennokai: "Tennokai", other: "Other" };
+  const sorted = [...modes].sort((a, b) => {
+    const ra = weapon.modes[a.modeIndex]?.meleeRole === "light" ? 0 : 1;
+    const rb = weapon.modes[b.modeIndex]?.meleeRole === "light" ? 0 : 1;
+    return ra - rb || b.burstDps - a.burstDps;
+  });
+  return (
+    <div className="card overflow-x-auto p-0">
+      <table className="w-full text-sm">
+        <thead className="border-b border-zinc-200 text-xs uppercase text-zinc-500 dark:border-zinc-800">
+          <tr>
+            <th className="px-2 py-2 text-left font-medium">Attack</th>
+            <th className="px-2 py-2 text-left font-medium">Type</th>
+            <th className="px-2 py-2 text-right font-medium">Per combo / hit</th>
+            <th className="px-2 py-2 text-right font-medium">DPS</th>
+            <th className="px-2 py-2 text-right font-medium">Combo</th>
+            <th className="px-2 py-2 text-left font-medium">Coverage</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((m) => {
+            const def = weapon.modes[m.modeIndex];
+            const isOpen = open === m.modeIndex;
+            return (
+              <Fragment key={m.modeIndex}>
+                <tr
+                  className="cursor-pointer border-b border-zinc-100 hover:bg-indigo-50 dark:border-zinc-800/60 dark:hover:bg-indigo-950/40"
+                  onClick={() => setOpen(isOpen ? null : m.modeIndex)}
+                >
+                  <td className="px-2 py-1.5">
+                    <span className="mr-1 text-zinc-400">{isOpen ? "▾" : "▸"}</span>
+                    {m.mode}
+                  </td>
+                  <td className="px-2 py-1.5 text-zinc-500">{roleLabel[def?.meleeRole ?? "other"]}</td>
+                  <td className="num px-2 py-1.5 text-right">{fmt(m.perShot)}</td>
+                  <td className="num px-2 py-1.5 text-right font-medium">{def?.meleeRole === "tennokai" ? "—" : fmt(m.burstDps)}</td>
+                  <td className="num px-2 py-1.5 text-right">{m.comboMultiplier ? `${m.comboMultiplier}×` : ""}</td>
+                  <td className="px-2 py-1.5">
+                    <CoverageBadge c={m.coverage} />
+                  </td>
+                </tr>
+                {isOpen && (
+                  <tr>
+                    <td colSpan={6} className="p-2">
+                      <ModeCard m={m} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function OptimizerPanel({ state, onUndo }: { state: OptimizerState; onUndo: () => void }) {
+  const result: OptimizeResult = state.result;
   return (
     <div className="card space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        <h3 className="font-semibold">Theoretical best{result.riven.length ? " + riven" : ""}</h3>
+        <h3 className="font-semibold">{state.label}</h3>
         <span className="text-sm text-zinc-500">
-          {result.mode} · {fmt(result.burstDps)} burst DPS · {result.evaluations.toLocaleString()} builds evaluated
+          {result.mode} · {fmt(result.burstDps)} {result.mode === "Heavy Attack" ? "heavy DPS" : "burst DPS"} · {result.evaluations.toLocaleString()} builds
+          evaluated
         </span>
-        {previous && (
-          <button className="ml-auto text-sm text-indigo-600 hover:underline" onClick={onUndo}>
-            Undo (restore previous build)
-          </button>
+        <button className="ml-auto text-sm text-indigo-600 hover:underline" onClick={onUndo}>
+          Undo (restore previous build)
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-x-4 text-xs text-zinc-500">
+        {result.attackSpeed != null && (
+          <span className={result.belowAttackSpeedFloor ? "text-amber-600" : ""}>
+            attack speed {result.attackSpeed.toFixed(2)}
+            {result.belowAttackSpeedFloor ? " (couldn't reach the floor)" : ""}
+          </span>
         )}
+        {result.rangeM != null && <span>range {result.rangeM.toFixed(2)} m</span>}
+        {result.rangeCost != null && <span>range costs {pct(result.rangeCost)} DPS</span>}
+        {result.drain != null && <span>capacity used {result.drain}</span>}
       </div>
       <p className="text-xs text-zinc-500">Applied to the editor. Marginal value = DPS lost if that piece is removed.</p>
       <div className="space-y-1">
@@ -110,7 +246,9 @@ function OptimizerPanel({ result, previous, onUndo }: { result: OptimizeResult; 
             </span>
             <div className="h-2 flex-1 rounded bg-zinc-100 dark:bg-zinc-800">
               <div
-                className={`h-2 rounded ${m.kind === "riven" ? "bg-fuchsia-500" : m.kind === "arcane" ? "bg-amber-500" : "bg-indigo-500"}`}
+                className={`h-2 rounded ${
+                  m.kind === "riven" ? "bg-fuchsia-500" : m.kind === "arcane" ? "bg-amber-500" : m.kind === "evolution" ? "bg-teal-500" : "bg-indigo-500"
+                }`}
                 style={{ width: `${Math.min(100, Math.max(0, m.loss * 100))}%` }}
               />
             </div>
@@ -125,9 +263,8 @@ function OptimizerPanel({ result, previous, onUndo }: { result: OptimizeResult; 
 export default function BuildEditor() {
   const { data, engine, build, setBuild, scenario, best } = useStore();
   const [copied, setCopied] = useState(false);
-  const [busy, setBusy] = useState<null | "plain" | "riven">(null);
-  const [opt, setOpt] = useState<{ result: OptimizeResult; previous: EditorBuild } | null>(null);
-  const [optError, setOptError] = useState<string | null>(null);
+  const [opt, setOpt] = useState<OptimizerState | null>(null);
+  const [comfort, setComfort] = useState<ComfortSettings>({ on: false, minAttackSpeed: 1.5, rangeTolerance: 0.05 });
   const weapon = data!.weapons.find((w) => w.id === build.weapon);
 
   const compatible = useMemo(() => {
@@ -145,27 +282,11 @@ export default function BuildEditor() {
     setBuild({ ...build, slots });
   };
   const hasRiven = build.riven.positives.length > 0;
-  const normalUsed = build.slots.slice(0, SLOT_COUNT).filter(Boolean).length;
 
   const result = useMemo(() => {
     if (!weapon) return null;
     return compute(engine!, engineBuild(data!, build, scenario), scenario.target);
   }, [engine, data, build, scenario, weapon]);
-
-  const runOptimizer = async (riven: boolean) => {
-    if (!weapon) return;
-    setBusy(riven ? "riven" : "plain");
-    setOptError(null);
-    const r = await optimizeInWorker(weapon.id, scenarioBuild(data!, scenario), scenario.target, riven);
-    setBusy(null);
-    if (r.error || !r.ok) {
-      setOptError(r.error?.message ?? "optimizer failed");
-      return;
-    }
-    const previous = build;
-    setBuild(buildFromBest(data!, weapon, r.ok));
-    setOpt({ result: r.ok, previous });
-  };
 
   const precomputed = weapon ? best?.targets[scenario.target.enemy ?? "raw"]?.[weapon.id] : undefined;
 
@@ -180,7 +301,7 @@ export default function BuildEditor() {
               value={build.weapon}
               onChange={(e) => {
                 setOpt(null);
-                setBuild({ weapon: e.target.value, slots: Array(SLOT_COUNT + 1).fill(""), arcane: null, riven: { positives: [], negative: null } });
+                setBuild({ weapon: e.target.value, slots: Array(SLOT_COUNT + 1).fill(""), arcane: null, riven: { positives: [], negative: null }, evolutions: [] });
               }}
             >
               <option value="">Choose a weapon…</option>
@@ -200,42 +321,29 @@ export default function BuildEditor() {
           </div>
           {weapon && (
             <>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  disabled={!!busy}
-                  onClick={() => runOptimizer(false)}
-                  className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-500 disabled:opacity-60"
-                >
-                  {busy === "plain" ? "Searching…" : "Best build (no riven)"}
-                </button>
-                <button
-                  disabled={!!busy}
-                  onClick={() => runOptimizer(true)}
-                  className="rounded-md bg-fuchsia-600 px-3 py-1.5 text-sm text-white hover:bg-fuchsia-500 disabled:opacity-60"
-                >
-                  {busy === "riven" ? "Searching…" : "Best build + riven"}
-                </button>
-              </div>
-              <p className="text-[11px] text-zinc-500">
-                Searches all compatible mods, arcanes and (optionally) a max-roll riven for the highest burst DPS under the current scenario. Any polarity, no
-                capacity limit.
-                {precomputed?.plain && ` Precomputed best: ${fmt(precomputed.plain.burstDps)}${precomputed.riven ? ` / ${fmt(precomputed.riven.burstDps)} with riven` : ""}.`}
-              </p>
-              {optError && <p className="text-sm text-red-600">{optError}</p>}
+              <OptimizerControls weapon={weapon} comfort={comfort} setComfort={setComfort} onResult={setOpt} />
+              {precomputed?.plain && (
+                <p className="text-[11px] text-zinc-500">
+                  Precomputed theoretical best: {fmt(precomputed.plain.burstDps)}
+                  {precomputed.riven ? ` / ${fmt(precomputed.riven.burstDps)} with riven` : ""}.
+                </p>
+              )}
               <div>
                 <label className="label">
-                  Mods <span className="normal-case">(slot order matters for elements{hasRiven ? "; the riven takes one slot" : ""})</span>
+                  Mods <span className="normal-case">(slot order matters for elements)</span>
                 </label>
                 <div className="space-y-1.5">
-                  {build.slots.slice(0, SLOT_COUNT).map((v, i) => (
-                    <ModSlot key={i} label={`Slot ${i + 1}`} value={v} options={compatible} used={used} onChange={(id) => setSlot(i, id)} />
-                  ))}
+                  {build.slots.slice(0, SLOT_COUNT).map((v, i) =>
+                    hasRiven && i === RIVEN_SLOT ? (
+                      <RivenSlot key={i} weapon={weapon} build={build} />
+                    ) : (
+                      <ModSlot key={i} label={`Slot ${i + 1}`} value={v} options={compatible} used={used} onChange={(id) => setSlot(i, id)} />
+                    ),
+                  )}
                   <ModSlot label="Exilus" value={build.slots[SLOT_COUNT]} options={exilusOptions} used={used} onChange={(id) => setSlot(SLOT_COUNT, id)} />
                 </div>
-                {hasRiven && normalUsed > SLOT_COUNT - 1 && (
-                  <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">8 mods plus a riven won't fit in game: clear one slot.</p>
-                )}
               </div>
+              <EvolutionPicker weapon={weapon} build={build} setBuild={setBuild} />
               <div>
                 <label className="label">Arcane</label>
                 <select className="field" value={build.arcane ?? ""} onChange={(e) => setBuild({ ...build, arcane: e.target.value || null })}>
@@ -256,6 +364,7 @@ export default function BuildEditor() {
         </div>
 
         {weapon && <RivenEditor weapon={weapon} />}
+        <SavedBuilds />
       </div>
 
       <div className="space-y-4">
@@ -283,21 +392,25 @@ export default function BuildEditor() {
         )}
         {opt && opt.result.weaponId === weapon?.id && (
           <OptimizerPanel
-            result={opt.result}
-            previous={opt.previous}
+            state={opt}
             onUndo={() => {
               setBuild(opt.previous);
               setOpt(null);
             }}
           />
         )}
+        {weapon?.melee && <MeleeSummary weapon={weapon} build={build} comfortSpeed={comfort.minAttackSpeed} />}
         {result?.error && <div className="card text-red-600">{result.error.message}</div>}
         {result?.ok?.warnings.map((w) => (
           <p key={w} className="text-xs text-amber-700 dark:text-amber-400">
             {w}
           </p>
         ))}
-        {result?.ok?.modes.map((m) => <ModeCard key={m.modeIndex} m={m} />)}
+        {weapon?.melee && result?.ok ? (
+          <MeleeModeTable modes={result.ok.modes} weapon={weapon} />
+        ) : (
+          result?.ok?.modes.map((m) => <ModeCard key={m.modeIndex} m={m} />)
+        )}
         {result?.ok?.failedModes.map((f) => (
           <div key={f.modeIndex} className="card">
             <div className="flex items-center gap-2">

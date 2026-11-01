@@ -1,12 +1,14 @@
 {
   "name": "@wf/ingest",
-  "version": "0.2.0-beta.1",
+  "version": "0.3.0-beta.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "ingest": "node --experimental-strip-types src/wfcd.ts"
+    "ingest": "node --experimental-strip-types src/wfcd.ts",
+    "fetch-wiki": "node --experimental-strip-types src/fetch-wiki.ts"
   },
   "dependencies": {
-    "@wfcd/items": "1.1276.46"
+    "@wfcd/items": "1.1276.46",
+    "luaparse": "0.3.1"
   }
 }

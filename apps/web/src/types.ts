@@ -28,7 +28,40 @@ export interface Mod {
   modifiers: Modifier[];
   requiresTrigger?: string;
   locksFireRate?: boolean;
+  enablesTennokai?: boolean;
   unparsed?: string[];
+}
+
+export type MeleeRole = "light" | "heavy" | "tennokai" | "other";
+
+export interface MeleeProfile {
+  class: string;
+  attackSpeed: number;
+  rangeM: number;
+  followThrough: number;
+  comboDurationS: number;
+  heavyDamage: number;
+  windUpS: number;
+  stances: string[];
+}
+
+export interface Evolution {
+  name: string;
+  text: string;
+  forms?: "both" | "incarnon" | "normal";
+  modifiers?: Modifier[];
+  behaviour?: { kind: string; [k: string]: unknown };
+}
+export interface EvolutionTier { tier: number; options: Evolution[] }
+
+export interface WeaponMode {
+  name: string;
+  incarnonForm?: boolean;
+  coverage: Coverage;
+  notes?: string[];
+  headline?: boolean;
+  meleeRole?: MeleeRole;
+  stance?: string;
 }
 
 export interface Weapon {
@@ -39,13 +72,23 @@ export interface Weapon {
   family: string;
   modPool: ModPool;
   image?: string;
-  modes: { name: string; coverage: Coverage; notes?: string[] }[];
+  melee?: MeleeProfile;
+  evolutions?: EvolutionTier[];
+  modes: WeaponMode[];
 }
 
 export interface Arcane { id: string; name: string; slot: string; behaviour: string | null; modifiers: Modifier[]; description: string }
 export interface EnemyProfile { id: string; name: string; faction: string; armor: number; note?: string }
 
-export interface RivenStatDef { key: string; label: string; stat: Stat | null; base: Partial<Record<RivenType, number>> }
+export interface RivenStatDef {
+  key: string;
+  label: string;
+  stat: Stat | null;
+  base: Partial<Record<RivenType, number>>;
+  unit?: "m" | "s" | "count";
+  spliced?: boolean;
+  appliesTo?: string;
+}
 export interface RivenLayout { positives: number; negative: boolean; positiveMult: number; negativeMult: number }
 export interface RivenTable { disposition: number; rollMin: number; rollMax: number; layouts: RivenLayout[]; stats: RivenStatDef[] }
 
@@ -75,6 +118,7 @@ export interface Conditions {
   headshotShare: number;
   statusTypes: number;
   comboMultiplier: number;
+  heavyComboMultiplier: number;
   headshotEffects: boolean;
 }
 
@@ -85,6 +129,7 @@ export interface EngineBuild {
   arcane: string | null;
   riven: Modifier[];
   buffs: Modifier[];
+  evolutions: string[];
   conditions: Conditions;
 }
 
@@ -107,6 +152,8 @@ export interface EditorBuild {
   slots: string[];
   arcane: string | null;
   riven: RivenState;
+  /** Chosen Incarnon evolution per tier (name or null). */
+  evolutions: string[];
 }
 
 export interface Explain { label: string; value: number; detail?: string; children?: Explain[] }
@@ -139,6 +186,9 @@ export interface ModeResult {
   statusDps: number;
   viralStacks: number;
   corrosiveStacks: number;
+  attackSpeed?: number;
+  rangeM?: number;
+  comboMultiplier?: number;
   components: ComponentResult[];
   explain: Explain;
 }
@@ -180,7 +230,29 @@ export interface OptimizeResult {
   rivenNegative: RivenPick | null;
   marginal: Marginal[];
   evaluations: number;
+  evolutions: string[];
+  attackSpeed: number | null;
+  rangeM: number | null;
+  drain: number | null;
+  rangeCost: number | null;
+  belowAttackSpeedFloor: boolean;
 }
+
+export interface CapacityOptions { capacity: number; polarities: (string | null)[]; rivenDrain: number }
+export interface OptimizeOptions {
+  mode?: number | null;
+  riven?: boolean;
+  arcane?: boolean;
+  minAttackSpeed?: number | null;
+  rangeTolerance?: number | null;
+  capacity?: CapacityOptions | null;
+  splicedRiven?: boolean;
+  fixedRiven?: Modifier[];
+  allowFaction?: boolean;
+  evolutions?: boolean;
+}
+
+export interface SavedBuild { name: string; savedAt: number; build: EditorBuild }
 
 export interface BestEntry {
   modeIndex: number;
@@ -189,6 +261,7 @@ export interface BestEntry {
   arcane: string | null;
   riven?: RivenPick[];
   rivenNegative?: RivenPick | null;
+  evolutions?: string[];
 }
 export interface BestBuilds {
   dataVersion: string;

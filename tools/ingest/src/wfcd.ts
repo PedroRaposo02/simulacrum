@@ -4,6 +4,10 @@ import { readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fetchWiki, wikiJson } from "./fetch-wiki.ts";
+import { meleeModes, wikiMeleeEntry } from "./melee.ts";
+
+await fetchWiki();
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const wfcdDir = join(dirname(fileURLToPath(import.meta.url)), "../node_modules/@wfcd/items/data/json");
@@ -68,12 +72,45 @@ const CONDITIONS: Record<string, string> = {
   "On Melee Kill": "onKill",
 };
 
+/** Melee-specific lines: flat range, heavy-only damage, wind-up, Tennokai effects. */
+function parseMeleeLine(source: string, line: string): Modifier[] | null {
+  const flat = line.match(/^([+-][\d.]+) Range$/);
+  if (flat) return [{ source, stat: { kind: "range" }, value: +flat[1] }];
+  const heavy = line.match(/^([+-][\d.]+)% Melee Damage on Heavy Attack$/);
+  if (heavy) return [{ source, stat: { kind: "baseDamage" }, value: +heavy[1] / 100, appliesTo: "heavyOnly" }];
+  const wind = line.match(/^([+-][\d.]+)% Heavy Attack Wind Up Speed$/);
+  if (wind) return [{ source, stat: { kind: "windUpSpeed" }, value: +wind[1] / 100 }];
+  // "+220% Critical Chance (x2 for Heavy Attacks)": base value for all hits, the same again for heavies.
+  const x2 = line.match(/^([+-][\d.]+)% (.+?) \(x2 for Heavy Attacks\)$/);
+  if (x2) {
+    const stat = statOf(x2[2]);
+    if (stat) return [{ source, stat, value: +x2[1] / 100 }, { source: `${source} (heavy x2)`, stat, value: +x2[1] / 100, appliesTo: "heavyOnly" }];
+  }
+  if (/Enables Tennokai/i.test(line)) {
+    const out: Modifier[] = [];
+    const dmg = line.match(/increases? Tennokai damage by ([\d.]+)%/i);
+    if (dmg) {
+      const onKill = /Tennokai kills/i.test(line);
+      out.push({ source, stat: { kind: "baseDamage" }, value: +dmg[1] / 100, appliesTo: "tennokaiOnly", ...(onKill ? { condition: "onKill" } : {}) });
+    }
+    const sc = line.match(/status chance by \+?([\d.]+)% on Tennokai/i);
+    if (sc) out.push({ source, stat: { kind: "statusChance" }, value: +sc[1] / 100, appliesTo: "tennokaiOnly" });
+    const cd = line.match(/critical damage by ([\d.]+)% for Tennokai/i);
+    if (cd) out.push({ source, stat: { kind: "critDamage" }, value: +cd[1] / 100, appliesTo: "tennokaiOnly" });
+    return out;
+  }
+  return null;
+}
+
 /** Parse one stat line into modifiers; returns null when it can't be read. */
 function parseLine(source: string, raw: string): Modifier[] | null {
   const line = raw.replace(/<[^>]+>/g, "").replace(/\\n/g, "\n").trim();
+  const melee = parseMeleeLine(source, line.replace(/\s+/g, " "));
+  if (melee) return melee;
   const faction = line.match(/^x([\d.]+) Damage to (\w+)$/);
-  if (faction && FACTIONS[faction[2]]) {
-    return [{ source, stat: { kind: "factionDamage", of: FACTIONS[faction[2]] }, value: +faction[1] - 1 }];
+  const factionKey = faction && (FACTIONS[faction[2]] ?? FACTIONS[faction[2].replace(/s$/, "")]);
+  if (faction && factionKey) {
+    return [{ source, stat: { kind: "factionDamage", of: factionKey }, value: +faction[1] - 1 }];
   }
   const cond = line.match(/^(On [\w ]+?):\s*\n?([\s\S]+)$/);
   if (cond) {
@@ -109,15 +146,18 @@ function exclusiveGroup(name: string, pool: string): string | undefined {
 }
 
 function buildMods() {
-  const mods = (load("Mods.json") as any[]).filter((m) => POOLS[m.type] && m.levelStats?.length);
+  const mods = (load("Mods.json") as any[]).filter((m) => POOLS[m.type] && (m.levelStats?.length || /Enables Tennokai/i.test(m.description ?? "")));
   const out = mods.map((m) => {
     const pool = POOLS[m.type];
     const compatRaw = String(m.compatName ?? "").toLowerCase();
     const compat = GENERIC_COMPAT.has(compatRaw) || !compatRaw ? null : compatRaw;
     const modifiers: Modifier[] = [];
     const unparsed: string[] = [];
-    for (const line of m.levelStats.at(-1).stats as string[]) {
-      for (const part of line.split(/\n(?=On )|\\n(?=On )/)) {
+    const lines: string[] = m.levelStats?.at(-1)?.stats ?? [];
+    // Tennokai mods put everything in one sentence block; parse it whole.
+    const parts = lines.flatMap((line) => (/Enables Tennokai/i.test(line) ? [line] : line.split(/\n(?=On )|\\n(?=On )/)));
+    for (const line of parts) {
+      for (const part of [line]) {
         const r = parseLine(m.name, part);
         if (r) modifiers.push(...r);
         else unparsed.push(part.replace(/<[^>]+>/g, "").replace(/\\n/g, " "));
@@ -126,10 +166,11 @@ function buildMods() {
     const desc = String(m.description ?? "");
     const requiresTrigger = /Only compatible with Semi-Auto/i.test(desc) ? "semi" : undefined;
     const locksFireRate = /Fire Rate cannot be modified/i.test(desc) || undefined;
+    const enablesTennokai = /Enables Tennokai/i.test(desc + lines.join(" ")) || undefined;
     return {
       id: m.uniqueName, name: m.name, pool, compat, polarity: m.polarity ?? "", baseDrain: m.baseDrain ?? 0,
       maxRank: m.fusionLimit ?? 0, isExilus: !!m.isExilus, exclusiveGroup: exclusiveGroup(m.name, pool),
-      modifiers, ...(requiresTrigger ? { requiresTrigger } : {}), ...(locksFireRate ? { locksFireRate } : {}), unparsed,
+      modifiers, ...(requiresTrigger ? { requiresTrigger } : {}), ...(locksFireRate ? { locksFireRate } : {}), ...(enablesTennokai ? { enablesTennokai } : {}), unparsed,
     };
   });
   // Same name can appear several times (beginner, PvP variants); keep the full version.
@@ -193,7 +234,16 @@ function modPoolOf(slot: string, cls: string, uniqueName: string): string {
 
 const FAMILY_AFFIXES = /^(Kuva|Tenet|Coda|Prisma|Mara|Dex|Synoid|Telos|Sancti|Rakta|Secura|Vaykor|Carmine|Ak|Twin|Mk1-) | (Prime|Vandal|Wraith|Prisma)$/g;
 
-const incarnon: Record<string, { rounds?: number; rechargeS?: number }> = override("incarnon.json").weapons;
+const incarnon: Record<string, { rounds?: number; rechargeS?: number; evolutions?: any[] }> = override("incarnon.json").weapons;
+
+// Incarnon magazine sizes from the wiki gun modules: attack-level IncarnonCharges, keyed by internal path.
+const wikiIncarnonRounds = new Map<string, number>();
+for (const file of ["primary.json", "secondary.json"]) {
+  for (const w of Object.values(wikiJson(file)) as any[]) {
+    const atk = (w?.Attacks ?? []).find((a: any) => a?.IncarnonCharges);
+    if (w?.InternalName && atk) wikiIncarnonRounds.set(w.InternalName, atk.IncarnonCharges);
+  }
+}
 
 function kindOf(a: any): string {
   if (a.shot_type === "AoE") return "radial";
@@ -252,7 +302,10 @@ function buildWeapon(w: any, slotFile: string) {
       trigger: isMelee ? "other" : a.charge_time ? "charge" : TRIGGER[w.trigger] ?? "other",
       fireRate: a.speed ?? 0, magazine: isIncarnon || isMelee ? null : w.magazineSize ?? null, reloadS: isMelee ? 0 : w.reloadTime ?? 0,
       ...(a.charge_time ? { chargeTimeS: a.charge_time } : {}),
-      ammoPool: isIncarnon ? { kind: "incarnon", rounds: inc?.rounds ?? null, recharge_s: inc?.rechargeS ?? null } : isMelee ? { kind: "none" } : { kind: "magazine" },
+      ammoPool: isIncarnon
+        ? { kind: "incarnon", rounds: inc?.rounds ?? wikiIncarnonRounds.get(w.uniqueName) ?? null, recharge_s: inc?.rechargeS ?? null }
+        : isMelee ? { kind: "none" } : { kind: "magazine" },
+      ...(isIncarnon ? { incarnonForm: true } : {}),
       components: [comp],
       ...(isMelee && !/^Normal Attack$/i.test(a.name) ? { headline: false } : {}),
       coverage: hasDamage && hasRate && !eventTriggered ? "computed" : "unsupported",
@@ -262,13 +315,48 @@ function buildWeapon(w: any, slotFile: string) {
     });
   }
   for (const m of modes) delete m.shotType;
+  let melee: any;
+  if (isMelee) {
+    const entry = wikiMeleeEntry(w.uniqueName, w.name);
+    const normalAtk = (w.attacks ?? []).find((a: any) => /^Normal Attack$/i.test(a.name));
+    const attackSpeed = entry?.Attacks?.[0]?.FireRate ?? normalAtk?.speed ?? w.fireRate ?? 1;
+    for (const m of modes) m.meleeRole = /^Normal Attack$/i.test(m.name) ? "light" : "other";
+    if (entry && normalAtk) {
+      const normal = {
+        damage: damageMap(normalAtk.damage),
+        critChance: (normalAtk.crit_chance ?? 0) / 100,
+        critMult: normalAtk.crit_mult ?? 1,
+        statusChance: (normalAtk.status_chance ?? 0) / 100,
+      };
+      const extra = meleeModes(entry, normal, attackSpeed);
+      if (extra.stances.length) {
+        for (const m of modes) {
+          if (/^Normal Attack$/i.test(m.name)) {
+            m.name = "Normal Attack (no stance)";
+            m.headline = false;
+          }
+        }
+      }
+      // Wiki heavy attack replaces the WFCD heavy entries (which lack wind-up).
+      for (let i = modes.length - 1; i >= 0; i--) if (/^Heavy Attack$/i.test(modes[i].name)) modes.splice(i, 1);
+      modes.push(...extra.modes);
+      tags.add("stances");
+      melee = {
+        class: entry.Class, attackSpeed, rangeM: entry.MeleeRange ?? 0, followThrough: entry.FollowThrough ?? 1,
+        comboDurationS: entry.ComboDur ?? 5, heavyDamage: entry.HeavyAttack ?? 0, windUpS: entry.WindUp ?? 1,
+        stances: extra.stances,
+      };
+    }
+  }
   const slot = SLOT[slotFile];
   const cls = isMelee ? "melee" : CLASS[w.type] ?? "rifle";
   return {
     id: w.uniqueName, name: w.name, slot, class: cls, modPool: modPoolOf(slot, cls, w.uniqueName),
     family: w.name.replace(FAMILY_AFFIXES, "").trim(), modes, innate: [], mechanicTags: [...tags],
     image: w.imageName ? `https://cdn.warframestat.us/img/${w.imageName}` : undefined,
-    sources: { base: "wfcd", attacks: "wfcd (wiki-derived)" },
+    ...(melee ? { melee } : {}),
+    ...(incarnon[w.name]?.evolutions ? { evolutions: incarnon[w.name].evolutions } : {}),
+    sources: { base: "wfcd", attacks: "wfcd (wiki-derived)", ...(melee ? { melee: "wiki Module:Weapons/data/melee + Module:Stances/data" } : {}) },
   };
 }
 
@@ -294,13 +382,17 @@ const weapons = buildWeapons();
 const mods = buildMods();
 const arcanes = buildArcanes();
 const enemies = override("enemies.json").enemies;
-const { _note: _rivenNote, ...riven } = override("riven.json");
+const { _note: _rivenNote, source: _rivenSource, readOn: _rivenReadOn, ...riven } = override("riven.json");
 const buffs = override("buffs.json").buffs;
 const body = { weapons, mods, arcanes, enemies, riven, buffs };
 const hash = createHash("sha256").update(JSON.stringify(body)).digest("hex").slice(0, 12);
 const gamedata = {
   version: hash, generatedAt: new Date().toISOString(),
-  sources: { wfcd: `@wfcd/items ${wfcdVersion} (MIT)`, overrides: "data/overrides" },
+  sources: {
+    wfcd: `@wfcd/items ${wfcdVersion} (MIT)`,
+    wiki: "wiki.warframe.com melee and stance modules (CC BY-NC-SA 3.0)",
+    overrides: "data/overrides",
+  },
   ...body,
 };
 

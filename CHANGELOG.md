@@ -2,6 +2,19 @@
 
 Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the version lives in `Cargo.toml` (workspace) and the `package.json` files, and each release is tagged `v<version>`.
 
+## 0.3.0-beta.1 — 2026-11-01
+
+- **Rivens**: wiki base values for every riven type, including melee-only and spliced stats (flat stats shown in m / s / count); "Grade my riven" compares the best build around your riven with the best god-roll build.
+- **Melee from the wiki**: stats (range, follow-through, heavy damage, wind-up) and every stance's combos become attack modes with per-hit multipliers; Heavy Attack and Tennokai modes; melee summary with 1×/12× light combo, 1×/5× heavy, Tennokai per hit, attack-speed comfort and multi-target follow-through.
+- **Optimizer**: searches the top 3 combos/modes, heavy builds at the heavy combo, comfort mode (attack speed floor, range if cheap), realistic mode (capacity and slot polarities), fixed-riven grading. Marginal values use raw DPS.
+- **Mods**: flat range, heavy-only damage and wind-up speed, "x2 for Heavy Attacks", Tennokai mods, plural faction names.
+- **Saved builds**: save, load, delete, export and import in the editor.
+- **Sweep**: per-hit gauges (heavy, Tennokai) are excluded from the outlier check.
+- Ingest fetches wiki modules (`Module:Weapons/data/melee`, `Module:Stances/data`) with a 24-hour cache.
+- **Incarnon evolutions**: per-tier evolutions with form targeting and behaviours (Devouring Attrition, Overwhelming Attrition, simulated jointly with Enervate); Laetum curated; editor picker; optimizer picks one per tier; Incarnon magazine sizes from the wiki.
+- **Faction mods** are excluded from the optimizer by default (toggle to allow).
+- **Editor**: the riven shows in its mod slot; buff rows and narrow number inputs fixed (`.field` now in the components layer).
+
 ## 0.2.0-beta.1 — 2026-11-01
 
 - **Categories**: melee (215 weapons) and companion weapons ingested; the browser has Primary / Secondary / Melee / Arch-gun / Companion tabs. Companion weapons borrow the mod pool matching their internal path. Melee is Approximate: attack speed is used as hits per second and stance/combo multipliers aren't modelled; side attacks (slams, throws) aren't used as the headline number.

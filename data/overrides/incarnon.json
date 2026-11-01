@@ -1,4 +1,61 @@
 {
-  "_note": "Incarnon form ammo per charge and recharge time. Unknown values leave sustained DPS = burst and mark the mode Approximate. Fill from in-game tests.",
-  "weapons": {}
+  "_note": "Incarnon evolutions per weapon, hand-curated from each weapon's wiki page (no wiki data module has them). Tier I (the Incarnon form itself) is implicit. Each option: name, text (as in game), forms ('both' | 'incarnon' | 'normal'), modifiers (engine stat lines) and/or behaviour (named mechanic with tunable parameters). Options with no damage effect just have text. Incarnon magazine sizes come from the wiki weapon modules (IncarnonCharges); 'rounds' here overrides them.",
+  "weapons": {
+    "Laetum": {
+      "source": "https://wiki.warframe.com/w/Laetum (read 2026-11-01)",
+      "evolutions": [
+        {
+          "tier": 2,
+          "options": [
+            { "name": "Marksman's Hand", "text": "-40% Recoil" },
+            { "name": "Rapid Wrath", "text": "+20% Fire Rate", "modifiers": [{ "source": "Rapid Wrath", "stat": { "kind": "fireRate" }, "value": 0.2 }] },
+            { "name": "Raptor's Chase", "text": "+50% Movement Speed while Aiming" }
+          ]
+        },
+        {
+          "tier": 3,
+          "options": [
+            {
+              "name": "Lethal Rearmament",
+              "text": "On Headshot: +30% Reload Speed for 12s. Stacks up to 3x.",
+              "modifiers": [{ "source": "Lethal Rearmament (on headshot)", "stat": { "kind": "reloadSpeed" }, "value": 0.3, "maxStacks": 3, "condition": "onHeadshot" }]
+            },
+            { "name": "Awakened Readiness", "text": "30% Magazine Reloaded/s while Holstered", "forms": "normal" },
+            { "name": "Feather of Justice", "text": "+60% Ammo Efficiency while Aim Gliding or Sliding", "forms": "normal" }
+          ]
+        },
+        {
+          "tier": 4,
+          "options": [
+            { "name": "Caput Mortuum", "text": "+50% Headshot Damage", "modifiers": [{ "source": "Caput Mortuum", "stat": { "kind": "headshotDamage" }, "value": 0.5 }] },
+            { "name": "Incarnon Efficiency", "text": "Headshots build 50% more Transmutation charge" },
+            {
+              "name": "Elemental Excess",
+              "text": "+20% Status Chance, -10% Critical Chance (flat, after mods)",
+              "modifiers": [
+                { "source": "Elemental Excess", "stat": { "kind": "statusChanceFlat" }, "value": 0.2 },
+                { "source": "Elemental Excess", "stat": { "kind": "critChanceFlat" }, "value": -0.1 }
+              ]
+            }
+          ]
+        },
+        {
+          "tier": 5,
+          "options": [
+            {
+              "name": "Devouring Attrition",
+              "text": "50% chance to deal +2000% damage on non-critical hits (multiplicative; doesn't work on bosses)",
+              "behaviour": { "kind": "devouringAttrition", "chance": 0.5, "bonus": 20.0, "ignoredByBosses": true }
+            },
+            { "name": "Reaper's Plenty", "text": "On Headshot: +40% Ammo Efficiency for 6s", "forms": "normal" },
+            {
+              "name": "Overwhelming Attrition",
+              "text": "On a hit that is neither critical nor applies a status: +400% damage for 10s, stacks up to 3x (additive with damage mods; stacks decay one at a time)",
+              "behaviour": { "kind": "overwhelmingAttrition", "bonus": 4.0, "maxStacks": 3, "durationS": 10.0 }
+            }
+          ]
+        }
+      ]
+    }
+  }
 }

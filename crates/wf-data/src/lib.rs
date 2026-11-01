@@ -168,11 +168,15 @@ pub struct HitRules {
     pub gun_co: Option<GunCo>,
     /// Melee heavy attacks multiply by the combo multiplier they consume.
     pub combo_scaling: bool,
+    /// Heavy attack hit (receives heavy-only bonuses such as "x2 for Heavy Attacks").
+    pub heavy: bool,
+    /// Tennokai hit: a heavy attack that doesn't consume combo (uses the light build's combo).
+    pub tennokai: bool,
 }
 
 impl Default for HitRules {
     fn default() -> Self {
-        Self { can_headshot: true, receives_multishot: true, gun_co: None, combo_scaling: false }
+        Self { can_headshot: true, receives_multishot: true, gun_co: None, combo_scaling: false, heavy: false, tennokai: false }
     }
 }
 
@@ -220,6 +224,79 @@ pub struct AttackMode {
     /// attack speed; such modes aren't picked as the weapon's headline number.
     #[serde(default = "yes", skip_serializing_if = "Clone::clone")]
     pub headline: bool,
+    /// Melee: what this mode represents (light stance combo, heavy attack, Tennokai).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub melee_role: Option<MeleeRole>,
+    /// Stance this combo belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stance: Option<String>,
+    /// Incarnon form attack (evolutions can target one form or both).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub incarnon_form: bool,
+}
+
+/// Which weapon form an Incarnon evolution affects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum EvolutionForms {
+    #[default]
+    Both,
+    Incarnon,
+    Normal,
+}
+
+/// Named mechanics a stat line can't express. Parameters live in data so they can be tuned.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "kind")]
+pub enum BehaviourDef {
+    /// `chance` to deal +`bonus` (2000% = 20.0) damage on non-critical hits; multiplicative.
+    DevouringAttrition { chance: f64, bonus: f64, #[serde(default = "yes")] ignored_by_bosses: bool },
+    /// A hit that neither crits nor procs status adds a stack of +`bonus` base damage (additive),
+    /// up to `max_stacks`; each stack lasts `duration_s`, decaying one at a time.
+    OverwhelmingAttrition { bonus: f64, max_stacks: u32, duration_s: f64 },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Evolution {
+    pub name: String,
+    pub text: String,
+    #[serde(default)]
+    pub forms: EvolutionForms,
+    #[serde(default)]
+    pub modifiers: Vec<Modifier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behaviour: Option<BehaviourDef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvolutionTier {
+    pub tier: u8,
+    pub options: Vec<Evolution>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MeleeRole {
+    Light,
+    Heavy,
+    Tennokai,
+    Other,
+}
+
+/// Wiki melee stats that aren't per attack.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeleeProfile {
+    pub class: String,
+    pub attack_speed: f64,
+    pub range_m: f64,
+    pub follow_through: f64,
+    pub combo_duration_s: f64,
+    pub heavy_damage: f64,
+    pub wind_up_s: f64,
+    pub stances: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -254,8 +331,19 @@ pub struct Weapon {
     pub mechanic_tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub melee: Option<MeleeProfile>,
+    /// Incarnon evolutions by tier (hand-curated in data/overrides/incarnon.json).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evolutions: Vec<EvolutionTier>,
     #[serde(default)]
     pub sources: BTreeMap<String, String>,
+}
+
+impl Weapon {
+    pub fn evolution(&self, name: &str) -> Option<&Evolution> {
+        self.evolutions.iter().flat_map(|t| t.options.iter()).find(|e| e.name.eq_ignore_ascii_case(name))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -267,6 +355,8 @@ pub enum Stat {
     Multishot,
     CritChance,
     CritChanceFlat,
+    /// Flat status chance added after mods (Elemental Excess).
+    StatusChanceFlat,
     CritDamage,
     CritDamageFlat,
     StatusChance,
@@ -278,6 +368,10 @@ pub enum Stat {
     StatusDuration,
     /// Ability damage buffs (Roar, Eclipse): one additive pool, applied as a final multiplier.
     AbilityDamage,
+    /// Melee range in meters (flat).
+    Range,
+    /// Heavy attack wind-up speed (percent).
+    WindUpSpeed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -286,6 +380,9 @@ pub enum ComponentFilter {
     All,
     DirectOnly,
     RadialOnly,
+    /// Heavy attacks (including Tennokai).
+    HeavyOnly,
+    TennokaiOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -360,6 +457,9 @@ pub struct Mod {
     /// While equipped, fire rate bonuses from every source are ignored.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub locks_fire_rate: bool,
+    /// Tennokai mods: Tennokai attacks are only possible with one equipped.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub enables_tennokai: bool,
     /// Stat lines the ingest parser could not turn into modifiers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unparsed: Vec<String>,
@@ -427,6 +527,14 @@ pub struct RivenStatDef {
     pub stat: Option<Stat>,
     /// Base value (fraction) per riven type, before disposition and layout. Missing = can't roll.
     pub base: BTreeMap<RivenType, f64>,
+    /// "m", "s" or "count" for flat stats; None for percentages.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// Only obtainable by splicing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub spliced: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applies_to: Option<ComponentFilter>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -27,6 +27,7 @@ struct Pools {
     multishot: f64,
     crit_chance: f64,
     crit_chance_flat: f64,
+    status_chance_flat: f64,
     crit_damage: f64,
     crit_damage_flat: f64,
     status_chance: f64,
@@ -37,6 +38,8 @@ struct Pools {
     headshot: f64,
     status_duration: f64,
     ability: f64,
+    range: f64,
+    wind_up: f64,
     sources: Vec<(String, Stat, f64)>,
 }
 
@@ -50,6 +53,7 @@ impl Pools {
             Stat::Multishot => self.multishot += v,
             Stat::CritChance => self.crit_chance += v,
             Stat::CritChanceFlat => self.crit_chance_flat += v,
+            Stat::StatusChanceFlat => self.status_chance_flat += v,
             Stat::CritDamage => self.crit_damage += v,
             Stat::CritDamageFlat => self.crit_damage_flat += v,
             Stat::StatusChance => self.status_chance += v,
@@ -60,6 +64,8 @@ impl Pools {
             Stat::HeadshotDamage => self.headshot += v,
             Stat::StatusDuration => self.status_duration += v,
             Stat::AbilityDamage => self.ability += v,
+            Stat::Range => self.range += v,
+            Stat::WindUpSpeed => self.wind_up += v,
         }
         self.sources.push((m.source.clone(), m.stat, v));
     }
@@ -78,8 +84,17 @@ pub struct Resolved<'a> {
     pub weapon: &'a Weapon,
     pub mods: Vec<&'a Mod>,
     pub arcane: Option<&'a Arcane>,
+    pub evolutions: Vec<&'a Evolution>,
     pub enemy: Option<EnemyProfile>,
     pub warnings: Vec<String>,
+}
+
+fn form_ok(forms: EvolutionForms, mode: &AttackMode) -> bool {
+    match forms {
+        EvolutionForms::Both => true,
+        EvolutionForms::Incarnon => mode.incarnon_form,
+        EvolutionForms::Normal => !mode.incarnon_form,
+    }
 }
 
 pub fn resolve_enemy(data: &GameData, target: &Target) -> Result<Option<EnemyProfile>, CalcError> {
@@ -133,8 +148,15 @@ fn resolve<'a>(data: &'a GameData, build: &Build, target: &Target) -> Result<Res
         ),
         None => None,
     };
+    let mut evolutions = Vec::new();
+    for name in &build.evolutions {
+        let e = weapon.evolution(name).ok_or_else(|| {
+            CalcError::new(ErrorCode::UnknownEvolution, format!("{} has no evolution '{name}'", weapon.name))
+        })?;
+        evolutions.push(e);
+    }
     let enemy = resolve_enemy(data, target)?;
-    Ok(Resolved { weapon, mods, arcane, enemy, warnings })
+    Ok(Resolved { weapon, mods, arcane, evolutions, enemy, warnings })
 }
 
 fn condition_scale(m: &Modifier, c: &Conditions) -> f64 {
@@ -152,12 +174,28 @@ fn condition_scale(m: &Modifier, c: &Conditions) -> f64 {
     cond * per
 }
 
-fn filter_ok(f: ComponentFilter, kind: HitKind) -> bool {
+fn filter_ok(f: ComponentFilter, comp: &HitComponent) -> bool {
     match f {
         ComponentFilter::All => true,
-        ComponentFilter::DirectOnly => kind != HitKind::Radial,
-        ComponentFilter::RadialOnly => kind == HitKind::Radial,
+        ComponentFilter::DirectOnly => comp.kind != HitKind::Radial,
+        ComponentFilter::RadialOnly => comp.kind == HitKind::Radial,
+        ComponentFilter::HeavyOnly => comp.rules.heavy || comp.rules.tennokai,
+        ComponentFilter::TennokaiOnly => comp.rules.tennokai,
     }
+}
+
+/// Combo multiplier in effect for a hit: regular heavies consume the heavy combo; light hits and
+/// Tennokai heavies (which don't consume combo) see the light build's combo.
+fn combo_for(c: &Conditions, rules: &HitRules) -> f64 {
+    if rules.combo_scaling && !rules.tennokai {
+        c.heavy_combo_multiplier.max(1.0)
+    } else {
+        c.combo_multiplier.max(1.0)
+    }
+}
+
+fn with_combo(c: &Conditions, combo: f64) -> Conditions {
+    Conditions { combo_multiplier: combo, ..c.clone() }
 }
 
 pub fn compute(data: &GameData, build: &Build, target: &Target) -> Result<BuildResult, CalcError> {
@@ -165,14 +203,14 @@ pub fn compute(data: &GameData, build: &Build, target: &Target) -> Result<BuildR
     Ok(compute_resolved(r, build, target))
 }
 
-/// Burst DPS of one attack mode for an already-resolved build (optimizer hot path).
-pub fn evaluate(r: &Resolved, build: &Build, target: &Target, mode: usize) -> Result<f64, CalcError> {
+/// One attack mode for an already-resolved build (optimizer hot path).
+pub fn evaluate(r: &Resolved, build: &Build, target: &Target, mode: usize) -> Result<ModeResult, CalcError> {
     let m = r
         .weapon
         .modes
         .get(mode)
         .ok_or_else(|| CalcError::new(ErrorCode::MissingField, format!("no mode {mode}")))?;
-    compute_mode(r, build, target, m, mode).map(|m| m.burst_dps)
+    compute_mode(r, build, target, m, mode)
 }
 
 pub fn compute_resolved(r: Resolved, build: &Build, target: &Target) -> BuildResult {
@@ -194,12 +232,13 @@ pub fn compute_resolved(r: Resolved, build: &Build, target: &Target) -> BuildRes
     }
 }
 
-fn all_modifiers<'a>(r: &'a Resolved, build: &'a Build) -> impl Iterator<Item = &'a Modifier> {
+fn all_modifiers<'a>(r: &'a Resolved, build: &'a Build, mode: &'a AttackMode) -> impl Iterator<Item = &'a Modifier> {
     r.weapon
         .innate
         .iter()
         .chain(r.mods.iter().flat_map(|m| m.modifiers.iter()))
         .chain(r.arcane.iter().flat_map(|a| a.modifiers.iter()))
+        .chain(r.evolutions.iter().filter(move |e| form_ok(e.forms, mode)).flat_map(|e| e.modifiers.iter()))
         .chain(build.riven.iter())
         .chain(build.buffs.iter())
 }
@@ -246,20 +285,14 @@ fn compute_mode(
     let faction = r.enemy.as_ref().map(|e| e.faction).unwrap_or(Faction::None);
 
     let mut partials = Vec::new();
+    let mode_combo = mode.components.first().map_or(build.conditions.combo_multiplier, |c| combo_for(&build.conditions, &c.rules));
+    let mode_cond = with_combo(&build.conditions, mode_combo);
     let mut mode_pools = Pools::default();
-    for m in all_modifiers(r, build) {
-        mode_pools.add(m, condition_scale(m, &build.conditions));
+    for m in all_modifiers(r, build, mode) {
+        mode_pools.add(m, condition_scale(m, &mode_cond));
     }
 
-    for comp in &mode.components {
-        let mut p = Pools::default();
-        for m in all_modifiers(r, build).filter(|m| filter_ok(m.applies_to, comp.kind)) {
-            p.add(m, condition_scale(m, &build.conditions));
-        }
-        partials.push(component(r, build, comp, &p, faction, &mut approx)?);
-    }
-
-    // Rate, magazine, reload.
+    // Rate, magazine, reload (the rate is needed first: hit-rate-driven behaviours use it).
     let locked = r.mods.iter().find(|m| m.locks_fire_rate);
     let fr_bonus = if locked.is_some() {
         0.0
@@ -275,11 +308,27 @@ fn compute_mode(
             approx.push("Charge timing simplified: cycle = max(charge time, 1/fire rate) ÷ fire-rate bonus".into());
             fr_mult / base_cycle
         }
+        _ if mode.melee_role == Some(MeleeRole::Heavy) => mode.fire_rate * fr_mult * (1.0 + mode_pools.wind_up).max(0.05),
         _ => mode.fire_rate * fr_mult,
     };
     if !(rate > 0.0) {
         return Err(CalcError::new(ErrorCode::InvalidValue, format!("{} has no fire rate", mode.name)));
     }
+    let behaviours: Vec<(&str, &BehaviourDef)> = r
+        .evolutions
+        .iter()
+        .filter(|e| form_ok(e.forms, mode))
+        .filter_map(|e| e.behaviour.as_ref().map(|b| (e.name.as_str(), b)))
+        .collect();
+    for comp in &mode.components {
+        let cond = with_combo(&build.conditions, combo_for(&build.conditions, &comp.rules));
+        let mut p = Pools::default();
+        for m in all_modifiers(r, build, mode).filter(|m| filter_ok(m.applies_to, comp)) {
+            p.add(m, condition_scale(m, &cond));
+        }
+        partials.push(component(r, build, comp, &p, faction, &cond, rate, &behaviours, &mut approx)?);
+    }
+
     let magazine = mode.magazine.map(|m| ((m as f64) * (1.0 + mode_pools.magazine)).round().max(1.0) as u32);
     let reload = mode.reload_s / (1.0 + mode_pools.reload).max(0.05);
 
@@ -387,6 +436,9 @@ fn compute_mode(
     let (sustained, per_charge) = match (&mode.ammo_pool, magazine) {
         (AmmoPool::Incarnon { rounds: Some(n), recharge_s }, _) => {
             let n = *n as f64;
+            if recharge_s.is_none() {
+                approx.push("Incarnon recharge depends on weakpoint hits: sustained DPS shown as burst; see damage per charge".into());
+            }
             let t = recharge_s.unwrap_or(0.0);
             (shot_target * n / (n / rate + t), Some(shot_target * n))
         }
@@ -445,17 +497,24 @@ fn compute_mode(
         procs_per_s: procs,
         viral_stacks: viral_n,
         corrosive_stacks: corr_n,
+        attack_speed: r.weapon.melee.as_ref().map(|m| m.attack_speed * fr_mult),
+        range_m: r.weapon.melee.as_ref().map(|m| m.range_m + mode_pools.range),
+        combo_multiplier: mode.melee_role.map(|_| mode_combo),
         components,
         explain,
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn component(
     r: &Resolved,
     build: &Build,
     comp: &HitComponent,
     p: &Pools,
     faction: Faction,
+    cond: &Conditions,
+    rate: f64,
+    behaviours: &[(&str, &BehaviourDef)],
     approx: &mut Vec<String>,
 ) -> Result<Partial, CalcError> {
     let base_total: f64 = comp.damage.values().sum();
@@ -466,8 +525,60 @@ fn component(
         return Err(CalcError::new(ErrorCode::InvalidValue, format!("{} has invalid crit/status stats", comp.name)));
     }
 
-    // 1-2. Base damage pool.
-    let b = (1.0 + p.base_damage).max(0.0);
+    // Multishot, crit and status first: Enervate and Overwhelming Attrition depend on them.
+    let ms = if comp.rules.receives_multishot { comp.multishot * (1.0 + p.multishot).max(0.0) } else { 1.0 };
+    let sc = (comp.status_chance * (1.0 + p.status_chance).max(0.0) + p.status_chance_flat).max(0.0);
+    let modded_cc = (comp.crit_chance * (1.0 + p.crit_chance) + p.crit_chance_flat).max(0.0);
+    let mut crit_children = p.sources_for(|s| matches!(s, Stat::CritChance | Stat::CritChanceFlat));
+
+    let enervate = r.arcane.and_then(|a| a.behaviour.as_deref()) == Some("enervate");
+    if let Some(beh) = r.arcane.and_then(|a| a.behaviour.as_deref()) {
+        if beh != "enervate" {
+            approx.push(format!("Arcane behaviour '{beh}' not implemented; ignored"));
+        }
+    } else if let Some(a) = r.arcane {
+        if a.modifiers.is_empty() {
+            approx.push(format!("{} has no modelled effect; ignored", a.name));
+        }
+    }
+    let overwhelming = behaviours.iter().find_map(|(name, b)| match b {
+        BehaviourDef::OverwhelmingAttrition { bonus, max_stacks, duration_s } => Some((*name, *bonus, *max_stacks, *duration_s)),
+        _ => None,
+    });
+    let mut oa_bonus = 0.0;
+    let mut oa_explain = None;
+    let cc = if enervate || overwhelming.is_some() {
+        let sim = behaviours::attrition(behaviours::AttritionInput {
+            crit_chance: modded_cc,
+            status_chance: sc,
+            hits_per_s: rate * ms,
+            enervate,
+            overwhelming: overwhelming.map(|(_, _, m, d)| (m, d)),
+        });
+        if enervate {
+            crit_children.push(
+                Explain::new(r.arcane.map_or("Enervate".into(), |a| a.name.clone()), sim.avg_crit_chance - modded_cc).detail(format!(
+                    "Simulated: +10% crit chance per hit, resets after 6 orange-or-better crits; average {:.2}%",
+                    sim.avg_crit_chance * 100.0
+                )),
+            );
+        }
+        if let Some((name, bonus, max, dur)) = overwhelming {
+            oa_bonus = bonus * sim.avg_stacks;
+            oa_explain = Some(Explain::new(name.to_string(), oa_bonus).detail(format!(
+                "Simulated at {:.1} hits/s: average {:.2} of {max} stacks (+{:.0}% each, {dur}s), from hits that neither crit nor proc status",
+                rate * ms,
+                sim.avg_stacks,
+                bonus * 100.0
+            )));
+        }
+        sim.avg_crit_chance
+    } else {
+        modded_cc
+    };
+
+    // 1-2. Base damage pool (Overwhelming Attrition stacks join it additively).
+    let b = (1.0 + p.base_damage + oa_bonus).max(0.0);
     let modded_base = base_total * b;
 
     // 3. Physical mods scale their own type; 4. elements add a share of the pooled base.
@@ -503,47 +614,54 @@ fn component(
 
     // 6. Faction, and ability damage buffs (Roar, Eclipse) as their own multiplier.
     let f = 1.0 + p.faction.get(&faction).copied().unwrap_or(0.0);
-    let combo = if comp.rules.combo_scaling { build.conditions.combo_multiplier.max(1.0) } else { 1.0 };
+    let combo = if comp.rules.combo_scaling { cond.combo_multiplier.max(1.0) } else { 1.0 };
     let a = (1.0 + p.ability).max(0.0) * combo;
 
-    // 7. Crit, with behaviours (Enervate) adding flat crit chance.
-    let mut cc = comp.crit_chance * (1.0 + p.crit_chance) + p.crit_chance_flat;
-    let mut crit_children = p.sources_for(|s| matches!(s, Stat::CritChance | Stat::CritChanceFlat));
-    if let Some(beh) = r.arcane.and_then(|a| a.behaviour.as_deref()) {
-        match behaviours::apply(beh, cc) {
-            Some(eff) => {
-                cc += eff.crit_chance_flat;
-                crit_children.push(Explain::new(r.arcane.unwrap().name.clone(), eff.crit_chance_flat).detail(eff.detail));
-            }
-            None => approx.push(format!("Arcane behaviour '{beh}' not implemented; ignored")),
-        }
-    } else if let Some(a) = r.arcane {
-        if a.modifiers.is_empty() {
-            approx.push(format!("{} has no modelled effect; ignored", a.name));
-        }
-    }
-    let cc = cc.max(0.0);
+    // 7. Crit. Expected multiplier split into its non-crit and crit parts so behaviours that act
+    // on non-critical hits (Devouring Attrition) and critical headshots can be applied.
     let cd = (comp.crit_mult * (1.0 + p.crit_damage) + p.crit_damage_flat).max(1.0);
     let m_crit = 1.0 + cc * (cd - 1.0);
+    let p_crit = cc.min(1.0);
+    let crit_part = m_crit - (1.0 - p_crit);
+    let mut non_crit = 1.0;
+    let mut da_explain = None;
+    for (name, b) in behaviours {
+        if let BehaviourDef::DevouringAttrition { chance, bonus, ignored_by_bosses } = b {
+            if *ignored_by_bosses && r.enemy.as_ref().is_some_and(|e| e.is_boss) {
+                approx.push(format!("{name} doesn't work on bosses; ignored"));
+                continue;
+            }
+            non_crit *= 1.0 + chance * bonus;
+            da_explain = Some(Explain::new(name.to_string(), 1.0 + chance * bonus).detail(format!(
+                "{:.0}% chance for +{:.0}% on non-critical hits ({:.1}% of hits are non-critical)",
+                chance * 100.0,
+                bonus * 100.0,
+                (1.0 - p_crit) * 100.0
+            )));
+        }
+    }
 
     // 8. Headshots: headshot ×2, critical headshots a further ×2.
     let h = if comp.rules.can_headshot { build.conditions.headshot_share.clamp(0.0, 1.0) } else { 0.0 };
-    let p_crit = cc.min(1.0);
-    let hs_crit = 2.0 * m_crit - (1.0 - p_crit);
-    let crit_hs = (1.0 - h) * m_crit + h * 2.0 * (1.0 + p.headshot) * hs_crit;
+    let body = (1.0 - p_crit) * non_crit + crit_part;
+    let head = (1.0 - p_crit) * non_crit + 2.0 * crit_part;
+    let crit_hs = (1.0 - h) * body + h * 2.0 * (1.0 + p.headshot) * head;
 
     // 9. GunCO behaviour hook.
     if comp.rules.gun_co.is_some() {
         approx.push("Galvanized Shot / GunCO interaction not modelled yet".into());
     }
 
-    let ms = if comp.rules.receives_multishot { comp.multishot * (1.0 + p.multishot).max(0.0) } else { 1.0 };
-    let sc = comp.status_chance * (1.0 + p.status_chance).max(0.0);
-
+    let mut base_children = p.sources_for(|s| s == Stat::BaseDamage);
+    base_children.extend(oa_explain);
+    let mut crit_factor = Explain::new("Expected crit × headshot factor", crit_hs)
+        .detail(format!("1 + CC·(CD−1) = {m_crit:.3}; headshot share {h:.2}"));
+    if let Some(e) = da_explain {
+        crit_factor = crit_factor.child(e);
+    }
     let explain = vec![
         Explain::new("Base damage", base_total),
-        Explain::new("Base damage multiplier", b)
-            .with(p.sources_for(|s| s == Stat::BaseDamage)),
+        Explain::new("Base damage multiplier", b).with(base_children),
         Explain::new("Damage per projectile after mods", damage.values().sum())
             .detail(
                 damage
@@ -558,8 +676,8 @@ fn component(
         Explain::new("Heavy attack combo multiplier", combo),
         Explain::new("Crit chance", cc).with(crit_children),
         Explain::new("Crit multiplier", cd).with(p.sources_for(|s| matches!(s, Stat::CritDamage | Stat::CritDamageFlat))),
-        Explain::new("Expected crit × headshot factor", crit_hs)
-            .detail(format!("1 + CC·(CD−1) = {m_crit:.3}; headshot share {h:.2}")),
+        crit_factor,
+        Explain::new("Status chance", sc).with(p.sources_for(|s| matches!(s, Stat::StatusChance | Stat::StatusChanceFlat))),
         Explain::new("Multishot", ms).with(p.sources_for(|s| s == Stat::Multishot)),
     ];
 

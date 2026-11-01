@@ -88,27 +88,25 @@ export default function ScenarioPanel() {
           const effective = base * (b.scalesWithStrength ? scenario.strength : 1);
           const setB = (next: Partial<typeof st>) => setScenario({ ...scenario, buffs: { ...scenario.buffs, [b.id]: { ...st, ...next } } });
           return (
-            <div key={b.id} className="flex items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <Toggle
-                  label={
-                    <span>
-                      {b.name} <span className="text-xs text-zinc-500">{b.source}</span>
-                    </span>
-                  }
-                  title={b.note}
-                  checked={st.on}
-                  onChange={(on) => setB({ on })}
+            <div key={b.id} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2">
+              <label className="flex min-w-0 cursor-pointer items-start gap-2 text-sm" title={b.note}>
+                <input type="checkbox" checked={st.on} onChange={(e) => setB({ on: e.target.checked })} className="mt-1 shrink-0 accent-indigo-600" />
+                <span className="min-w-0 leading-tight">
+                  <span className="block truncate">{b.name}</span>
+                  <span className="block truncate text-xs text-zinc-500">{b.source}</span>
+                </span>
+              </label>
+              <span className="flex items-center gap-1">
+                <input
+                  type="number"
+                  className="field w-16 px-1.5 py-1 text-right"
+                  title={`Value at 100% strength (${b.scalesWithStrength ? `×${scenario.strength.toFixed(2)} strength → ${Math.round(effective * 100)}%` : "doesn't scale with strength"})`}
+                  value={Math.round(base * 1000) / 10}
+                  onChange={(e) => setB({ value: Number(e.target.value) / 100 })}
+                  aria-label={`${b.name} value`}
                 />
-              </div>
-              <input
-                type="number"
-                className="field w-20 py-1 text-right"
-                title={`Value at 100% strength (${b.scalesWithStrength ? `×${scenario.strength.toFixed(2)} strength → ${Math.round(effective * 100)}%` : "doesn't scale with strength"})`}
-                value={Math.round(base * 1000) / 10}
-                onChange={(e) => setB({ value: Number(e.target.value) / 100 })}
-              />
-              <span className="text-xs text-zinc-500">%</span>
+                <span className="text-xs text-zinc-500">%</span>
+              </span>
             </div>
           );
         })}
@@ -129,13 +127,22 @@ export default function ScenarioPanel() {
           onChange={(v) => setC({ statusTypes: v })}
         />
         <Slider
-          label="Melee combo multiplier"
+          label="Light attack combo (Tennokai uses it too)"
           value={conditions.comboMultiplier}
           min={1}
           max={12}
           step={0.5}
           display={`${conditions.comboMultiplier}×`}
           onChange={(v) => setC({ comboMultiplier: v })}
+        />
+        <Slider
+          label="Heavy attack combo (Galvanized Reflex ≈ 5×)"
+          value={conditions.heavyComboMultiplier}
+          min={1}
+          max={12}
+          step={0.5}
+          display={`${conditions.heavyComboMultiplier}×`}
+          onChange={(v) => setC({ heavyComboMultiplier: v })}
         />
       </Section>
     </aside>

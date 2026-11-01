@@ -11,15 +11,24 @@ pub struct Conditions {
     pub headshot_share: f64,
     /// Distinct status types on the target, for "per status type" effects.
     pub status_types: f64,
-    /// Melee combo multiplier (1 = no combo, 12 = max).
+    /// Melee combo multiplier during light attacks (1 = no combo, 12 = max). Tennokai heavies use it too.
     pub combo_multiplier: f64,
+    /// Combo multiplier a regular heavy attack consumes (practical max ~5x with Galvanized Reflex).
+    pub heavy_combo_multiplier: f64,
     /// Whether on-headshot / on-weak-point-kill effects are active (Deadhead, Galvanized Crosshairs).
     pub headshot_effects: bool,
 }
 
 impl Default for Conditions {
     fn default() -> Self {
-        Self { conditional_uptime: 1.0, headshot_share: 0.0, status_types: 4.0, combo_multiplier: 12.0, headshot_effects: true }
+        Self {
+            conditional_uptime: 1.0,
+            headshot_share: 0.0,
+            status_types: 4.0,
+            combo_multiplier: 12.0,
+            heavy_combo_multiplier: 5.0,
+            headshot_effects: true,
+        }
     }
 }
 
@@ -32,6 +41,8 @@ pub struct Build {
     pub arcane: Option<String>,
     pub riven: Vec<Modifier>,
     pub buffs: Vec<Modifier>,
+    /// Incarnon evolution names (one per tier).
+    pub evolutions: Vec<String>,
     pub conditions: Conditions,
 }
 
@@ -115,6 +126,14 @@ pub struct ModeResult {
     pub procs_per_s: BTreeMap<DamageType, f64>,
     pub viral_stacks: f64,
     pub corrosive_stacks: f64,
+    /// Melee: modded attack speed (weapon base x (1 + bonus)) and range in meters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attack_speed: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_m: Option<f64>,
+    /// Combo multiplier used for this mode's hits (melee).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub combo_multiplier: Option<f64>,
     pub components: Vec<ComponentResult>,
     pub explain: Explain,
 }
@@ -144,6 +163,7 @@ pub enum ErrorCode {
     UnknownWeapon,
     UnknownMod,
     UnknownArcane,
+    UnknownEvolution,
     UnknownEnemy,
     IncompatibleMod,
     DuplicateMod,

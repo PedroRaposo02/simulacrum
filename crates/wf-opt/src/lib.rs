@@ -17,12 +17,101 @@ pub struct OptimizeOptions {
     pub arcane: bool,
     /// Riven roll position in [0, 1] between the minimum and maximum roll.
     pub riven_roll: f64,
+    /// Comfort: builds below this modded attack speed / fire rate always rank below builds above it.
+    pub min_attack_speed: Option<f64>,
+    /// Comfort: after optimizing, swap in a range mod if it costs at most this fraction of DPS.
+    pub range_tolerance: Option<f64>,
+    /// Realistic mode: respect mod capacity and slot polarities. None = theoretical (anything fits).
+    pub capacity: Option<CapacityOptions>,
+    /// Allow riven stats that only come from splicing.
+    pub spliced_riven: bool,
+    /// Grade mode: optimize the other mods around this exact riven (its modifiers as rolled).
+    pub fixed_riven: Vec<Modifier>,
+    /// Allow faction damage mods (Bane, Expel, Smite…) and riven faction stats. Off by default.
+    pub allow_faction: bool,
+    /// Search Incarnon evolutions (one per tier) along with the mods.
+    pub evolutions: bool,
 }
 
 impl Default for OptimizeOptions {
     fn default() -> Self {
-        Self { mode: None, riven: false, arcane: true, riven_roll: 1.0 }
+        Self {
+            mode: None,
+            riven: false,
+            arcane: true,
+            riven_roll: 1.0,
+            min_attack_speed: None,
+            range_tolerance: None,
+            capacity: None,
+            spliced_riven: false,
+            fixed_riven: vec![],
+            allow_faction: false,
+            evolutions: true,
+        }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CapacityOptions {
+    /// Total capacity: 60 with a reactor/catalyst (plus any stance bonus), 30 without.
+    pub capacity: f64,
+    /// Polarity of the 8 normal slots then the exilus slot (None = unpolarized).
+    pub polarities: Vec<Option<String>>,
+    /// Capacity a riven takes (rank 8 riven in a matching slot is about 9).
+    pub riven_drain: f64,
+}
+
+impl Default for CapacityOptions {
+    fn default() -> Self {
+        Self { capacity: 60.0, polarities: vec![None; NORMAL_SLOTS + 1], riven_drain: 9.0 }
+    }
+}
+
+/// Drain of a mod at max rank in a slot: matching polarity halves it (rounded up), a
+/// mismatched polarized slot adds 25% (rounded).
+pub fn slot_drain(m: &Mod, slot: Option<&str>) -> f64 {
+    let d = (m.base_drain + m.max_rank as i32).max(0) as f64;
+    match slot {
+        None => d,
+        Some(p) if p.eq_ignore_ascii_case(&m.polarity) => (d / 2.0).ceil(),
+        Some(_) => (d * 1.25).round(),
+    }
+}
+
+/// Minimum total drain for a set of mods given slot polarities (greedy: biggest mods take matching
+/// slots, then unpolarized ones; mismatched slots go to whatever is left).
+pub fn total_drain(mods: &[&Mod], normal_slots: usize, cap: &CapacityOptions) -> f64 {
+    let mut slots: Vec<Option<&str>> = cap.polarities.iter().take(NORMAL_SLOTS).map(|p| p.as_deref()).collect();
+    slots.resize(NORMAL_SLOTS, None);
+    // A riven takes one normal slot: prefer giving it an unpolarized one.
+    if normal_slots < NORMAL_SLOTS {
+        let i = slots.iter().position(|s| s.is_none()).unwrap_or(slots.len() - 1);
+        slots.remove(i);
+    }
+    let (normal, exilus): (&[&Mod], Option<&Mod>) =
+        if mods.len() > normal_slots { (&mods[..normal_slots], mods.get(normal_slots).copied()) } else { (mods, None) };
+    let mut order: Vec<&Mod> = normal.to_vec();
+    order.sort_by_key(|m| std::cmp::Reverse(m.base_drain + m.max_rank as i32));
+    let mut free = vec![true; slots.len()];
+    let mut total = 0.0;
+    for m in order {
+        let pick = (0..slots.len())
+            .filter(|&i| free[i])
+            .min_by(|&a, &b| slot_drain(m, slots[a]).total_cmp(&slot_drain(m, slots[b])))
+            .unwrap_or(0);
+        if let Some(f) = free.get_mut(pick) {
+            *f = false;
+        }
+        total += slot_drain(m, slots.get(pick).copied().flatten());
+    }
+    if let Some(e) = exilus {
+        total += slot_drain(e, cap.polarities.get(NORMAL_SLOTS).and_then(|p| p.as_deref()));
+    }
+    if normal_slots < NORMAL_SLOTS {
+        total += cap.riven_drain;
+    }
+    total
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +146,17 @@ pub struct OptimizeResult {
     pub riven_negative: Option<RivenPick>,
     pub marginal: Vec<Marginal>,
     pub evaluations: u64,
+    /// Chosen Incarnon evolutions (one per tier that has options).
+    pub evolutions: Vec<String>,
+    /// Modded attack speed (melee) and range of the result.
+    pub attack_speed: Option<f64>,
+    pub range_m: Option<f64>,
+    /// Capacity used in realistic mode.
+    pub drain: Option<f64>,
+    /// DPS given up for range in comfort mode (fraction).
+    pub range_cost: Option<f64>,
+    /// True when the attack speed floor couldn't be reached.
+    pub below_attack_speed_floor: bool,
 }
 
 impl OptimizeResult {
@@ -67,6 +167,7 @@ impl OptimizeResult {
             mods: self.mods.clone(),
             arcane: self.arcane.clone(),
             riven: riven_modifiers(data, &self.riven),
+            evolutions: self.evolutions.clone(),
             ..base.clone()
         }
     }
@@ -106,16 +207,42 @@ struct Ctx<'a> {
     mode: usize,
     candidates: Vec<&'a Mod>,
     evals: u64,
+    min_attack_speed: Option<f64>,
+    capacity: Option<CapacityOptions>,
+    evolutions: Vec<&'a wf_data::Evolution>,
 }
 
 impl<'a> Ctx<'a> {
-    fn eval(&mut self, mods: &[&'a Mod], arcane: Option<&'a Arcane>, riven: &[RivenStat]) -> f64 {
+    fn mode_result(&mut self, mods: &[&'a Mod], arcane: Option<&'a Arcane>, riven: &[RivenStat]) -> Option<wf_calc::ModeResult> {
         self.evals += 1;
         self.build.riven = riven.iter().map(|r| r.modifier.clone()).collect();
-        let r = Resolved { weapon: self.weapon, mods: mods.to_vec(), arcane, enemy: self.enemy.clone(), warnings: vec![] };
-        match evaluate(&r, &self.build, self.target, self.mode) {
-            Ok(v) if v.is_finite() => v,
-            _ => f64::NEG_INFINITY,
+        let r = Resolved {
+            weapon: self.weapon,
+            mods: mods.to_vec(),
+            arcane,
+            evolutions: self.evolutions.clone(),
+            enemy: self.enemy.clone(),
+            warnings: vec![],
+        };
+        evaluate(&r, &self.build, self.target, self.mode).ok().filter(|m| m.burst_dps.is_finite())
+    }
+
+    fn raw(&mut self, mods: &[&'a Mod], arcane: Option<&'a Arcane>, riven: &[RivenStat]) -> f64 {
+        self.mode_result(mods, arcane, riven).map_or(0.0, |x| x.burst_dps)
+    }
+
+    /// Objective: burst DPS. With an attack speed floor, builds below it score negative (closer to
+    /// the floor is better), so any build that meets the floor beats every build that doesn't.
+    fn eval(&mut self, mods: &[&'a Mod], arcane: Option<&'a Arcane>, riven: &[RivenStat]) -> f64 {
+        match self.mode_result(mods, arcane, riven) {
+            None => f64::NEG_INFINITY,
+            Some(m) => {
+                let speed = m.attack_speed.unwrap_or(m.fire_rate);
+                match self.min_attack_speed {
+                    Some(min) if speed < min - 1e-9 => -(min - speed) - 1.0,
+                    _ => m.burst_dps,
+                }
+            }
         }
     }
 
@@ -128,6 +255,11 @@ impl<'a> Ctx<'a> {
         }
         if mods.len() == normal_slots + 1 && !mods[normal_slots].is_exilus {
             return false;
+        }
+        if let Some(cap) = &self.capacity {
+            if total_drain(mods, normal_slots, cap) > cap.capacity + 1e-9 {
+                return false;
+            }
         }
         for (i, a) in mods.iter().enumerate() {
             for b in &mods[i + 1..] {
@@ -348,10 +480,10 @@ fn permutations(v: &mut Vec<usize>, k: usize, f: &mut impl FnMut(&[usize])) {
     }
 }
 
-fn stat_matters(stat: Stat, faction: Faction) -> bool {
+fn stat_matters(stat: Stat, faction: Faction, allow_faction: bool) -> bool {
     match stat {
         Stat::Magazine | Stat::ReloadSpeed => false,
-        Stat::FactionDamage(f) => f == faction,
+        Stat::FactionDamage(f) => allow_faction && f == faction,
         _ => true,
     }
 }
@@ -364,7 +496,62 @@ fn arcane_slot(w: &Weapon) -> &'static str {
     }
 }
 
+/// How many of the best unmodded headline modes get a full search when no mode is given.
+const MODE_CANDIDATES: usize = 3;
+
+/// Best build for a weapon. Without an explicit mode, the top headline modes (by unmodded DPS)
+/// are each optimized and the best result wins, since modding can reorder combos.
 pub fn optimize(
+    data: &GameData,
+    weapon_key: &str,
+    base: &Build,
+    target: &Target,
+    opts: &OptimizeOptions,
+) -> Result<OptimizeResult, CalcError> {
+    if opts.mode.is_some() {
+        return optimize_mode(data, weapon_key, base, target, opts);
+    }
+    let weapon = data
+        .weapon(weapon_key)
+        .ok_or_else(|| CalcError::new(ErrorCode::UnknownWeapon, format!("no weapon '{weapon_key}'")))?;
+    let unmodded = wf_calc::compute(data, &Build { weapon: weapon.id.clone(), mods: vec![], arcane: None, riven: vec![], ..base.clone() }, target)?;
+    let mut ranked: Vec<(bool, f64, usize)> = unmodded
+        .modes
+        .iter()
+        .filter(|m| m.burst_dps.is_finite() && m.burst_dps > 0.0)
+        .map(|m| (weapon.modes[m.mode_index].is_headline(), m.burst_dps, m.mode_index))
+        .collect();
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)));
+    let any_headline = ranked.first().is_some_and(|r| r.0);
+    let picks: Vec<usize> = ranked
+        .iter()
+        .filter(|r| r.0 == any_headline)
+        .take(if any_headline { MODE_CANDIDATES } else { 1 })
+        .map(|r| r.2)
+        .collect();
+    if picks.is_empty() {
+        // Nothing computable: let the single-mode path produce the engine's error.
+        return optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(0), ..opts.clone() });
+    }
+    let mut best: Option<OptimizeResult> = None;
+    let mut evals = 0;
+    for m in picks {
+        let r = optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(m), ..opts.clone() })?;
+        evals += r.evaluations;
+        let better = best.as_ref().is_none_or(|b| {
+            (b.below_attack_speed_floor && !r.below_attack_speed_floor)
+                || (b.below_attack_speed_floor == r.below_attack_speed_floor && r.burst_dps > b.burst_dps)
+        });
+        if better {
+            best = Some(r);
+        }
+    }
+    let mut best = best.expect("at least one mode searched");
+    best.evaluations = evals;
+    Ok(best)
+}
+
+fn optimize_mode(
     data: &GameData,
     weapon_key: &str,
     base: &Build,
@@ -381,10 +568,21 @@ pub fn optimize(
     let candidates: Vec<&Mod> = data
         .mods
         .iter()
-        .filter(|m| m.fits(weapon) && m.modifiers.iter().any(|x| stat_matters(x.stat, faction)))
+        .filter(|m| m.fits(weapon) && m.modifiers.iter().any(|x| stat_matters(x.stat, faction, opts.allow_faction)))
         .collect();
 
-    let mut ctx = Ctx { weapon, enemy, target, build, mode: 0, candidates, evals: 0 };
+    let mut ctx = Ctx {
+        weapon,
+        enemy,
+        target,
+        build,
+        mode: 0,
+        candidates,
+        evals: 0,
+        min_attack_speed: opts.min_attack_speed,
+        capacity: opts.capacity.clone(),
+        evolutions: vec![],
+    };
 
     let mode = match opts.mode {
         Some(m) => m,
@@ -406,10 +604,10 @@ pub fn optimize(
         .get(mode)
         .ok_or_else(|| CalcError::new(ErrorCode::MissingField, format!("{} has no mode {mode}", weapon.name)))?;
     if !ctx.eval(&[], None, &[]).is_finite() {
-        let r = Resolved { weapon, mods: vec![], arcane: None, enemy: ctx.enemy.clone(), warnings: vec![] };
+        let r = Resolved { weapon, mods: vec![], arcane: None, evolutions: vec![], enemy: ctx.enemy.clone(), warnings: vec![] };
         return Err(match evaluate(&r, &ctx.build, target, mode) {
             Err(e) => e,
-            Ok(v) => CalcError::new(ErrorCode::NonFinite, format!("{} / {} gives {v}", weapon.name, mode_def.name)),
+            Ok(v) => CalcError::new(ErrorCode::NonFinite, format!("{} / {} gives {}", weapon.name, mode_def.name, v.burst_dps)),
         });
     }
 
@@ -421,7 +619,7 @@ pub fn optimize(
         let arcanes: Vec<&Arcane> = data
             .arcanes
             .iter()
-            .filter(|a| a.slot == slot && (a.behaviour.is_some() || a.modifiers.iter().any(|m| stat_matters(m.stat, faction))))
+            .filter(|a| a.slot == slot && (a.behaviour.is_some() || a.modifiers.iter().any(|m| stat_matters(m.stat, faction, opts.allow_faction))))
             .collect();
         for a in arcanes {
             let v = ctx.eval(&mods, Some(a), &[]);
@@ -439,9 +637,54 @@ pub fn optimize(
         }
     }
 
+    // Incarnon evolutions: one per tier, chosen by coordinate ascent, then mods re-searched.
+    if opts.evolutions && !weapon.evolutions.is_empty() {
+        let tiers: Vec<&wf_data::EvolutionTier> = weapon.evolutions.iter().filter(|t| !t.options.is_empty()).collect();
+        ctx.evolutions = tiers.iter().map(|t| &t.options[0]).collect();
+        let mut current = ctx.eval(&mods, arcane, &[]);
+        for _ in 0..2 {
+            let mut changed = false;
+            for (ti, tier) in tiers.iter().enumerate() {
+                for opt in &tier.options {
+                    if std::ptr::eq(ctx.evolutions[ti], opt) {
+                        continue;
+                    }
+                    let prev = ctx.evolutions[ti];
+                    ctx.evolutions[ti] = opt;
+                    let v = ctx.eval(&mods, arcane, &[]);
+                    if v > current * (1.0 + 1e-9) {
+                        current = v;
+                        changed = true;
+                    } else {
+                        ctx.evolutions[ti] = prev;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let (m, v) = ctx.search_mods(mods.clone(), arcane, &[], NORMAL_SLOTS);
+        if v >= current {
+            mods = m;
+            best = v;
+        } else {
+            best = current;
+        }
+    }
+
     let mut riven: Vec<RivenStat> = vec![];
     let mut negative: Option<RivenPick> = None;
-    if opts.riven {
+    if !opts.fixed_riven.is_empty() {
+        riven = opts
+            .fixed_riven
+            .iter()
+            .map(|m| RivenStat { key: m.source.clone(), label: m.source.trim_start_matches("Riven ").to_string(), modifier: m.clone() })
+            .collect();
+        let (m, v) = ctx.search_mods(vec![], arcane, &riven, NORMAL_SLOTS - 1);
+        mods = m;
+        best = v;
+    } else if opts.riven {
         let table = data
             .riven
             .as_ref()
@@ -455,10 +698,11 @@ pub fn optimize(
             let pool: Vec<RivenStat> = table
                 .stats
                 .iter()
+                .filter(|s| opts.spliced_riven || !s.spliced)
                 .filter_map(|s| {
                     let stat = s.stat?;
                     let base = *s.base.get(&ty)?;
-                    stat_matters(stat, faction).then(|| RivenStat {
+                    stat_matters(stat, faction, opts.allow_faction).then(|| RivenStat {
                         key: s.key.clone(),
                         label: s.label.clone(),
                         modifier: Modifier {
@@ -466,7 +710,7 @@ pub fn optimize(
                             stat,
                             value: base * table.disposition * layout.positive_mult * roll,
                             max_stacks: 1,
-                            applies_to: wf_data::ComponentFilter::All,
+                            applies_to: s.applies_to.unwrap_or(wf_data::ComponentFilter::All),
                             condition: wf_data::Condition::Always,
                             per: None,
                         },
@@ -491,27 +735,96 @@ pub fn optimize(
         }
     }
 
-    // Marginal value of each piece.
+    // Comfort: trade a little DPS for range on melee weapons.
+    let normal_slots = if riven.is_empty() { NORMAL_SLOTS } else { NORMAL_SLOTS - 1 };
+    let mut range_cost = None;
+    if let (Some(tol), Some(_)) = (opts.range_tolerance, &weapon.melee) {
+        let range_mods: Vec<&Mod> = data
+            .mods
+            .iter()
+            .filter(|m| m.fits(weapon) && m.modifiers.iter().any(|x| x.stat == Stat::Range && x.value > 0.0))
+            .collect();
+        let mut best_swap: Option<(Vec<&Mod>, f64)> = None;
+        for &rm in &range_mods {
+            if mods.iter().any(|m| m.id == rm.id) {
+                continue;
+            }
+            let mut options: Vec<Vec<&Mod>> = (0..mods.len())
+                .map(|i| {
+                    let mut n = mods.clone();
+                    n[i] = rm;
+                    n
+                })
+                .collect();
+            let mut added = mods.clone();
+            added.insert(added.len().min(normal_slots), rm);
+            options.push(added);
+            for n in options {
+                if !ctx.valid(&n, normal_slots) {
+                    continue;
+                }
+                let v = ctx.eval(&n, arcane, &riven);
+                if v >= best * (1.0 - tol) && best_swap.as_ref().is_none_or(|(_, bv)| v > *bv) {
+                    best_swap = Some((n, v));
+                }
+            }
+        }
+        if let Some((n, v)) = best_swap {
+            range_cost = Some(1.0 - v / best);
+            mods = n;
+            best = v;
+        }
+    }
+
+    let final_mode = ctx.mode_result(&mods, arcane, &riven);
+    if let Some(m) = &final_mode {
+        best = m.burst_dps;
+    }
+
+    // Marginal value of each piece, on raw DPS (not the attack-speed-floor score).
     let mut marginal = Vec::new();
     for i in 0..mods.len() {
         let mut next = mods.clone();
         next.remove(i);
-        let v = ctx.eval(&next, arcane, &riven);
+        let v = ctx.raw(&next, arcane, &riven);
         marginal.push(Marginal { label: mods[i].name.clone(), kind: "mod".into(), loss: 1.0 - v / best });
     }
     for i in 0..riven.len() {
         let mut next = riven.clone();
         next.remove(i);
-        let v = ctx.eval(&mods, arcane, &next);
+        let v = ctx.raw(&mods, arcane, &next);
         marginal.push(Marginal { label: format!("Riven {}", riven[i].label), kind: "riven".into(), loss: 1.0 - v / best });
     }
     if let Some(a) = arcane {
-        let v = ctx.eval(&mods, None, &riven);
+        let v = ctx.raw(&mods, None, &riven);
         marginal.push(Marginal { label: a.name.clone(), kind: "arcane".into(), loss: 1.0 - v / best });
+    }
+    for i in 0..ctx.evolutions.len() {
+        let kept = ctx.evolutions.clone();
+        ctx.evolutions.remove(i);
+        let v = ctx.raw(&mods, arcane, &riven);
+        ctx.evolutions = kept;
+        let loss = 1.0 - v / best;
+        if loss.abs() > 1e-9 {
+            marginal.push(Marginal { label: ctx.evolutions[i].name.clone(), kind: "evolution".into(), loss });
+        }
     }
     marginal.sort_by(|a, b| b.loss.total_cmp(&a.loss));
 
+    let attack_speed = final_mode.as_ref().and_then(|m| m.attack_speed);
+    let range_m = final_mode.as_ref().and_then(|m| m.range_m);
+    let below_floor = match (opts.min_attack_speed, &final_mode) {
+        (Some(min), Some(m)) => m.attack_speed.unwrap_or(m.fire_rate) < min - 1e-9,
+        _ => false,
+    };
+    let drain = opts.capacity.as_ref().map(|c| total_drain(&mods, normal_slots, c));
+
     Ok(OptimizeResult {
+        attack_speed,
+        range_m,
+        drain,
+        range_cost,
+        below_attack_speed_floor: below_floor,
         weapon_id: weapon.id.clone(),
         weapon: weapon.name.clone(),
         mode: mode_def.name.clone(),
@@ -526,6 +839,7 @@ pub fn optimize(
         riven_negative: negative,
         marginal,
         evaluations: ctx.evals,
+        evolutions: ctx.evolutions.iter().map(|e| e.name.clone()).collect(),
     })
 }
 

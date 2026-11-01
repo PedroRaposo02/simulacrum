@@ -262,3 +262,177 @@ fn headshot_effects_toggle() {
     assert!(close(off, 160.0 * 1.264));
     assert!(on > off);
 }
+
+fn melee_fixture() -> GameData {
+    let mut d = fixture();
+    let mut w = d.weapons[0].clone();
+    w.id = "/Test/Sword".into();
+    w.name = "Test Sword".into();
+    w.slot = wf_data::Slot::Melee;
+    w.class = wf_data::WeaponClass::Melee;
+    w.mod_pool = wf_data::ModPool::Melee;
+    w.melee = Some(wf_data::MeleeProfile {
+        class: "Sword".into(),
+        attack_speed: 1.0,
+        range_m: 2.0,
+        follow_through: 0.6,
+        combo_duration_s: 5.0,
+        heavy_damage: 300.0,
+        wind_up_s: 0.5,
+        stances: vec!["Test Stance".into()],
+    });
+    let mut light = w.modes[0].clone();
+    light.name = "Test Stance: Combo (Neutral)".into();
+    light.melee_role = Some(wf_data::MeleeRole::Light);
+    light.magazine = None;
+    light.fire_rate = 0.5;
+    let mut heavy = light.clone();
+    heavy.name = "Heavy Attack".into();
+    heavy.melee_role = Some(wf_data::MeleeRole::Heavy);
+    heavy.headline = false;
+    heavy.fire_rate = 2.0;
+    heavy.components[0].rules.combo_scaling = true;
+    heavy.components[0].rules.heavy = true;
+    let mut tenno = heavy.clone();
+    tenno.name = "Tennokai".into();
+    tenno.melee_role = Some(wf_data::MeleeRole::Tennokai);
+    tenno.components[0].rules.tennokai = true;
+    w.modes = vec![light, heavy, tenno];
+    d.weapons = vec![w];
+    let melee_mod = |id: &str, name: &str, stat: wf_data::Stat, value: f64, applies: wf_data::ComponentFilter| {
+        let mut m = d.mods[0].clone();
+        m.id = id.into();
+        m.name = name.into();
+        m.pool = wf_data::ModPool::Melee;
+        m.exclusive_group = None;
+        m.modifiers[0].stat = stat;
+        m.modifiers[0].value = value;
+        m.modifiers[0].applies_to = applies;
+        m
+    };
+    use wf_data::{ComponentFilter as F, Stat as S};
+    d.mods = vec![
+        melee_mod("pr", "Primed Reach", S::Range, 3.0, F::All),
+        melee_mod("kb", "Killing Blow", S::BaseDamage, 1.2, F::HeavyOnly),
+        melee_mod("me", "Master's Edge", S::BaseDamage, 0.6, F::TennokaiOnly),
+        melee_mod("br", "Blood Rush", S::CritChance, 0.4, F::All),
+    ];
+    d.mods[3].modifiers[0].per = Some(wf_data::PerCount::ComboMultiplier);
+    d
+}
+
+fn melee_run(mods: &[&str], cond: Conditions) -> BuildResult {
+    let b = Build { weapon: "Test Sword".into(), mods: mods.iter().map(|s| s.to_string()).collect(), conditions: cond, ..Default::default() };
+    compute(&melee_fixture(), &b, &Target::default()).unwrap()
+}
+
+#[test]
+fn melee_range_is_flat_and_reported() {
+    let r = melee_run(&["Primed Reach"], Conditions::default());
+    assert!(close(r.modes[0].range_m.unwrap(), 5.0));
+    assert!(close(r.modes[0].attack_speed.unwrap(), 1.0));
+}
+
+#[test]
+fn heavy_uses_heavy_combo_and_tennokai_uses_light_combo() {
+    let c = Conditions { combo_multiplier: 12.0, heavy_combo_multiplier: 5.0, ..Default::default() };
+    let r = melee_run(&[], c);
+    let light = r.modes[0].components[0].per_projectile_raw;
+    let heavy = r.modes[1].components[0].per_projectile_raw;
+    let tenno = r.modes[2].components[0].per_projectile_raw;
+    // Light hits ignore combo; heavy x5; Tennokai x12.
+    assert!(close(heavy, light * 5.0));
+    assert!(close(tenno, light * 12.0));
+    assert_eq!(r.modes[1].combo_multiplier, Some(5.0));
+    assert_eq!(r.modes[2].combo_multiplier, Some(12.0));
+}
+
+#[test]
+fn heavy_and_tennokai_only_bonuses() {
+    let base = melee_run(&[], Conditions::default());
+    let r = melee_run(&["Killing Blow", "Master's Edge"], Conditions::default());
+    assert!(close(r.modes[0].per_shot, base.modes[0].per_shot), "light unaffected");
+    assert!(close(r.modes[1].per_shot, base.modes[1].per_shot * 2.2), "heavy +120%");
+    assert!(close(r.modes[2].per_shot, base.modes[2].per_shot * 2.8), "tennokai +120% heavy +60% tennokai");
+}
+
+#[test]
+fn combo_mods_scale_with_the_hit_combo() {
+    let at1 = melee_run(&["Blood Rush"], Conditions { combo_multiplier: 1.0, heavy_combo_multiplier: 5.0, ..Default::default() });
+    let at12 = melee_run(&["Blood Rush"], Conditions { combo_multiplier: 12.0, heavy_combo_multiplier: 5.0, ..Default::default() });
+    assert!(close(at1.modes[0].components[0].crit_chance, 0.22));
+    assert!(close(at12.modes[0].components[0].crit_chance, 0.22 * (1.0 + 0.4 * 11.0)));
+    // The heavy hit sees its own (5x) combo for Blood Rush.
+    assert!(close(at12.modes[1].components[0].crit_chance, 0.22 * (1.0 + 0.4 * 4.0)));
+}
+
+fn evo_fixture() -> GameData {
+    let mut d = fixture();
+    d.weapons[0].modes[1].incarnon_form = true;
+    d.weapons[0].evolutions = serde_json::from_value(json!([
+        {"tier": 4, "options": [
+            {"name": "Elemental Excess", "text": "", "modifiers": [
+                {"source": "EE", "stat": {"kind": "statusChanceFlat"}, "value": 0.2},
+                {"source": "EE", "stat": {"kind": "critChanceFlat"}, "value": -0.1}]},
+            {"name": "Incarnon Only Damage", "text": "", "forms": "incarnon", "modifiers": [
+                {"source": "IOD", "stat": {"kind": "baseDamage"}, "value": 1.0}]}
+        ]},
+        {"tier": 5, "options": [
+            {"name": "Devouring Attrition", "text": "", "behaviour": {"kind": "devouringAttrition", "chance": 0.5, "bonus": 20.0}},
+            {"name": "Overwhelming Attrition", "text": "", "behaviour": {"kind": "overwhelmingAttrition", "bonus": 4.0, "maxStacks": 3, "durationS": 10.0}}
+        ]}
+    ]))
+    .unwrap();
+    d.enemies.push(serde_json::from_value(json!({"id": "boss", "name": "Boss", "faction": "none", "armor": 0.0, "isBoss": true})).unwrap());
+    d
+}
+
+fn evo_run(d: &GameData, evos: &[&str], target: Target) -> BuildResult {
+    let b = Build { weapon: "Laetum".into(), evolutions: evos.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+    compute(d, &b, &target).unwrap()
+}
+
+#[test]
+fn elemental_excess_is_flat() {
+    let r = evo_run(&evo_fixture(), &["Elemental Excess"], Target::default());
+    let c = &r.modes[0].components[0];
+    assert!(close(c.crit_chance, 0.22 - 0.1));
+    assert!(close(c.status_chance, 0.22 + 0.2));
+}
+
+#[test]
+fn evolution_forms_are_respected() {
+    let d = evo_fixture();
+    let base = evo_run(&d, &[], Target::default());
+    let r = evo_run(&d, &["Incarnon Only Damage"], Target::default());
+    assert!(close(r.modes[0].per_shot, base.modes[0].per_shot), "normal form unaffected");
+    assert!(close(r.modes[1].per_shot, base.modes[1].per_shot * 2.0), "incarnon form doubled");
+}
+
+#[test]
+fn devouring_attrition_expected_value_and_bosses() {
+    let d = evo_fixture();
+    let base = evo_run(&d, &[], Target::default()).modes[0].per_shot;
+    let da = evo_run(&d, &["Devouring Attrition"], Target::default()).modes[0].per_shot;
+    // Non-crit share 78% gets x11 on average; crit part unchanged.
+    let expected = 160.0 * (0.78 * 11.0 + 0.22 * 2.2);
+    assert!(close(da, expected), "{da} vs {expected}");
+    let boss = evo_run(&d, &["Devouring Attrition"], Target { enemy: Some("boss".into()), ..Default::default() });
+    assert!(close(boss.modes[0].per_shot, base));
+    assert!(boss.modes[0].approximations.iter().any(|a| a.contains("bosses")));
+}
+
+#[test]
+fn overwhelming_attrition_adds_stacked_base_damage() {
+    let d = evo_fixture();
+    let base = evo_run(&d, &[], Target::default()).modes[0].per_shot;
+    let oa = evo_run(&d, &["Overwhelming Attrition"], Target::default()).modes[0].per_shot;
+    // 22% crit, 22% status, 2.5 hits/s: stacks stay near 3 -> base damage x ~13.
+    assert!(oa > base * 12.0 && oa < base * 13.01, "{} x", oa / base);
+}
+
+#[test]
+fn unknown_evolution_is_an_error() {
+    let b = Build { weapon: "Laetum".into(), evolutions: vec!["Nope".into()], ..Default::default() };
+    assert_eq!(compute(&evo_fixture(), &b, &Target::default()).unwrap_err().code, ErrorCode::UnknownEvolution);
+}

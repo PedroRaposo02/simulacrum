@@ -11,7 +11,7 @@ crates/wf-opt    build optimizer (best build with / without riven, marginal valu
 crates/wf-cli    `wfcalc explain | sweep | golden`
 crates/wf-wasm   wasm-bindgen wrapper used by the web app
 apps/web         React + Vite + Tailwind UI (weapon browser, build editor)
-tools/ingest     builds data/gamedata.json from @wfcd/items + data/overrides
+tools/ingest     builds data/gamedata.json from @wfcd/items + wiki melee/stance modules + data/overrides
 data/overrides   hand-kept fixes: mod exclusivity, arcane behaviours, Incarnon ammo, enemy presets,
                  riven range table, external buff presets
 data/golden      regression vectors
@@ -26,10 +26,16 @@ pnpm optimize                    # -> data/best-builds.json (+ public copy), ~1 
 pnpm test                        # all Rust tests
 cargo run --release -p wf-cli -- explain Laetum --mods "Hornet Strike,Barrel Diffusion" --enemy sp-grineer
 cargo run --release -p wf-cli -- optimize Laetum --enemy sp-grineer [--riven]
+cargo run --release -p wf-cli -- optimize "Nikana Prime" --heavy            # heavy build at 5x combo
+cargo run --release -p wf-cli -- optimize "Nikana Prime" --min-attack-speed 1.8 --range-tolerance 0.05
+cargo run --release -p wf-cli -- optimize Laetum --capacity 60 --polarities madurai,madurai,-,-,-,-,-,-,-
 cargo run --release -p wf-cli -- sweep [--previous old-report.json]
 cargo run --release -p wf-cli -- golden
 pnpm build:wasm && pnpm dev      # web app on http://localhost:5173
 ```
+
+`pnpm ingest` downloads two wiki modules (cached for 24 h in `tools/ingest/.cache`, `--refresh` to force).
+Wiki data is CC BY-NC-SA 3.0, so the app and its data stay non-commercial.
 
 Requires Rust with `wasm32-unknown-unknown` and `wasm-pack`. After changing `crates/`, run
 `pnpm build:wasm` and `pnpm optimize` (best builds go stale when the engine or data changes;
