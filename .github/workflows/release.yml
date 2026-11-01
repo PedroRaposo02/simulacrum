@@ -3,6 +3,15 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Manual run for an existing tag (e.g. when the tag push didn't trigger a run).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release, e.g. v0.4.0-beta.1"
+        required: true
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -13,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -33,14 +44,14 @@ jobs:
       - run: cp data/gamedata.json apps/web/public/gamedata.json
       - run: pnpm build
       - name: Package
-        run: cd apps/web/dist && zip -r "../../../simulacrum-web-${GITHUB_REF_NAME}.zip" .
+        run: cd apps/web/dist && zip -r "../../../simulacrum-web-${TAG}.zip" .
       - uses: actions/upload-artifact@v4
         with:
           name: web
           path: simulacrum-web-*.zip
 
   cli:
-    name: wfcalc (${{ matrix.os }})
+    name: wfcalc (${{ matrix.target }})
     strategy:
       matrix:
         include:
@@ -56,19 +67,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release -p wf-cli
       - name: Package
         shell: bash
         run: |
-          mkdir -p "wfcalc-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          cp "target/release/${{ matrix.bin }}" "wfcalc-${GITHUB_REF_NAME}-${{ matrix.target }}/"
-          cp data/gamedata.json README.md "wfcalc-${GITHUB_REF_NAME}-${{ matrix.target }}/"
+          mkdir -p "wfcalc-${TAG}-${{ matrix.target }}"
+          cp "target/release/${{ matrix.bin }}" "wfcalc-${TAG}-${{ matrix.target }}/"
+          cp data/gamedata.json README.md "wfcalc-${TAG}-${{ matrix.target }}/"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            7z a "wfcalc-${GITHUB_REF_NAME}-${{ matrix.target }}.zip" "wfcalc-${GITHUB_REF_NAME}-${{ matrix.target }}" > /dev/null
+            7z a "wfcalc-${TAG}-${{ matrix.target }}.zip" "wfcalc-${TAG}-${{ matrix.target }}" > /dev/null
           else
-            zip -r "wfcalc-${GITHUB_REF_NAME}-${{ matrix.target }}.zip" "wfcalc-${GITHUB_REF_NAME}-${{ matrix.target }}" > /dev/null
+            zip -r "wfcalc-${TAG}-${{ matrix.target }}.zip" "wfcalc-${TAG}-${{ matrix.target }}" > /dev/null
           fi
       - uses: actions/upload-artifact@v4
         with:
@@ -81,22 +94,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
       - name: Release notes from CHANGELOG.md
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           awk -v v="$version" '
             $0 ~ "^## " v "( |$)" { found = 1; next }
             found && /^## / { exit }
             found { print }
           ' CHANGELOG.md > notes.md
-          [ -s notes.md ] || echo "Release ${GITHUB_REF_NAME}" > notes.md
+          [ -s notes.md ] || echo "Release ${TAG}" > notes.md
       - uses: softprops/action-gh-release@v2
         with:
-          name: Simulacrum ${{ github.ref_name }}
+          tag_name: ${{ env.TAG }}
+          name: Warframe Simulacrum ${{ env.TAG }}
           body_path: notes.md
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.TAG, '-') }}
           files: dist/*.zip
