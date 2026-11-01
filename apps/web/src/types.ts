@@ -79,6 +79,9 @@ export interface Weapon {
   image?: string;
   melee?: MeleeProfile;
   evolutions?: EvolutionTier[];
+  polarities?: string[];
+  exilusPolarity?: string;
+  stancePolarity?: string;
   modes: WeaponMode[];
 }
 

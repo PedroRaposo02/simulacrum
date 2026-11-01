@@ -890,6 +890,46 @@ fn optimize_mode(
         }
     }
 
+    // The exilus slot is never left empty: the best eligible mod by the objective, and on a tie
+    // a utility pick (Ammo Mutation for guns, a Tennokai mod for melee).
+    {
+        let normal_slots = if riven.is_empty() { NORMAL_SLOTS } else { NORMAL_SLOTS - 1 };
+        if mods.len() == normal_slots {
+            let preference = |m: &Mod| -> i32 {
+                if m.name.starts_with("Primed") && m.name.contains("Ammo Mutation") {
+                    3
+                } else if m.name.contains("Ammo Mutation") {
+                    2
+                } else if m.enables_tennokai {
+                    1
+                } else {
+                    0
+                }
+            };
+            let mut pick: Option<(&Mod, f64, i32)> = None;
+            for m in data.mods.iter().filter(|m| m.is_exilus && m.fits(weapon) && !mods.iter().any(|x| x.id == m.id)) {
+                let mut next = mods.clone();
+                next.push(m);
+                if !ctx.valid(&next, normal_slots) {
+                    continue;
+                }
+                let v = ctx.eval(&next, arcane, &riven);
+                let pref = preference(m);
+                let better = match pick {
+                    None => v >= best * (1.0 - 1e-9),
+                    Some((_, pv, pp)) => v > pv * (1.0 + 1e-9) || ((v - pv).abs() <= pv.abs() * 1e-9 && pref > pp),
+                };
+                if better {
+                    pick = Some((m, v, pref));
+                }
+            }
+            if let Some((m, v, _)) = pick {
+                mods.push(m);
+                best = best.max(v);
+            }
+        }
+    }
+
     // Comfort: trade a little DPS for range on melee weapons.
     let normal_slots = if riven.is_empty() { NORMAL_SLOTS } else { NORMAL_SLOTS - 1 };
     let mut range_cost = None;

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatRivenValue, layoutOf, rivenType, rowValue } from "./riven";
 import { RIVEN_SLOT, SLOT_COUNT, useStore } from "./store";
+import { planCapacity, type SlotPlan } from "./capacity";
 import type { Arcane, EditorBuild, Mod, Modifier, Weapon } from "./types";
 
 // ---- Text helpers ---------------------------------------------------------------------------
@@ -97,12 +98,14 @@ interface CardProps {
   lines: string[];
   image?: string;
   corner?: string;
+  /** Small tag in the top-left corner (e.g. FORMA). */
+  badge?: string;
   pips?: number;
   label: string;
   onClick: () => void;
 }
 
-function Card({ frame, title, lines, image, corner, pips, label, onClick }: CardProps) {
+function Card({ frame, title, lines, image, corner, badge, pips, label, onClick }: CardProps) {
   const [imgOk, setImgOk] = useState(true);
   return (
     <button
@@ -120,6 +123,9 @@ function Card({ frame, title, lines, image, corner, pips, label, onClick }: Card
     >
       {corner && (
         <span className="absolute right-1.5 top-1 z-10 rounded bg-black/50 px-1 text-[11px] font-semibold tabular-nums">{corner}</span>
+      )}
+      {badge && (
+        <span className="absolute left-1.5 top-1 z-10 rounded bg-amber-400 px-1 text-[9px] font-bold uppercase tracking-wide text-black">{badge}</span>
       )}
       <div className="relative flex h-[52%] w-full items-end justify-center overflow-hidden px-2 pt-5" style={{ borderBottom: `1px solid ${frame.border}` }}>
         {image && imgOk ? (
@@ -265,6 +271,14 @@ export default function ModGrid({
 }) {
   const { data } = useStore();
   const [picker, setPicker] = useState<PickerState>(null);
+  const [capacity, setCapacity] = useState(60);
+  const plan = useMemo(() => planCapacity(data!, weapon, build, capacity), [data, weapon, build, capacity]);
+  const slotPlan = (i: number): SlotPlan => plan.slots[i];
+  const corner = (i: number, fallbackPolarity?: string) => {
+    const sp = slotPlan(i);
+    const pol = sp.polarity && sp.polarity !== "any" ? sp.polarity : fallbackPolarity ?? "";
+    return `${sp.drain} ${POLARITY_GLYPH[pol] ?? ""}`.trim();
+  };
   const melee = weapon.slot === "melee";
   const hasRiven = build.riven.positives.length > 0;
   const modById = (id: string) => data!.mods.find((m) => m.id === id);
@@ -289,7 +303,8 @@ export default function ModGrid({
         title={m.name}
         lines={m.modifiers.map((x) => statLine(x, melee)).concat(m.locksFireRate ? ["Fire rate locked"] : [])}
         image={m.image}
-        corner={`${modDrain(m)} ${POLARITY_GLYPH[m.polarity] ?? ""}`}
+        corner={corner(i, m.polarity)}
+        badge={slotPlan(i).forma ? "Forma" : undefined}
         pips={m.maxRank}
         onClick={() => setPicker({ kind: "mod", slot: i })}
       />
@@ -313,7 +328,8 @@ export default function ModGrid({
         frame={FRAMES.riven}
         title={`${weapon.family} Riven`}
         lines={lines}
-        corner="18 ◆"
+        corner={corner(RIVEN_SLOT)}
+        badge={slotPlan(RIVEN_SLOT).forma ? "Forma" : undefined}
         pips={8}
         onClick={() => document.getElementById("riven-editor")?.scrollIntoView({ behavior: "smooth", block: "center" })}
       />
@@ -327,8 +343,29 @@ export default function ModGrid({
       .filter((m) => !used.has(m.id) || (picker?.kind === "mod" && build.slots[picker.slot] === m.id))
       .map((m) => ({ id: m.id, name: m.name, rarity: m.rarity, summary: modSummary(m, melee), drain: modDrain(m), polarity: m.polarity }));
 
+  const formaList = plan.slots
+    .filter((s) => s.forma)
+    .map((s) => `${s.slot === SLOT_COUNT ? "Exilus" : `Slot ${s.slot + 1}`} → ${s.riven ? "riven's polarity" : s.polarity}`);
+  const innate = [...(weapon.polarities ?? []), ...(weapon.exilusPolarity ? [`exilus ${weapon.exilusPolarity}`] : [])];
+
   return (
     <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        <span className={`rounded px-1.5 py-0.5 font-semibold tabular-nums ${plan.fits ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300" : "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300"}`}>
+          Capacity {plan.used} / {plan.capacity}
+        </span>
+        <span className="font-medium">{plan.forma} forma</span>
+        {formaList.length > 0 && <span className="text-zinc-500">{formaList.join(" · ")}</span>}
+        <label className="ml-auto flex items-center gap-1 text-zinc-500">
+          <input type="checkbox" className="accent-indigo-600" checked={capacity === 60} onChange={(e) => setCapacity(e.target.checked ? 60 : 30)} />
+          Orokin Catalyst / Reactor (60)
+        </label>
+      </div>
+      <p className="-mt-1 text-[11px] text-zinc-500">
+        Drain at max rank; matching polarity halves it, a different one adds 25%. Innate polarities: {innate.length ? innate.join(", ") : "none"}.
+        {!plan.fits && " Even with forma on every slot this build doesn't fit."}
+        {melee && " Melee: a matching stance adds capacity, not counted here."}
+      </p>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {Array.from({ length: SLOT_COUNT }, (_, i) => (hasRiven && i === RIVEN_SLOT ? rivenCard() : modCard(i)))}
       </div>

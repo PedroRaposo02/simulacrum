@@ -339,6 +339,13 @@ pub struct Weapon {
     /// Incarnon evolutions by tier (hand-curated in data/overrides/incarnon.json).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evolutions: Vec<EvolutionTier>,
+    /// Innate slot polarities (positions unknown) and the exilus / stance slot polarity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub polarities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exilus_polarity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stance_polarity: Option<String>,
     #[serde(default)]
     pub sources: BTreeMap<String, String>,
 }

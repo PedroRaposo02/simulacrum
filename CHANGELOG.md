@@ -9,6 +9,8 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 - **GunCO**: per-status damage (Galvanized, Condition Overload, Fatal Affliction) adds or multiplies per attack, with its factor, from the Galvanized GunCO sheet (rainy, tests by Prof_Blocks_007).
 - **Balanced objective** (new default): sustained DPS with fire rate above a comfortable rate ignored; best builds spend slots on damage and status.
 - **Companion weapons**: aim-only and headshot-triggered effects ignored; Tenacious Bond and Fired Up buffs; Tenacious Bond threshold check and optimizer option; Contagious Bond spread shown.
+- **Capacity and forma planner** in the card view: capacity used vs 60 (or 30), forma count and where, per-card drain and slot polarity; weapons' innate polarities are used first.
+- **Exilus**: exilus eligibility now comes from WFCD's utility flag (it was ignored); best builds always fill the exilus slot.
 - **UI**: bodyshot and headshot rows, burst vs sustained explained, full stat sheet, weapon type labels, Corrosive Projection slider, pagination, stronger primed and galvanized card frames, card layout, home page, logo and favicon, "Warframe Simulacrum" title, footer, best-build disclaimer.
 
 ## 0.4.0-beta.1 — 2026-11-01

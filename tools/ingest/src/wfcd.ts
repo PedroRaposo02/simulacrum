@@ -339,7 +339,7 @@ function buildMods() {
     const enablesTennokai = /Enables Tennokai/i.test(desc + lines.join(" ")) || undefined;
     return {
       id: m.uniqueName, name: m.name, pool, compat, polarity: m.polarity ?? "", baseDrain: m.baseDrain ?? 0,
-      maxRank: m.fusionLimit ?? 0, isExilus: !!m.isExilus, exclusiveGroup: exclusiveGroup(m.name, pool),
+      maxRank: m.fusionLimit ?? 0, isExilus: !!(m.isUtility || m.isExilus), exclusiveGroup: exclusiveGroup(m.name, pool),
       modifiers, ...(requiresTrigger ? { requiresTrigger } : {}), ...(locksFireRate ? { locksFireRate } : {}), ...(enablesTennokai ? { enablesTennokai } : {}), unparsed,
       ...(m.rarity ? { rarity: m.rarity } : {}),
       ...(m.imageName ? { image: `https://cdn.warframestat.us/img/${m.imageName}` } : {}),
@@ -541,6 +541,9 @@ function buildWeapon(w: any, slotFile: string) {
     family: w.name.replace(FAMILY_AFFIXES, "").trim(), modes, innate: [], mechanicTags: [...tags],
     image: w.imageName ? `https://cdn.warframestat.us/img/${w.imageName}` : undefined,
     ...(melee ? { melee } : {}),
+    ...(w.polarities?.length ? { polarities: w.polarities } : {}),
+    ...(w.exilusPolarity ? { exilusPolarity: w.exilusPolarity } : {}),
+    ...(w.stancePolarity ? { stancePolarity: w.stancePolarity } : {}),
     ...(incarnon[w.name]?.evolutions ? { evolutions: incarnon[w.name].evolutions } : {}),
     sources: { base: "wfcd", attacks: "wfcd (wiki-derived)", ...(melee ? { melee: "wiki Module:Weapons/data/melee + Module:Stances/data" } : {}) },
   };
