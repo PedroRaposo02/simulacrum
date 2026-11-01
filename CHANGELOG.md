@@ -10,6 +10,7 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 - **Balanced objective** (new default): sustained DPS with fire rate above a comfortable rate ignored; best builds spend slots on damage and status.
 - **Companion weapons**: aim-only and headshot-triggered effects ignored; Tenacious Bond and Fired Up buffs; Tenacious Bond threshold check and optimizer option; Contagious Bond spread shown.
 - **Capacity and forma planner** in the card view: capacity used vs 60 (or 30), forma count and where, per-card drain and slot polarity; weapons' innate polarities are used first.
+- **Favorites**: star weapons and saved builds; favorites filter and home-page section.
 - **Export**: build to JSON (re-importable) and/or Markdown laid out like the cards.
 - **Riven roll ranking**: every 2-3 positive roll for a weapon ranked against the best one (riven editor), with a Use button.
 - **Exilus**: exilus eligibility now comes from WFCD's utility flag (it was ignored); best builds always fill the exilus slot.

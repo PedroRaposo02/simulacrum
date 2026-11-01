@@ -8,6 +8,7 @@ import OptimizerControls, { type ComfortSettings, type OptimizerState } from "./
 import SavedBuilds from "./SavedBuilds";
 import { weaponTypeLabel } from "./labels";
 import { buildJson, buildMarkdown } from "./exportBuild";
+import { Star, useFavorites } from "./favorites";
 import { downloadJson } from "./store";
 import ModGrid, { modSummary as cardSummary } from "./ModGrid";
 
@@ -371,6 +372,11 @@ function OptimizerPanel({ state, onUndo }: { state: OptimizerState; onUndo: () =
   );
 }
 
+function FavStar({ id, name }: { id: string; name: string }) {
+  const favs = useFavorites();
+  return <Star on={favs.weapons.includes(id)} onClick={() => favs.toggleWeapon(id)} label={name} />;
+}
+
 export default function BuildEditor() {
   const { data, engine, build, setBuild, scenario, best } = useStore();
   const [copied, setCopied] = useState(false);
@@ -507,7 +513,10 @@ export default function BuildEditor() {
           <div className="flex flex-wrap items-center gap-3">
             {weapon.image && <img src={weapon.image} alt="" className="h-12 w-auto" onError={(e) => (e.currentTarget.style.display = "none")} />}
             <div>
-              <h2 className="text-xl font-semibold">{weapon.name}</h2>
+              <h2 className="flex items-center gap-2 text-xl font-semibold">
+                {weapon.name}
+                <FavStar id={weapon.id} name={weapon.name} />
+              </h2>
               <p className="text-xs text-zinc-500">
                 <span className="capitalize">{weapon.slot}</span> · {weaponTypeLabel(weapon)} · vs {result?.ok?.target ?? "—"}
               </p>

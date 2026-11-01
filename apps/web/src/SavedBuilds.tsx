@@ -1,11 +1,15 @@
 import { useRef, useState } from "react";
 import { downloadJson, loadSaved, storeSaved, useStore } from "./store";
 import type { SavedBuild } from "./types";
+import { Star, useFavorites } from "./favorites";
 
 /** Named builds kept in this browser, with JSON export/import. */
 export default function SavedBuilds() {
   const { data, build, setBuild } = useStore();
   const [list, setList] = useState<SavedBuild[]>(loadSaved);
+  const favs = useFavorites();
+  // Favorite builds first.
+  const ordered = [...list].sort((a, b) => Number(favs.builds.includes(b.name)) - Number(favs.builds.includes(a.name)));
   const [name, setName] = useState("");
   const [msg, setMsg] = useState<string | null>(null);
   const file = useRef<HTMLInputElement>(null);
@@ -51,8 +55,9 @@ export default function SavedBuilds() {
       </div>
       {list.length > 0 && (
         <ul className="max-h-56 divide-y divide-zinc-100 overflow-y-auto text-sm dark:divide-zinc-800">
-          {list.map((b) => (
+          {ordered.map((b) => (
             <li key={b.name} className="flex items-center gap-2 py-1">
+              <Star on={favs.builds.includes(b.name)} onClick={() => favs.toggleBuild(b.name)} label={b.name} />
               <button className="min-w-0 flex-1 truncate text-left hover:text-indigo-600" onClick={() => setBuild(b.build)} title="Load">
                 {b.name} <span className="text-xs text-zinc-500">· {weaponName(b.build.weapon)}</span>
               </button>

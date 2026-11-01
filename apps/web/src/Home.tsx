@@ -2,6 +2,8 @@ import Logo from "./Logo";
 import { SITE } from "./site";
 import { useStore } from "./store";
 import BestBuildDisclaimer from "./Disclaimer";
+import { useFavorites } from "./favorites";
+import { loadSaved } from "./store";
 
 const FEATURES: [string, string][] = [
   ["Every weapon", "Primaries, secondaries, melee with stances, arch-guns and companion weapons, each attack mode computed separately."],
@@ -12,7 +14,10 @@ const FEATURES: [string, string][] = [
 ];
 
 export default function Home() {
-  const { setTab, data } = useStore();
+  const { setTab, data, openWeapon, setBuild } = useStore();
+  const favs = useFavorites();
+  const favWeapons = (data?.weapons ?? []).filter((w) => favs.weapons.includes(w.id));
+  const favBuilds = loadSaved().filter((b) => favs.builds.includes(b.name));
   return (
     <div className="mx-auto max-w-3xl space-y-6 py-6">
       <div className="flex items-center gap-4">
@@ -32,6 +37,36 @@ export default function Home() {
           <p className="text-sm text-zinc-500">Mod a weapon, add a riven and evolutions, and let the optimizer find the best build.</p>
         </button>
       </div>
+      {(favWeapons.length > 0 || favBuilds.length > 0) && (
+        <div className="card space-y-3">
+          <h3 className="font-semibold">★ Favorites</h3>
+          {favWeapons.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {favWeapons.map((w) => (
+                <button key={w.id} onClick={() => openWeapon(w.id)} className="rounded-md border border-zinc-300 px-2 py-1 text-sm hover:border-indigo-500 dark:border-zinc-700">
+                  {w.name}
+                </button>
+              ))}
+            </div>
+          )}
+          {favBuilds.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {favBuilds.map((b) => (
+                <button
+                  key={b.name}
+                  onClick={() => {
+                    setBuild(b.build);
+                    setTab("build");
+                  }}
+                  className="rounded-md border border-amber-400 px-2 py-1 text-sm hover:bg-amber-50 dark:hover:bg-amber-950/30"
+                >
+                  {b.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       <div className="card space-y-2">
         <h3 className="font-semibold">What it does</h3>
         <ul className="space-y-1.5 text-sm">

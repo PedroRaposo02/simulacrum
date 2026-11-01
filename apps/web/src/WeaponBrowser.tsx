@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { weaponTypeLabel } from "./labels";
 import BestBuildDisclaimer from "./Disclaimer";
+import { Star, useFavorites } from "./favorites";
 
 const PAGE_KEY = "simulacrum.pageSize";
 const PAGE_SIZES = [25, 50, 100, 0] as const;
@@ -30,6 +31,8 @@ export default function WeaponBrowser() {
   const { data, engine, best, bestStale, scenario, browserBuild, setBrowserBuild, openWeapon } = useStore();
   const [slot, setSlot] = useState<Slot>("primary");
   const [query, setQuery] = useState("");
+  const [favOnly, setFavOnly] = useState(false);
+  const favs = useFavorites();
   const [sortKey, setSortKey] = useState<SortKey>("burstDps");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [pageSize, setPageSizeState] = useState<number>(savedPageSize);
@@ -72,8 +75,10 @@ export default function WeaponBrowser() {
 
   const shown = useMemo(() => {
     const q = query.toLowerCase();
-    return rows.filter((r) => r.slot === slot && (!q || r.name.toLowerCase().includes(q))).sort((a, b) => b[sortKey] - a[sortKey]);
-  }, [rows, slot, query, sortKey]);
+    return rows
+      .filter((r) => r.slot === slot && (!q || r.name.toLowerCase().includes(q)) && (!favOnly || favs.weapons.includes(r.weaponId)))
+      .sort((a, b) => b[sortKey] - a[sortKey]);
+  }, [rows, slot, query, sortKey, favOnly, favs.weapons]);
   useEffect(() => setPage(0), [slot, query, sortKey]);
   const pages = pageSize ? Math.max(1, Math.ceil(shown.length / pageSize)) : 1;
   const pageRows = pageSize ? shown.slice(page * pageSize, (page + 1) * pageSize) : shown;
@@ -106,6 +111,9 @@ export default function WeaponBrowser() {
 
       <div className="flex flex-wrap items-center gap-3">
         <input className="field max-w-xs" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search weapons" />
+        <label className="flex items-center gap-1 text-sm text-zinc-600 dark:text-zinc-300">
+          <input type="checkbox" className="accent-amber-400" checked={favOnly} onChange={(e) => setFavOnly(e.target.checked)} />★ Favorites only
+        </label>
         <Segmented<BrowserBuild>
           value={browserBuild}
           onChange={setBrowserBuild}
@@ -155,7 +163,12 @@ export default function WeaponBrowser() {
                     onClick={() => (usingBest && e ? setExpanded(isOpen ? null : r.weaponId) : openWeapon(r.weaponId))}
                     className="cursor-pointer border-b border-zinc-100 last:border-0 hover:bg-indigo-50 dark:border-zinc-800/60 dark:hover:bg-indigo-950/40"
                   >
-                    <td className="num px-2 py-1.5 text-zinc-400">{i + 1}</td>
+                    <td className="num px-2 py-1.5 text-zinc-400">
+                      <span className="mr-1.5">
+                        <Star on={favs.weapons.includes(r.weaponId)} onClick={() => favs.toggleWeapon(r.weaponId)} label={r.name} />
+                      </span>
+                      {i + 1}
+                    </td>
                     <td className="px-2 py-1.5 font-medium">
                       {usingBest && e && <span className="mr-1 text-zinc-400">{isOpen ? "▾" : "▸"}</span>}
                       {r.name}{" "}
