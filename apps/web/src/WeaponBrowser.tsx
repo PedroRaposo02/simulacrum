@@ -171,7 +171,16 @@ export default function WeaponBrowser() {
 
       {usingBest && !best && (
         <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-          No precomputed Most DPS builds found. Run <code>pnpm optimize</code> to generate them; showing unmodded numbers.
+          {import.meta.env.DEV ? (
+            <>
+              No precomputed Most DPS builds found. Run <code>pnpm optimize</code> to generate them; showing unmodded numbers.
+            </>
+          ) : (
+            <>
+              The best builds for this version are still being calculated and appear here shortly (reload the page later); unmodded
+              numbers are shown meanwhile. The optimizer in the build editor works for any weapon right now.
+            </>
+          )}
         </p>
       )}
       {usingBest && best && (

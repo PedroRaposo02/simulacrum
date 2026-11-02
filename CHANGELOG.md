@@ -4,6 +4,7 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 
 ## Unreleased
 
+- **Missing best builds notice**: players see that the best builds are still being calculated; the `pnpm optimize` hint only shows in local development.
 - **CI**: GitHub Actions updated to their Node 24 versions (checkout v7, setup-node v7, artifacts v7/v8, Pages v5, pnpm v6, gh-release v3); no more Node 20 deprecation warnings.
 
 ## 0.7.0-beta.1 — 2026-11-02
