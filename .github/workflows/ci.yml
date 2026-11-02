@@ -4,6 +4,7 @@ on:
   push:
     branches: [dev, production]
   pull_request:
+  workflow_dispatch:
 
 # Pull requests (including from forks) only read the repository.
 permissions:
