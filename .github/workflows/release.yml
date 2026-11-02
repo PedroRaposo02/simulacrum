@@ -110,55 +110,65 @@ jobs:
           path: apps/web/dist
           retention-days: 3
 
-  # Cloudflare deploys (Worker with static assets, apps/web/wrangler.toml) are skipped until the
-  # CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repo secrets exist.
+  # GitHub Pages (https://pedroraposo02.github.io/simulacrum/): this release's site goes live right
+  # away with the previous release's best builds; the publish job deploys it again with the new ones.
   deploy-early:
     name: Deploy (previous best builds)
     needs: [version, web]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     env:
       TAG: ${{ needs.version.outputs.tag }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-        if: env.CLOUDFLARE_API_TOKEN != ''
-        with:
-          ref: ${{ needs.version.outputs.ref }}
       - uses: actions/download-artifact@v4
-        if: env.CLOUDFLARE_API_TOKEN != ''
         with:
           name: site
-          path: apps/web/dist
+          path: site
       - name: Best builds from the latest release that has them
-        if: env.CLOUDFLARE_API_TOKEN != ''
         run: |
           for t in $(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 20 --json tagName --jq '.[].tagName'); do
             if gh release download "$t" --repo "$GITHUB_REPOSITORY" --pattern best-builds.json --dir prev 2>/dev/null; then
               echo "using best builds from $t"
-              cp prev/best-builds.json apps/web/dist/best-builds.json
+              cp prev/best-builds.json site/best-builds.json
               break
             fi
           done
-          [ -f apps/web/dist/best-builds.json ] || echo "no earlier best builds; rankings appear with the final deploy"
-      - uses: actions/setup-node@v4
-        if: env.CLOUDFLARE_API_TOKEN != ''
+          [ -f site/best-builds.json ] || echo "no earlier best builds; rankings appear with the final deploy"
+      - uses: actions/upload-pages-artifact@v3
         with:
-          node-version: 22
-      - name: wrangler deploy
-        if: env.CLOUDFLARE_API_TOKEN != ''
-        working-directory: apps/web
-        run: npx --yes wrangler@4.156.2 deploy --message="Release ${TAG} (previous best builds)"
+          path: site
+          name: pages-early
+      - id: deploy
+        uses: actions/deploy-pages@v4
+        with:
+          artifact_name: pages-early
 
   publish:
     name: Best builds into the website
     needs: [version, builds, web]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     env:
       TAG: ${{ needs.version.outputs.tag }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -192,10 +202,14 @@ jobs:
           name: site-final
           path: apps/web/dist
           retention-days: 3
-      - name: wrangler deploy
-        if: env.CLOUDFLARE_API_TOKEN != ''
-        working-directory: apps/web
-        run: npx --yes wrangler@4.156.2 deploy --message="Release ${TAG}"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/web/dist
+          name: pages-final
+      - id: deploy
+        uses: actions/deploy-pages@v4
+        with:
+          artifact_name: pages-final
 
   # Desktop app (Tauri): the final website in a native window, with signed updates.
   desktop:

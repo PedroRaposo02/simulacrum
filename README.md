@@ -10,6 +10,9 @@ so the website is a set of static files with no server behind it. It can be inst
 browser as an app that works offline, and there is a desktop app for Windows, macOS and Linux
 that updates itself with each release.
 
+**Website: https://pedroraposo02.github.io/simulacrum/** · Desktop app:
+[releases](https://github.com/PedroRaposo02/simulacrum/releases)
+
 > Beta. Numbers are a model of the game, not a recording of it; see [Accuracy](#accuracy-and-limits).
 
 ---
@@ -189,7 +192,7 @@ Branches:
 
 A release (`.github/workflows/release.yml`):
 
-1. **Website, right away.** The site is built and deployed to Cloudflare with the best builds of
+1. **Website, right away.** The site is built and deployed to GitHub Pages with the best builds of
    the previous release, so the new version is live within minutes.
 2. **Best builds.** Every weapon × enemy × build variant is optimized on 16 parallel runners (one
    would exceed GitHub's 6-hour job limit) and merged.
@@ -204,8 +207,8 @@ A release (`.github/workflows/release.yml`):
 The desktop app checks the releases on launch; when a newer one has a `latest.json`, it offers
 to download, verify and install it, then restarts.
 
-Deploys use Wrangler (`apps/web/wrangler.toml`) and the `CLOUDFLARE_API_TOKEN` and
-`CLOUDFLARE_ACCOUNT_ID` repository secrets. `pnpm deploy` in `apps/web` deploys a local build.
+The website is served by GitHub Pages; only `production` and `v*` tags may deploy to it (the
+`github-pages` environment).
 Versions live in `Cargo.toml`, `apps/desktop/src-tauri/Cargo.toml` and the `package.json` files
 (the desktop app reads `apps/desktop/package.json`); tags with a suffix are pre-releases.
 

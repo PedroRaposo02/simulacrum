@@ -8,8 +8,7 @@
     "build:wasm": "wasm-pack build ../../crates/wf-wasm --target web --release --out-dir ../../apps/web/src/wasm --no-pack",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview",
-    "deploy": "npx --yes wrangler@4.156.2 deploy"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",
