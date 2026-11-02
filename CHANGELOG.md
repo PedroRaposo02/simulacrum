@@ -2,7 +2,7 @@
 
 Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the version lives in `Cargo.toml` (workspace) and the `package.json` files, and each release is tagged `v<version>`.
 
-## Unreleased
+## 0.7.0-beta.1 — 2026-11-02
 
 - **Keep my evolutions / Keep my arcane**: optimizer options that keep the Incarnon evolutions and arcane you picked (e.g. the best Devouring Attrition build); tiers left at none are still searched. CLI `--evolutions` works the same way now (other tiers searched).
 - **Crit chance shown as in the arsenal**: stat sheets and Compare show the arsenal crit chance, with the in-fight average (Enervate's average bonus and Puncture on the target, which damage uses) on its own row when it differs. Tenacious Bond's 50% threshold now checks the arsenal value, as in the game.
