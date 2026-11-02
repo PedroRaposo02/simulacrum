@@ -137,8 +137,14 @@ jobs:
         with:
           name: site
           path: site
-      - name: Best builds from the latest release that has them
+      - name: Best builds from the live site, else the latest release that has them
         run: |
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          if curl -sfL "https://${owner}.github.io/${GITHUB_REPOSITORY#*/}/best-builds.json" -o site/best-builds.json; then
+            echo "using the live site's best builds"
+            exit 0
+          fi
+          rm -f site/best-builds.json
           for t in $(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 20 --json tagName --jq '.[].tagName'); do
             if gh release download "$t" --repo "$GITHUB_REPOSITORY" --pattern best-builds.json --dir prev 2>/dev/null; then
               echo "using best builds from $t"
@@ -386,6 +392,8 @@ jobs:
           name: Warframe Simulacrum ${{ env.TAG }}
           body_path: notes.md
           prerelease: ${{ contains(env.TAG, '-') }}
+          # Releases are immutable once published: create a draft with every file, then publish it.
+          draft: true
           files: |
             dist/*.zip
             dist/best-builds.json
@@ -394,3 +402,7 @@ jobs:
             desktop/*.dmg
             desktop/*.app.tar.gz
             desktop/*.AppImage
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false

@@ -2,12 +2,15 @@
 
 Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the version lives in `Cargo.toml` (workspace) and the `package.json` files, and each release is tagged `v<version>`.
 
-## Unreleased
+## 0.7.0-beta.2 — 2026-11-02
+
+0.7.0-beta.1 was published without its downloads (the repository's releases are immutable once published, and files were attached afterwards); this release has everything from it, plus:
 
 - **Missing best builds notice**: players see that the best builds are still being calculated; the `pnpm optimize` hint only shows in local development.
 - **CI**: GitHub Actions updated to their Node 24 versions (checkout v7, setup-node v7, artifacts v7/v8, Pages v5, pnpm v6, gh-release v3); no more Node 20 deprecation warnings.
+- **Releases**: created as drafts with every file attached, then published; the website's first deploy reuses the live site's best builds, so rankings never disappear during a release.
 
-## 0.7.0-beta.1 — 2026-11-02
+### From 0.7.0-beta.1
 
 - **Keep my evolutions / Keep my arcane**: optimizer options that keep the Incarnon evolutions and arcane you picked (e.g. the best Devouring Attrition build); tiers left at none are still searched. CLI `--evolutions` works the same way now (other tiers searched).
 - **Crit chance shown as in the arsenal**: stat sheets and Compare show the arsenal crit chance, with the in-fight average (Enervate's average bonus and Puncture on the target, which damage uses) on its own row when it differs. Tenacious Bond's 50% threshold now checks the arsenal value, as in the game.
