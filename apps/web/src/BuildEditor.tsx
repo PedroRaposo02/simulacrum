@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { usePersistent } from "./persist";
 import { cancelSearch, compute, engineBuild, fmt, pct, RIVEN_SLOT, shareLink, SLOT_COUNT, useStore } from "./store";
 import { formatRivenValue, layoutOf, rivenType, rowValue } from "./riven";
@@ -72,26 +72,60 @@ function SearchOverlay() {
   );
 }
 
-/** Compact live stats shown under the mod cards. */
-function LiveStats({ m }: { m: ModeResult }) {
-  const tile = (label: string, v: number | null | undefined) => (
-    <div className="rounded-md bg-zinc-100 px-2 py-1.5 dark:bg-zinc-800/60">
-      <div className="text-[10px] uppercase text-zinc-500">{label}</div>
-      <div className="num text-base font-semibold">{v == null ? "—" : fmt(v)}</div>
-    </div>
-  );
+/**
+ * The build's headline numbers, pinned to the top of the screen while the cards scroll. After each
+ * change every number shows how much that change moved it.
+ */
+function DpsStrip({ m, resetKey }: { m: ModeResult; resetKey: string }) {
+  const tiles: [string, number][] = [
+    ["Per shot", m.perShot],
+    ["Burst DPS", m.burstDps],
+    ["Sustained DPS", m.sustainedDps],
+    m.perCharge != null ? ["Per charge", m.perCharge] : ["Status DPS", m.statusDps],
+    ["Group DPS", m.groupDps],
+    ["Group sustained", m.groupSustainedDps],
+  ];
+  const values = tiles.map((t) => t[1]);
+  const signature = values.join("|");
+  const last = useRef<{ key: string; values: number[] } | null>(null);
+  const [delta, setDelta] = useState<(number | null)[]>([]);
+  useEffect(() => {
+    const prev = last.current;
+    if (prev && prev.key === resetKey) {
+      if (prev.values.join("|") !== signature) {
+        setDelta(values.map((v, i) => (prev.values[i] > 0 && isFinite(v) ? v / prev.values[i] - 1 : null)));
+      }
+    } else {
+      setDelta([]);
+    }
+    last.current = { key: resetKey, values };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signature, resetKey]);
   return (
-    <div className="space-y-2 rounded-lg border border-zinc-200 p-2 dark:border-zinc-800">
-      <div className="text-xs font-semibold">{m.mode}</div>
-      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 xl:grid-cols-6">
-        {tile("Per shot", m.perShot)}
-        {tile("Burst DPS", m.burstDps)}
-        {tile("Sustained DPS", m.sustainedDps)}
-        {m.perCharge != null ? tile("Per charge", m.perCharge) : tile("Status DPS", m.statusDps)}
-        {tile("Group DPS", m.groupDps)}
-        {tile("Group sustained", m.groupSustainedDps)}
+    <div className="sticky top-0 z-[15] -mx-4 border-b border-zinc-200 bg-white px-4 py-2 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="mb-1 flex items-baseline gap-2 text-xs">
+        <span className="font-semibold">{m.mode}</span>
+        {delta.some((d) => d != null && Math.abs(d) >= 0.0005) && <span className="text-zinc-500">change from your last edit</span>}
       </div>
-      <StatSheet m={m} />
+      <div className="grid grid-cols-3 gap-1.5 xl:grid-cols-6">
+        {tiles.map(([label, v], i) => {
+          const d = delta[i];
+          return (
+            <div key={label} className="rounded-md bg-zinc-100 px-2 py-1 dark:bg-zinc-800/60">
+              <div className="text-[10px] uppercase text-zinc-500">{label}</div>
+              <div className="flex items-baseline gap-1.5">
+                <span className="num text-base font-semibold">{fmt(v)}</span>
+                {d != null && Math.abs(d) >= 0.0005 && (
+                  <span className={`num text-[11px] font-medium ${d > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+                    {d > 0 ? "+" : ""}
+                    {(d * 100).toFixed(1)}%
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -474,7 +508,7 @@ export default function BuildEditor() {
   const [opt, setOpt] = useState<OptimizerState | null>(null);
   const [comfort, setComfort] = usePersistent<ComfortSettings>("opt.comfort", { on: false, minAttackSpeed: 1.5, rangeTolerance: 0.05, maxFireRateBonus: 1.5 });
   const [view, setViewState] = useState<ModView>(savedView);
-  const [liveStats, setLiveStatsState] = useState<boolean>(savedLiveStats);
+  const [detailsOpen, setDetailsOpenState] = useState<boolean>(savedLiveStats);
   const [shareVsEnemy, setShareVsEnemyState] = useState<boolean>(() => {
     try {
       return localStorage.getItem(SHARE_KEY) === "on";
@@ -490,8 +524,8 @@ export default function BuildEditor() {
       // not persisted
     }
   };
-  const setLiveStats = (on: boolean) => {
-    setLiveStatsState(on);
+  const setDetailsOpen = (on: boolean) => {
+    setDetailsOpenState(on);
     try {
       localStorage.setItem(STATS_KEY, on ? "on" : "off");
     } catch {
@@ -735,12 +769,8 @@ export default function BuildEditor() {
             <div className="flex items-center gap-2">
               <h3 className="font-semibold">Build</h3>
               <span className="text-xs text-zinc-500">slot order matters for elements</span>
-              <label className="ml-auto flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-300">
-                <input type="checkbox" className="accent-indigo-600" checked={liveStats} onChange={(e) => setLiveStats(e.target.checked)} />
-                Stats
-              </label>
               <label
-                className="flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-300"
+                className="ml-auto flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-300"
                 title="Card percentages: off = the weapon's raw damage, status damage included (no armor, Viral or other enemy-side multipliers); on = against the scenario enemy, including the Viral/Corrosive/Heat the build applies itself"
               >
                 <input type="checkbox" className="accent-indigo-600" checked={shareVsEnemy} onChange={(e) => setShareVsEnemy(e.target.checked)} />
@@ -759,6 +789,7 @@ export default function BuildEditor() {
                 ))}
               </div>
             </div>
+            {mainMode && <DpsStrip m={mainMode} resetKey={`${weapon.id}:${mainMode.modeIndex}`} />}
             <div className="space-y-4">
               {view === "cards" ? (
                 <ModGrid
@@ -773,7 +804,18 @@ export default function BuildEditor() {
               ) : (
                 <p className="text-xs text-zinc-500">List view: edit mods and the arcane in the left column.</p>
               )}
-              {liveStats && mainMode && <LiveStats m={mainMode} />}
+              {mainMode && (
+                <details
+                  open={detailsOpen}
+                  onToggle={(e) => setDetailsOpen((e.currentTarget as HTMLDetailsElement).open)}
+                  className="rounded-lg border border-zinc-200 p-2 dark:border-zinc-800"
+                >
+                  <summary className="cursor-pointer text-xs font-semibold">Detailed stats · {mainMode.mode}</summary>
+                  <div className="mt-2">
+                    <StatSheet m={mainMode} />
+                  </div>
+                </details>
+              )}
             </div>
           </div>
         )}
