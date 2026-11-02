@@ -1,6 +1,6 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { usePersistent } from "./persist";
-import { compute, engineBuild, fmt, pct, RIVEN_SLOT, shareLink, SLOT_COUNT, useStore } from "./store";
+import { cancelSearch, compute, engineBuild, fmt, pct, RIVEN_SLOT, shareLink, SLOT_COUNT, useStore } from "./store";
 import { formatRivenValue, layoutOf, rivenType, rowValue } from "./riven";
 import { CoverageBadge, ExplainTree } from "./Common";
 import RivenEditor from "./RivenEditor";
@@ -23,6 +23,53 @@ function savedLiveStats(): boolean {
   } catch {
     return true;
   }
+}
+
+/**
+ * Over the build while the optimizer searches: edits are blocked right away; the progress panel
+ * appears only if the search takes more than a moment, so quick searches don't flicker.
+ */
+function SearchOverlay() {
+  const search = useStore((s) => s.search);
+  const setSearch = useStore((s) => s.setSearch);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!search) return;
+    const t = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(t);
+  }, [search]);
+  if (!search) return null;
+  const elapsed = Math.max(0, (now - search.started) / 1000);
+  return (
+    <div className="absolute inset-0 z-20 rounded-lg" aria-busy="true">
+      {elapsed >= 0.25 && (
+        <div className="flex h-full items-start justify-center rounded-lg bg-white/70 pt-20 backdrop-blur-[2px] dark:bg-zinc-950/70">
+          <div role="status" className="w-80 rounded-lg border border-zinc-200 bg-white p-4 shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+            <div className="flex items-baseline justify-between gap-2">
+              <span className="text-sm font-semibold">Finding the best build…</span>
+              <span className="num text-xs text-zinc-500">{elapsed.toFixed(1)} s</span>
+            </div>
+            <div className="mt-0.5 text-xs text-zinc-500">{search.label}</div>
+            <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+              <div className="search-sweep h-full w-1/3 rounded-full bg-indigo-500" />
+            </div>
+            <div className="mt-3 flex items-center justify-between gap-2 text-[11px] text-zinc-500">
+              <span>Usually a few seconds; riven searches take longer.</span>
+              <button
+                className="rounded-md border border-zinc-300 px-2 py-0.5 text-xs text-zinc-700 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                onClick={() => {
+                  cancelSearch();
+                  setSearch(null);
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** Compact live stats shown next to the mod cards. */
@@ -683,7 +730,8 @@ export default function BuildEditor() {
           </div>
         )}
         {weapon && (
-          <div className="card space-y-3">
+          <div className="card relative space-y-3">
+            <SearchOverlay />
             <div className="flex items-center gap-2">
               <h3 className="font-semibold">Build</h3>
               <span className="text-xs text-zinc-500">slot order matters for elements</span>

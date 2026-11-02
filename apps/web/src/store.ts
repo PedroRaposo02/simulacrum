@@ -137,6 +137,9 @@ interface State {
   addToCompare: (c: CompareColumn) => void;
   scenario: Scenario;
   browserBuild: BrowserBuild;
+  /** The optimizer search running now (label and start time), for the progress overlay. */
+  search: { label: string; started: number } | null;
+  setSearch: (s: { label: string; started: number } | null) => void;
   setTab: (t: State["tab"]) => void;
   setBuild: (b: EditorBuild) => void;
   setScenario: (s: Scenario) => void;
@@ -248,6 +251,8 @@ export const useStore = create<State>((set, get) => ({
     set({ scenario });
     writeSetting("scenario", scenario);
   },
+  search: null,
+  setSearch: (search) => set({ search }),
   setBrowserBuild: (browserBuild) => {
     set({ browserBuild });
     writeSetting("browserBuild", browserBuild);
@@ -314,6 +319,15 @@ let worker: Worker | null = null;
 let nextId = 0;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const pending = new Map<number, (r: { ok?: any; error?: CalcError }) => void>();
+
+/** Stop the running search: the worker is discarded (a new one starts on the next search). */
+export function cancelSearch() {
+  if (!worker) return;
+  worker.terminate();
+  worker = null;
+  for (const resolve of pending.values()) resolve({ error: { code: "cancelled", message: "Cancelled" } });
+  pending.clear();
+}
 
 function runInWorker<T>(kind: "optimize" | "rankRivens", weapon: string, base: EngineBuild, target: Target, options: OptimizeOptions): Promise<{ ok?: T; error?: CalcError }> {
   if (!worker) {

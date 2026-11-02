@@ -4,6 +4,7 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 
 ## Unreleased
 
+- **Search progress**: while the optimizer searches, the build is locked and a progress panel shows the elapsed time with a Cancel button (it appears after a quarter second, so quick searches don't flicker). Changes to options or the scenario re-run the search 0.7 s after the last change, and a new search replaces a running one.
 - **Best build for my riven**: new button next to "Grade my riven" that keeps your riven's rolls and finds the best mods, arcane and evolutions around it.
 - **Mod cards stay readable with stats on**: cards wrap to fewer columns instead of shrinking, and the stats panel moves below the cards on screens under 1536 px.
 - **Fix**: the optimizer buttons (Most DPS, + riven, heavy, riven grade and ranking) failed in the built site and desktop app with "expected value at line 1 column 1": the worker looked for the game data next to its own file.

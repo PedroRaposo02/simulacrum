@@ -13,6 +13,19 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Indeterminate progress bar for optimizer searches. */
+@keyframes search-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+.search-sweep {
+  animation: search-sweep 1.3s ease-in-out infinite;
+}
+
 /* In the components layer so utilities (w-20, py-1…) can override them. */
 @layer components {
   .field {

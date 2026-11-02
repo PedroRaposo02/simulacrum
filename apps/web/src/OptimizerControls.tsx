@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { usePersistent } from "./persist";
 import { rivenModifiers } from "./riven";
-import { buildFromBest, fmt, optimizeInWorker, pct, scenarioBuild, SLOT_COUNT, useStore } from "./store";
+import { buildFromBest, cancelSearch, fmt, optimizeInWorker, pct, scenarioBuild, SLOT_COUNT, useStore } from "./store";
 import { Toggle } from "./Common";
 import type { EditorBuild, Objective, OptimizeOptions, OptimizeResult, Weapon } from "./types";
 
@@ -43,8 +43,10 @@ export default function OptimizerControls({
   setComfort: (c: ComfortSettings) => void;
   onResult: (s: OptimizerState) => void;
 }) {
-  const { data, build, setBuild, scenario } = useStore();
-  const [busy, setBusy] = useState<string | null>(null);
+  const { data, build, setBuild, scenario, search, setSearch } = useStore();
+  const busy = search?.label ?? null;
+  // Each search gets a number; a newer one cancels the older, whose result is then ignored.
+  const generation = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<number | "auto">("auto");
   const [realistic, setRealistic] = usePersistent("opt.realistic", false);
@@ -78,10 +80,14 @@ export default function OptimizerControls({
   });
 
   const run = async (label: string, extra: OptimizeOptions) => {
-    setBusy(label);
+    if (useStore.getState().search) cancelSearch();
+    const mine = ++generation.current;
+    setSearch({ label, started: Date.now() });
     setError(null);
     const r = await optimizeInWorker(weapon.id, scenarioBuild(data!, scenario), scenario.target, options(extra));
-    setBusy(null);
+    if (mine !== generation.current) return null;
+    setSearch(null);
+    if (r.error?.code === "cancelled") return null;
     if (!r.ok) {
       setError(r.error?.message ?? "optimizer failed");
       return null;
@@ -121,14 +127,19 @@ export default function OptimizerControls({
     if (optionsKey === firstKey.current || !last.current) return;
     const t = setTimeout(() => {
       if (last.current) apply(last.current.label, last.current.extra, true);
-    }, 400);
+    }, 700);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [optionsKey]);
-  // A different weapon starts fresh.
+  // A different weapon starts fresh (and stops a search for the old one).
   useEffect(() => {
     last.current = null;
-  }, [weapon.id]);
+    if (useStore.getState().search) {
+      generation.current++;
+      cancelSearch();
+      setSearch(null);
+    }
+  }, [weapon.id, setSearch]);
 
   const btn = "rounded-md px-3 py-1.5 text-sm text-white disabled:opacity-60";
 
