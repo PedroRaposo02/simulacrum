@@ -559,12 +559,18 @@ fn run() -> Result<bool, String> {
                     let w = &data.weapons[wi];
                     let t = &targets[ti].1;
                     let started = std::time::Instant::now();
+                    let single_base = Build::default();
                     let mut failed: Vec<String> = Vec::new();
                     // Without and with a riven in one search (the riven search reuses the structures).
+                    // Companion weapons in group fights run with Contagious Bond (their kills spread statuses).
+                    let group_base = Build {
+                        conditions: wf_calc::Conditions { contagious_bond: w.slot == wf_data::Slot::Companion, ..Default::default() },
+                        ..Default::default()
+                    };
                     let mut run = |label: &str, objective, mode| match optimize_with_riven(
                         &data,
                         &w.id,
-                        &Build::default(),
+                        if objective == wf_opt::Objective::Group { &group_base } else { &single_base },
                         t,
                         &OptimizeOptions { objective, mode, ..Default::default() },
                     ) {

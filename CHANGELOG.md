@@ -2,6 +2,13 @@
 
 Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the version lives in `Cargo.toml` (workspace) and the `package.json` files, and each release is tagged `v<version>`.
 
+## Unreleased
+
+- **Element plans in the optimizer**: it now tries every order of up to three elements (best mod of each, then the full search from the best two). Plans like Cold + Toxin into Viral with a separate Heat need three mods together and were never found: on Verglas Prime (whose own Cold turns lone Heat into Blast) the rivenless build is about 2x stronger and the Contagious Bond group riven build goes from 3.1M to 6.2M (Heat + Status Damage + Damage).
+- **Riven search**: also starts from the best complete rivens (every combination scored on the rivenless build) and swaps two stats at once, so stats that only pay off together (crit chance with crit damage) are found. On the benchmark no build got worse; Onos group riven +10%, Acceltra Prime riven +9%.
+- **Companion weapons' group builds** are precomputed with Contagious Bond on.
+- The searches take about 2.5x longer (precompute about 2 h on 10 threads, about 25 min on the release runners; a riven search in the browser a few seconds more).
+
 ## 0.7.0-beta.2 — 2026-11-02
 
 0.7.0-beta.1 was published without its downloads (the repository's releases are immutable once published, and files were attached afterwards); this release has everything from it, plus:

@@ -512,6 +512,66 @@ impl<'a> Ctx<'a> {
         true
     }
 
+    /// Element plans. Which elements combine depends on the slot order of the element mods, and a plan
+    /// like Cold + Toxin into Viral with a separate Heat (on a weapon whose own Cold would otherwise turn
+    /// Heat into Blast) needs three mods placed together: no single swap, pair or reorder leads there.
+    /// Every order of up to three primary elements starts from the best mod of each, kept mods and a
+    /// greedy fill; the full search then runs from the best two.
+    fn plan_search(
+        &mut self,
+        current: Vec<&'a Mod>,
+        current_v: f64,
+        arcane: Option<&'a Arcane>,
+        riven: &[RivenStat],
+        normal_slots: usize,
+    ) -> (Vec<&'a Mod>, f64) {
+        const PRIMARY: [DamageType; 4] = [DamageType::Heat, DamageType::Cold, DamageType::Electricity, DamageType::Toxin];
+        let elem_value = |m: &Mod, t: DamageType| m.modifiers.iter().filter(|x| x.stat == Stat::Element(t)).map(|x| x.value).sum::<f64>();
+        let has_element = |m: &Mod| m.modifiers.iter().any(|x| matches!(x.stat, Stat::Element(_)));
+        let best_of: Vec<Option<&'a Mod>> = PRIMARY
+            .iter()
+            .map(|&t| {
+                self.candidates
+                    .iter()
+                    .copied()
+                    .filter(|m| elem_value(m, t) > 0.0)
+                    .max_by(|a, b| elem_value(a, t).total_cmp(&elem_value(b, t)))
+            })
+            .collect();
+        let keep: Vec<&'a Mod> = current.iter().copied().filter(|m| !has_element(m)).collect();
+        let mut plans: Vec<Vec<usize>> = Vec::new();
+        for a in 0..PRIMARY.len() {
+            plans.push(vec![a]);
+            for b in (0..PRIMARY.len()).filter(|&b| b != a) {
+                plans.push(vec![a, b]);
+                for c in (0..PRIMARY.len()).filter(|&c| c != a && c != b) {
+                    plans.push(vec![a, b, c]);
+                }
+            }
+        }
+        let mut scored: Vec<(Vec<&'a Mod>, f64)> = Vec::new();
+        for plan in plans {
+            let Some(mut set) = plan.iter().map(|&i| best_of[i]).collect::<Option<Vec<&'a Mod>>>() else { continue };
+            set.extend(keep.iter().copied());
+            while !self.valid(&set, normal_slots) && set.len() > plan.len() {
+                set.pop();
+            }
+            if !self.valid(&set, normal_slots) {
+                continue;
+            }
+            scored.push(self.search(set, arcane, riven, normal_slots, false));
+        }
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let mut best = (current, current_v);
+        for (m, _) in scored.into_iter().take(2) {
+            let (m, v) = self.search(m, arcane, riven, normal_slots, true);
+            if v > best.1 * (1.0 + 1e-9) {
+                best = (m, v);
+            }
+        }
+        best
+    }
+
     fn search_mods(
         &mut self,
         start: Vec<&'a Mod>,
@@ -697,9 +757,34 @@ impl<'a> Ctx<'a> {
                 seeds.push(i);
             }
         }
+        let mut seeds: Vec<Vec<usize>> = seeds.into_iter().map(|i| vec![i]).collect();
+        // Stats that only pay off together (crit chance with crit damage, or an element plan that
+        // needs the mods to change) can't be reached one stat at a time: every complete riven is
+        // scored on the riven-less mods and the best few start a search too.
+        if positives >= 2 {
+            let mut combos: Vec<(Vec<usize>, f64)> = Vec::new();
+            let mut idx: Vec<usize> = (0..positives).collect();
+            let n = pool.len();
+            if n >= positives {
+                loop {
+                    let r: Vec<RivenStat> = idx.iter().map(|&i| pool[i].clone()).collect();
+                    if riven_ok(&r) {
+                        combos.push((idx.clone(), self.eval(&base_mods, arcane, &r)));
+                    }
+                    // Next combination in lexicographic order.
+                    let Some(k) = (0..positives).rev().find(|&k| idx[k] < n - positives + k) else { break };
+                    idx[k] += 1;
+                    for m in k + 1..positives {
+                        idx[m] = idx[m - 1] + 1;
+                    }
+                }
+            }
+            combos.sort_by(|a, b| b.1.total_cmp(&a.1));
+            seeds.extend(combos.into_iter().take(RIVEN_SEEDS).map(|c| c.0));
+        }
         let mut best_overall: Option<(Vec<&'a Mod>, Vec<RivenStat>, f64)> = None;
         for seed in seeds {
-            let (m, r, v) = self.riven_from(base_mods.clone(), arcane, pool, positives, normal_slots, seed, &riven_ok);
+            let (m, r, v) = self.riven_from(base_mods.clone(), arcane, pool, positives, normal_slots, &seed, &riven_ok);
             if best_overall.as_ref().is_none_or(|b| v > b.2) {
                 best_overall = Some((m, r, v));
             }
@@ -713,7 +798,7 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// One riven search from a given first stat.
+    /// One riven search from given first stats.
     #[allow(clippy::too_many_arguments)]
     fn riven_from(
         &mut self,
@@ -722,10 +807,10 @@ impl<'a> Ctx<'a> {
         pool: &[RivenStat],
         positives: usize,
         normal_slots: usize,
-        seed: usize,
+        seed: &[usize],
         riven_ok: &dyn Fn(&[RivenStat]) -> bool,
     ) -> (Vec<&'a Mod>, Vec<RivenStat>, f64) {
-        let mut riven: Vec<RivenStat> = vec![pool[seed].clone()];
+        let mut riven: Vec<RivenStat> = seed.iter().map(|&i| pool[i].clone()).collect();
         let mut best = self.eval(&mods, arcane, &riven);
         while riven.len() < positives {
             let mut pick: Option<(usize, f64)> = None;
@@ -771,6 +856,38 @@ impl<'a> Ctx<'a> {
                     if v > best * (1.0 + 1e-9) && swap.is_none_or(|(_, _, sv)| v > sv) {
                         swap = Some((i, j, v));
                     }
+                }
+            }
+            // Synergistic stats only pay off together (crit chance with crit damage): when no single
+            // swap helps, try replacing two riven stats at once.
+            if swap.is_none() && riven.len() >= 2 {
+                let mut pair: Option<(usize, usize, usize, usize, f64)> = None;
+                for i in 0..riven.len() {
+                    for k in i + 1..riven.len() {
+                        for (j, s) in pool.iter().enumerate() {
+                            for (l, t) in pool.iter().enumerate().skip(j + 1) {
+                                if riven.iter().any(|r| r.key == s.key || r.key == t.key) {
+                                    continue;
+                                }
+                                let mut next = riven.clone();
+                                next[i] = s.clone();
+                                next[k] = t.clone();
+                                if !riven_ok(&next) {
+                                    continue;
+                                }
+                                let v = self.eval(&mods, arcane, &next);
+                                if v > best * (1.0 + 1e-9) && pair.is_none_or(|p| v > p.4) {
+                                    pair = Some((i, k, j, l, v));
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some((i, k, j, l, v)) = pair {
+                    riven[i] = pool[j].clone();
+                    riven[k] = pool[l].clone();
+                    best = v;
+                    continue;
                 }
             }
             match swap {
@@ -874,8 +991,9 @@ pub fn optimize_with_riven(
     Ok((plain, riven))
 }
 
-/// Finalist structures (arcane x evolutions x progenitor with their mods) per attack mode.
-type StructureCache<'a> = BTreeMap<usize, Vec<Structure<'a>>>;
+/// Finalist structures (arcane x evolutions x progenitor with their mods) per attack mode, and whether
+/// the element plan search added one in front.
+type StructureCache<'a> = BTreeMap<usize, (Vec<Structure<'a>>, bool)>;
 
 fn optimize_cached<'a>(
     data: &'a GameData,
@@ -1062,7 +1180,7 @@ fn optimize_mode<'a>(
         (true, Some(t)) => vec![Some(t)],
         (true, None) => wf_calc::PROGENITOR_ELEMENTS.iter().map(|t| Some(*t)).collect(),
     };
-    let finals: Vec<Structure<'a>> = if let Some(f) = cache.get(&mode) {
+    let (finals, plan_added): (Vec<Structure<'a>>, bool) = if let Some(f) = cache.get(&mode) {
         f.clone()
     } else {
     let mut candidates_found: Vec<Structure<'_>> = Vec::new();
@@ -1085,8 +1203,20 @@ fn optimize_mode<'a>(
         finals.push(Structure { score: v, mods: m, ..c });
     }
     finals.sort_by(|x, y| y.score.total_cmp(&x.score));
-    cache.insert(mode, finals.clone());
-    finals
+    // The best structure also tries every element plan (see plan_search). A better plan goes first,
+    // and the original stays a finalist: the riven may suit either.
+    let mut plan_added = false;
+    if let Some(top) = finals.first().cloned() {
+        ctx.evolutions = top.evolutions.clone();
+        ctx.build.progenitor = top.progenitor;
+        let (m, v) = ctx.plan_search(top.mods.clone(), top.score, top.arcane, &fixed, structure_slots);
+        if v > top.score * (1.0 + 1e-9) {
+            finals.insert(0, Structure { score: v, mods: m, ..top });
+            plan_added = true;
+        }
+    }
+    cache.insert(mode, (finals.clone(), plan_added));
+    (finals, plan_added)
     };
 
     let top = finals[0].clone();
@@ -1107,7 +1237,8 @@ fn optimize_mode<'a>(
         let roll = table.roll_min + (table.roll_max - table.roll_min) * opts.riven_roll.clamp(0.0, 1.0);
         let mut best_riven: Option<(Structure<'_>, Vec<RivenStat>, RivenPick)> = None;
         // The riven can change which structure wins, so try it on the best two.
-        for st in finals.iter().take(RIVEN_STRUCTURES) {
+        // One more when the element plan search added a structure, so the original runner-up still gets one.
+        for st in finals.iter().take(RIVEN_STRUCTURES + usize::from(plan_added)) {
             ctx.evolutions = st.evolutions.clone();
             ctx.build.progenitor = st.progenitor;
             for positives in [3usize, 2] {
