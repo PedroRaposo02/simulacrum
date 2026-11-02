@@ -24,13 +24,21 @@ pub const PROGENITOR_ELEMENTS: [DamageType; 7] = [
 
 /// DoT statuses: (type, fraction of modded base damage per tick, ticks per proc).
 /// Approximate values from the wiki's status table; kept here until moved to overrides.
-const DOTS: [(DamageType, f64, f64); 5] = [
-    (DamageType::Slash, 0.35, 6.0),
-    (DamageType::Heat, 0.5, 6.0),
-    (DamageType::Toxin, 0.5, 6.0),
-    (DamageType::Gas, 0.5, 6.0),
-    (DamageType::Electricity, 0.5, 6.0),
-];
+/// Status types that deal damage (wiki, Update 36+): Slash 35% of modded base per tick, Heat/Toxin/
+/// Electricity/Gas 50% (times their own elemental mod bonus), Blast 30% per proc.
+const DAMAGING_STATUS: [DamageType; 6] =
+    [DamageType::Slash, DamageType::Heat, DamageType::Toxin, DamageType::Gas, DamageType::Electricity, DamageType::Blast];
+/// Group fights: enemies stand within this radius of the main target; an effect of radius r reaches
+/// group_size x r / GROUP_SPREAD_M of them (at least 1).
+const GROUP_SPREAD_M: f64 = 5.0;
+const BLAST_FUSE_S: f64 = 1.5;
+const BLAST_STACKS: f64 = 10.0;
+const GAS_MAX_STACKS: f64 = 10.0;
+const GAS_RADIUS_M: f64 = 4.5;
+const ELECTRICITY_RADIUS_M: f64 = 3.0;
+const BLAST_RADIUS_M: f64 = 5.0;
+const INFLUENCE_CHANCE: f64 = 0.2;
+const INFLUENCE_DURATION_S: f64 = 18.0;
 
 /// Additive pools collected from every modifier source.
 #[derive(Default, Debug)]
@@ -310,6 +318,14 @@ fn all_modifiers<'a>(r: &'a Resolved, build: &'a Build, mode: &'a AttackMode) ->
         .filter(move |m| m.mode_contains.as_deref().map_or(true, |s| mode.name.contains(s)))
 }
 
+/// Rounds in one Incarnon charge (0 when unknown).
+fn mode_rounds(mode: &AttackMode) -> f64 {
+    match &mode.ammo_pool {
+        AmmoPool::Incarnon { rounds: Some(n), .. } => *n as f64,
+        _ => 0.0,
+    }
+}
+
 fn finite(v: f64, what: &str) -> Result<f64, CalcError> {
     if v.is_finite() {
         Ok(v)
@@ -320,6 +336,12 @@ fn finite(v: f64, what: &str) -> Result<f64, CalcError> {
 
 struct Partial {
     name: String,
+    kind: HitKind,
+    /// Radius of a radial hit (falloff end), for group fights.
+    radius: Option<f64>,
+    /// Sum of elemental mod bonuses per type (Heat, Toxin, Electricity and Gas ticks scale with it).
+    elem_bonus: BTreeMap<DamageType, f64>,
+    forced: Vec<DamageType>,
     damage: DamageMap,
     projectiles: f64,
     crit_chance: f64,
@@ -333,7 +355,7 @@ struct Partial {
 }
 
 /// Arcane behaviours the engine implements (others are reported as not modelled).
-const ARCANE_BEHAVIOURS: [&str; 3] = ["enervate", "meleeDuplicate", "meleeDoughty"];
+const ARCANE_BEHAVIOURS: [&str; 4] = ["enervate", "meleeDuplicate", "meleeDoughty", "meleeInfluence"];
 
 /// A status-stack arcane (Primary Blight, Cascadia Flare, Secondary Shiver...) needs the weapon's own
 /// procs, which the arcane can raise (Blight adds multishot): evaluate, derive the stacks, repeat.
@@ -492,6 +514,9 @@ fn compute_mode_once(
         for (t, d) in &p.damage {
             *procs.entry(*t).or_default() += p.status_chance * p.projectiles * rate * d / total;
         }
+        for t in &p.forced {
+            *procs.entry(*t).or_default() += p.projectiles * rate;
+        }
     }
     let stacks = |t: DamageType| (procs.get(&t).copied().unwrap_or(0.0) * duration).min(10.0);
     // Outsourced status (allies, abilities) only raises stacks above what the weapon keeps up itself.
@@ -561,8 +586,56 @@ fn compute_mode_once(
     };
 
     let mut components = Vec::new();
-    let (mut shot_raw, mut shot_target, mut status_dps) = (0.0, 0.0, 0.0);
+    let (mut shot_raw, mut shot_target) = (0.0, 0.0);
+    // Group fight: how many enemies an effect of radius r reaches, and melee swings with follow-through.
+    let group_n = build.conditions.group_size.max(1.0);
+    let reach = |radius: f64| (group_n * radius / GROUP_SPREAD_M).round().clamp(1.0, group_n);
+    let melee_factor = r.weapon.melee.as_ref().map_or(1.0, |m| {
+        let k = reach(m.range_m + mode_pools.range) as i32;
+        (0..k).map(|i| m.follow_through.powi(i)).sum::<f64>()
+    });
+    let vs = |t: DamageType| {
+        let hm = r.enemy.as_ref().and_then(|e| e.health_modifiers.get(&t)).copied().unwrap_or(1.0);
+        let armor = if t == DamageType::Slash || t == DamageType::True { 1.0 } else { 1.0 - dr };
+        hm * armor * viral_mult
+    };
+    // Per damaging status: (procs/s on the main target, procs/s x damage per tick or proc, procs/s on the group).
+    let mut st: BTreeMap<DamageType, (f64, f64, f64)> = BTreeMap::new();
+    let (mut group_shot, mut influence_hit, mut faction_f) = (0.0, 0.0, 1.0);
     for p in partials {
+        faction_f = p.faction;
+        let factor = match p.kind {
+            HitKind::Melee => melee_factor,
+            HitKind::Radial => reach(p.radius.unwrap_or(GROUP_SPREAD_M)),
+            _ => 1.0,
+        };
+        let total: f64 = p.damage.values().sum::<f64>().max(f64::MIN_POSITIVE);
+        let hits = p.projectiles * rate;
+        let base = p.modded_base * p.faction * p.faction * (1.0 + p.crit_chance * (p.crit_mult - 1.0)) * p.ability;
+        for t in DAMAGING_STATUS {
+            let forced = p.forced.iter().filter(|x| **x == t).count() as f64;
+            let pps = hits * (p.status_chance * p.damage.get(&t).copied().unwrap_or(0.0) / total + forced);
+            if !(pps > 0.0) {
+                continue;
+            }
+            let per = match t {
+                DamageType::Slash => 0.35 * base,
+                DamageType::Blast => 0.3 * base,
+                _ => 0.5 * base * (1.0 + p.elem_bonus.get(&t).copied().unwrap_or(0.0)).max(0.0),
+            } * vs(t);
+            let e = st.entry(t).or_default();
+            e.0 += pps;
+            e.1 += pps * per;
+            e.2 += pps * factor;
+        }
+        // Melee Influence copies each elemental proc's element damage (faction once more) to the group.
+        for (t, d) in &p.damage {
+            if t.is_physical() || matches!(t, DamageType::Void | DamageType::Tau | DamageType::True) {
+                continue;
+            }
+            let pps = hits * p.status_chance * d / total;
+            influence_hit += pps * d * p.faction * p.crit_hs * p.ability * vs(*t) * p.faction;
+        }
         let raw_hit: f64 = p.damage.values().sum::<f64>() * p.faction * p.crit_hs * p.ability;
         let target_hit: f64 = p
             .damage
@@ -577,17 +650,9 @@ fn compute_mode_once(
             * p.crit_hs
             * p.ability
             * viral_mult;
-        let total: f64 = p.damage.values().sum();
-        for (t, frac, ticks) in DOTS {
-            let share = p.damage.get(&t).copied().unwrap_or(0.0) / total.max(f64::MIN_POSITIVE);
-            let pps = p.status_chance * p.projectiles * rate * share;
-            let tick = p.modded_base * frac * p.faction * p.faction * (1.0 + p.crit_chance * (p.crit_mult - 1.0));
-            let armor = if t == DamageType::Slash { 1.0 } else { 1.0 - dr };
-            let hm = r.enemy.as_ref().and_then(|e| e.health_modifiers.get(&t)).copied().unwrap_or(1.0);
-            status_dps += pps * ticks * tick * armor * hm * viral_mult * p.ability;
-        }
         shot_raw += raw_hit * p.projectiles;
         shot_target += target_hit * p.projectiles;
+        group_shot += target_hit * p.projectiles * factor;
         let mut ex = Explain::new(format!("{} per shot", p.name), target_hit * p.projectiles).with(p.explain);
         ex = ex.child(Explain::new("Projectiles", p.projectiles));
         components.push(ComponentResult {
@@ -602,8 +667,66 @@ fn compute_mode_once(
             explain: ex,
         });
     }
-    if !status_dps.is_nan() && status_dps > 0.0 {
-        approx.push("Status DPS uses approximate DoT tick values".into());
+
+    // Status damage per second. Slash/Toxin/Electricity stack without limit (each proc ticks once a
+    // second for the status duration); Heat procs refresh every stack, so they keep growing for the
+    // fight; Gas keeps at most 10 clouds; Blast deals 30% per proc and, at 10 stacks within its fuse,
+    // detonates for 300% per stack on the enemies around.
+    let fight = build.conditions.fight_s.max(0.0);
+    let fuse = BLAST_FUSE_S * duration / STATUS_DURATION_S;
+    let (mut status_dps, mut group_status) = (0.0, 0.0);
+    let mut per_proc: BTreeMap<DamageType, f64> = BTreeMap::new();
+    let mut status_explain = Vec::new();
+    for (t, (pps, sum, gpps)) in &st {
+        let per = sum / pps;
+        let (alive, aoe) = match t {
+            DamageType::Heat if pps * duration >= 1.0 => (pps * duration.max(fight / 2.0), 1.0),
+            DamageType::Gas => ((pps * duration).min(GAS_MAX_STACKS), reach(GAS_RADIUS_M)),
+            DamageType::Electricity => (pps * duration, reach(ELECTRICITY_RADIUS_M)),
+            DamageType::Blast => (*pps, 1.0),
+            _ => (pps * duration, 1.0),
+        };
+        let single = alive * per;
+        status_dps += single;
+        group_status += single * (gpps / pps) + single * (aoe - 1.0);
+        per_proc.insert(*t, single / pps);
+        let mut detail = format!("{pps:.2} procs/s, {per:.0} per {}", if *t == DamageType::Blast { "proc" } else { "tick" });
+        if *t == DamageType::Blast && pps * fuse >= BLAST_STACKS {
+            // Detonations every 10 procs: 300% per stack to every other enemy within 5 m.
+            let aoe_dps = pps / BLAST_STACKS * BLAST_STACKS * 10.0 * per;
+            group_status += aoe_dps * (reach(BLAST_RADIUS_M) - 1.0);
+            detail.push_str("; reaches 10 stacks: detonations hit the group");
+        } else if *t == DamageType::Heat && pps * duration >= 1.0 && fight / 2.0 > duration {
+            detail.push_str(&format!("; stacks refresh, averaged over a {fight:.0} s fight"));
+        } else if *t == DamageType::Gas && pps * duration > GAS_MAX_STACKS {
+            detail.push_str("; capped at 10 clouds");
+        }
+        status_explain.push(Explain::new(format!("{t:?}"), single).detail(detail));
+    }
+    // Melee Influence: while active (20% per Electricity proc, 18 s, re-triggers after it ends), every
+    // elemental proc on the target spreads its element damage and the proc to the group, faction counted
+    // once more on each.
+    let mut influence = 0.0;
+    if r.arcane.and_then(|a| a.behaviour.as_deref()) == Some("meleeInfluence") {
+        let pe = procs.get(&DamageType::Electricity).copied().unwrap_or(0.0);
+        let uptime = if pe > 0.0 { INFLUENCE_DURATION_S / (INFLUENCE_DURATION_S + 1.0 / (INFLUENCE_CHANCE * pe)) } else { 0.0 };
+        let dots: f64 = st
+            .iter()
+            .filter(|(t, _)| **t != DamageType::Slash)
+            .map(|(t, (pps, _, _))| pps * per_proc.get(t).copied().unwrap_or(0.0) * faction_f)
+            .sum();
+        influence = (group_n - 1.0) * uptime * (influence_hit + dots);
+        approx.push(format!(
+            "Melee Influence: {:.0}% uptime from {pe:.2} Electricity procs/s; spreads elemental damage and procs to the other {} enemies",
+            uptime * 100.0,
+            group_n - 1.0
+        ));
+    }
+    if group_n > 1.0 {
+        approx.push(format!(
+            "Group: {group_n:.0} enemies within {GROUP_SPREAD_M} m{}; radial hits, Gas, Electricity and Blast reach part of them by radius",
+            if r.weapon.melee.is_some() { format!(", a swing reaches {:.0} (x{melee_factor:.2} with follow-through)", reach(r.weapon.melee.as_ref().map_or(0.0, |m| m.range_m + mode_pools.range))) } else { String::new() }
+        ));
     }
 
     // With a one-round magazine every shot is followed by a reload: there is no burst window.
@@ -613,7 +736,8 @@ fn compute_mode_once(
     }
     let cycle = if single_round { 1.0 / rate + reload } else { 1.0 / rate };
     let burst_raw = shot_raw / cycle;
-    let burst = shot_target / cycle;
+    let hit_burst = shot_target / cycle;
+    let burst = hit_burst + status_dps;
     let (sustained, per_charge) = match (&mode.ammo_pool, magazine) {
         (AmmoPool::Incarnon { rounds: Some(n), recharge_s, charge_gain, charge_on_any_hit }, _) => {
             let n = *n as f64;
@@ -627,23 +751,31 @@ fn compute_mode_once(
                 Some((t, normal_dps)) => ((shot_target * n + normal_dps * t) / (n / rate + t), Some(shot_target * n)),
                 None => {
                     approx.push("Incarnon recharge unknown: sustained DPS shown as burst; see damage per charge".into());
-                    (shot_target * n / (n / rate), Some(shot_target * n))
+                    (hit_burst, Some(shot_target * n))
                 }
             }
         }
         (AmmoPool::Incarnon { .. }, _) => {
             approx.push("Incarnon ammo pool unknown: sustained DPS shown as burst".into());
-            (burst, None)
+            (hit_burst, None)
         }
-        (_, Some(m)) if mode.trigger != Trigger::Held => {
+        // Magazine weapons (beams included): a magazine's worth of shots, then the reload.
+        (_, Some(m)) if !single_round => {
             let m = m as f64;
             (shot_target * m / (m / rate + reload), None)
         }
-        _ => (burst, None),
+        _ => (hit_burst, None),
     };
+    // Status damage keeps the same uptime as the hits.
+    let uptime = if hit_burst > 0.0 { (sustained / hit_burst).min(1.0) } else { 1.0 };
+    let sustained = sustained + status_dps * uptime;
+    let per_charge = per_charge.map(|c| c + status_dps * mode_rounds(mode) / rate);
+    let group_burst = group_shot / cycle + group_status + influence;
+    let group_sustained = group_burst * uptime;
 
     let mut explain = Explain::new("Burst DPS", burst)
         .child(Explain::new("Damage per shot", shot_target).with(components.iter().map(|c| c.explain.clone()).collect()))
+        .child(Explain::new("Status damage per second", status_dps).with(status_explain))
         .child(
             Explain::new("Shots per second", rate)
                 .detail(match locked {
@@ -683,6 +815,8 @@ fn compute_mode_once(
         sustained_dps: finite(sustained, "sustained DPS")?,
         per_charge,
         status_dps: finite(status_dps, "status DPS")?,
+        group_dps: finite(group_burst, "group DPS")?,
+        group_sustained_dps: finite(group_sustained, "group sustained DPS")?,
         procs_per_s: procs,
         status_duration_s: duration,
         viral_stacks: viral_n,
@@ -713,7 +847,7 @@ fn incarnon_recharge(
     if !(normal.per_shot > 0.0) {
         return None;
     }
-    let shots_per_s = normal.sustained_dps / normal.per_shot;
+    let shots_per_s = if normal.burst_dps > 0.0 { normal.fire_rate * normal.sustained_dps / normal.burst_dps } else { 0.0 };
     let projectiles = normal.components.first().map_or(1.0, |c| c.projectiles);
     let share = if any_hit { 1.0 } else { build.conditions.incarnon_charge_share.clamp(0.01, 1.0) };
     let hits_per_s = shots_per_s * projectiles * share;
@@ -1008,8 +1142,16 @@ fn component(
         Explain::new("Multishot", ms).with(p.sources_for(|s| s == Stat::Multishot)),
     ];
 
+    let mut elem_bonus: BTreeMap<DamageType, f64> = BTreeMap::new();
+    for (t, v, _) in &p.elements {
+        *elem_bonus.entry(*t).or_default() += v;
+    }
     Ok(Partial {
         name: comp.name.clone(),
+        kind: comp.kind,
+        radius: comp.falloff.as_ref().map(|f| f.end_m),
+        elem_bonus,
+        forced: comp.forced_procs.clone(),
         damage,
         projectiles,
         crit_chance: cc,

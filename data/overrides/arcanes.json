@@ -3,7 +3,8 @@
   "behaviours": {
     "Secondary Enervate": "enervate",
     "Melee Duplicate": "meleeDuplicate",
-    "Melee Doughty": "meleeDoughty"
+    "Melee Doughty": "meleeDoughty",
+    "Melee Influence": "meleeInfluence"
   },
   "defs": {
     "Primary Blight": {

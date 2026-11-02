@@ -70,6 +70,8 @@ export function meleeModes(entry: any, normal: NormalAttack, attackSpeed: number
           if (atk.ImpactMultiplier) typeMults.impact = arr(atk.ImpactMultiplier)[j] ?? 1;
           const statusMult = arr(atk.StatusMultiplier)[j] ?? 1;
           const procs = arr(arr(atk.Procs)[j]).filter(Boolean);
+          // Forced procs that deal damage: Bleed is a Slash proc, Tesla Chain an Electricity proc.
+          const forcedProcs = procs.flatMap((pr: string) => (/^(Bleed|Slash)$/.test(pr) ? ["slash"] : /^Tesla Chain$/.test(pr) ? ["electricity"] : []));
           components.push({
             name: `Hit ${n} (${d}%${hits[j] > 1 ? ` ×${hits[j]}` : ""}${procs.length ? `, ${procs.join("/")}` : ""})`,
             kind: "melee",
@@ -79,10 +81,12 @@ export function meleeModes(entry: any, normal: NormalAttack, attackSpeed: number
             statusChance: normal.statusChance * statusMult,
             multishot: hits[j] ?? 1,
             rules: { canHeadshot: true, receivesMultishot: true },
+            ...(forcedProcs.length ? { forcedProcs } : {}),
           });
         });
       }
-      const forced = combo.Attacks.flatMap((a: any) => arr(a.Procs).flat()).filter((p: string) => p && /Bleed|Slash|Impact|Puncture|Heat|Toxin|Viral|Corrosive|Electric/i.test(p));
+      // Forced procs without a damage model here (Puncture, Impact, Heat…): flagged on the mode.
+      const forced = combo.Attacks.flatMap((a: any) => arr(a.Procs).flat()).filter((p: string) => p && /^(Impact|Puncture|Heat|Toxin|Viral|Corrosive)$/i.test(p));
       modes.push({
         name: `${s.StanceName}: ${combo.Name} (${input})`,
         trigger: "other",
@@ -95,7 +99,7 @@ export function meleeModes(entry: any, normal: NormalAttack, attackSpeed: number
         coverage: "computed",
         notes: [
           `Stance combo: ${combo.Duration}s at 1.0 attack speed (wiki); duration scales with attack speed`,
-          ...(forced.length ? ["Forced status procs in this combo aren't counted"] : []),
+          ...(forced.length ? [`Forced ${[...new Set(forced)].join("/")} procs in this combo aren't counted`] : []),
           ...COMMON_NOTES,
         ],
         meleeRole: "light",

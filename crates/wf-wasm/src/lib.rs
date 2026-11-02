@@ -20,6 +20,8 @@ struct RankRow {
     mode: String,
     burst_dps: f64,
     sustained_dps: f64,
+    group_dps: f64,
+    group_sustained_dps: f64,
     per_shot: f64,
     coverage: Coverage,
     failed: Option<String>,
@@ -73,7 +75,7 @@ impl Engine {
         let per: HashMap<String, WeaponBuild> = serde_json::from_str(per_weapon_json).unwrap_or_default();
         let mut rows = Vec::with_capacity(self.data.weapons.len());
         for w in &self.data.weapons {
-            let row = |mode: String, b: f64, s: f64, p: f64, c: Coverage, failed: Option<String>| RankRow {
+            let row = |mode: String, b: f64, s: f64, g: (f64, f64), p: f64, c: Coverage, failed: Option<String>| RankRow {
                 weapon_id: w.id.clone(),
                 name: w.name.clone(),
                 slot: w.slot,
@@ -81,6 +83,8 @@ impl Engine {
                 mode,
                 burst_dps: b,
                 sustained_dps: s,
+                group_dps: g.0,
+                group_sustained_dps: g.1,
                 per_shot: p,
                 coverage: c,
                 failed,
@@ -109,18 +113,27 @@ impl Engine {
                         }
                     };
                     match chosen {
-                        Some(m) => rows.push(row(m.mode.clone(), m.burst_dps, m.sustained_dps, m.per_shot, m.coverage, None)),
+                        Some(m) => rows.push(row(
+                            m.mode.clone(),
+                            m.burst_dps,
+                            m.sustained_dps,
+                            (m.group_dps, m.group_sustained_dps),
+                            m.per_shot,
+                            m.coverage,
+                            None,
+                        )),
                         None => rows.push(row(
                             String::new(),
                             0.0,
                             0.0,
+                            (0.0, 0.0),
                             0.0,
                             Coverage::Unsupported,
                             r.failed_modes.first().map(|f| f.error.message.clone()),
                         )),
                     }
                 }
-                Err(e) => rows.push(row(String::new(), 0.0, 0.0, 0.0, Coverage::Unsupported, Some(e.message))),
+                Err(e) => rows.push(row(String::new(), 0.0, 0.0, (0.0, 0.0), 0.0, Coverage::Unsupported, Some(e.message))),
             }
         }
         to_json(&rows)

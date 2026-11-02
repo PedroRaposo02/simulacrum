@@ -41,6 +41,8 @@ function LiveStats({ m }: { m: ModeResult }) {
         {tile("Burst DPS", m.burstDps)}
         {tile("Sustained DPS", m.sustainedDps)}
         {m.perCharge != null ? tile("Per charge", m.perCharge) : tile("Status DPS", m.statusDps)}
+        {tile("Group DPS", m.groupDps)}
+        {tile("Group sustained", m.groupSustainedDps)}
       </div>
       <StatSheet m={m} />
     </div>
@@ -207,6 +209,10 @@ function StatSheet({ m }: { m: ModeResult }) {
   );
 }
 
+const STATUS_HELP =
+  "Damage per second from status effects on the target (Bleed, Burn, Toxin, Gas, Electricity, Blast), already included in burst and sustained DPS.";
+const GROUP_HELP =
+  "Damage per second to a whole group (Scenario › Conditions › group size): explosions and melee swings (with follow-through) reach part of the group by radius or range; Gas, Electricity, Blast detonations and Melee Influence spread too.";
 const BURST_HELP = "Burst DPS: damage per second while firing continuously, ignoring reloads.";
 const SUSTAINED_HELP =
   "Sustained DPS: average over a full cycle of emptying the magazine and reloading (for Incarnon forms, the charge; recharge time isn't modelled, so it equals burst).";
@@ -225,11 +231,13 @@ function ModeCard({ m, body, head }: { m: ModeResult; body?: ModeResult; head?: 
   const row = (title: string, r: ModeResult) => (
     <div>
       <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">{title}</div>
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
         {tile("Per shot", r.perShot)}
         {tile("Burst DPS", r.burstDps, BURST_HELP)}
         {tile("Sustained DPS", r.sustainedDps, SUSTAINED_HELP)}
-        {m.perCharge != null ? tile("Per Incarnon charge", r.perCharge) : tile("Status DPS (approx.)", r.statusDps)}
+        {m.perCharge != null ? tile("Per Incarnon charge", r.perCharge) : tile("Status DPS", r.statusDps, STATUS_HELP)}
+        {tile("Group DPS", r.groupDps, GROUP_HELP)}
+        {tile("Group sustained", r.groupSustainedDps, GROUP_HELP)}
       </div>
     </div>
   );

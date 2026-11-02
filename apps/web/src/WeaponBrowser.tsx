@@ -16,7 +16,17 @@ function savedPageSize(): number {
 }
 import { fmt, rank, scenarioBuild, targetKey, useStore, type BrowserBuild } from "./store";
 import { CoverageBadge, Segmented } from "./Common";
-import type { BestEntry, Slot } from "./types";
+import type { BestEntry, BestPair, RankRow, Slot } from "./types";
+
+type Fight = "single" | "group";
+type Attack = "light" | "heavy";
+/** The precomputed build for a riven choice, fight type and (melee) attack. */
+function pick(p: BestPair | undefined, riven: boolean, fight: Fight, heavy: boolean): BestEntry | undefined {
+  if (!p) return undefined;
+  const key = `${heavy ? "heavy" : ""}${fight === "group" ? "Group" : ""}${riven ? "Riven" : "Plain"}`;
+  const k = key.charAt(0).toLowerCase() + key.slice(1);
+  return (p as Record<string, BestEntry | undefined>)[k];
+}
 
 const CATEGORIES: [Slot, string][] = [
   ["primary", "Primary"],
@@ -36,6 +46,9 @@ export default function WeaponBrowser() {
   const favs = useFavorites();
   // Sustained by default: burst flatters weapons that must reload after every shot.
   const [sortKey, setSortKey] = usePersistent<SortKey>("browser.sort", "sustainedDps");
+  const [fight, setFight] = usePersistent<Fight>("browser.fight", "single");
+  const [attack, setAttack] = usePersistent<Attack>("browser.attack", "light");
+  const heavy = slot === "melee" && attack === "heavy";
   const [expanded, setExpanded] = useState<string | null>(null);
   const [pageSize, setPageSizeState] = useState<number>(savedPageSize);
   const [page, setPage] = useState(0);
@@ -52,22 +65,32 @@ export default function WeaponBrowser() {
 
   // Best builds were optimized per enemy preset; look up the one for the current enemy.
   const bestForTarget = best?.targets[targetKey(scenario.target)];
+  // Group builds aren't computed against a lone boss: fall back to the single-target ones.
   const entryFor = (id: string): BestEntry | undefined => {
+    if (browserBuild === "unmodded") return undefined;
     const p = bestForTarget?.[id];
-    return browserBuild === "best" ? p?.plain : browserBuild === "bestRiven" ? p?.riven : undefined;
+    const riven = browserBuild === "bestRiven";
+    return pick(p, riven, fight, heavy) ?? pick(p, riven, "single", heavy);
   };
 
   const rows = useMemo(() => {
-    const perWeapon: Record<string, BestEntry> = {};
-    if (browserBuild !== "unmodded" && bestForTarget) {
-      for (const [id, p] of Object.entries(bestForTarget)) {
-        const e = browserBuild === "best" ? p.plain : p.riven;
-        if (e) perWeapon[id] = e;
+    const perWeapon: Record<string, Partial<BestEntry>> = {};
+    for (const w of data!.weapons) {
+      const e = entryFor(w.id);
+      if (e) perWeapon[w.id] = e;
+      else if (heavy && w.slot === "melee") {
+        // Unmodded heavy attack.
+        const i = w.modes.findIndex((m) => m.meleeRole === "heavy");
+        if (i >= 0) perWeapon[w.id] = { mods: [], arcane: null, modeIndex: i };
       }
     }
     return rank(engine!, scenario.target, scenarioBuild(data!, scenario), perWeapon);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [engine, data, scenario, browserBuild, bestForTarget]);
+  }, [engine, data, scenario, browserBuild, bestForTarget, fight, heavy]);
+  // Burst / sustained of the chosen fight type.
+  const burstOf = (r: RankRow) => (fight === "group" ? r.groupDps : r.burstDps);
+  const sustainedOf = (r: RankRow) => (fight === "group" ? r.groupSustainedDps : r.sustainedDps);
+  const valueOf = (r: RankRow, k: SortKey) => (k === "burstDps" ? burstOf(r) : k === "sustainedDps" ? sustainedOf(r) : r.perShot);
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
@@ -79,8 +102,9 @@ export default function WeaponBrowser() {
     const q = query.toLowerCase();
     return rows
       .filter((r) => r.slot === slot && (!q || r.name.toLowerCase().includes(q)) && (!favOnly || favs.weapons.includes(r.weaponId)))
-      .sort((a, b) => b[sortKey] - a[sortKey]);
-  }, [rows, slot, query, sortKey, favOnly, favs.weapons]);
+      .sort((a, b) => valueOf(b, sortKey) - valueOf(a, sortKey));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, slot, query, sortKey, favOnly, favs.weapons, fight]);
   useEffect(() => setPage(0), [slot, query, sortKey]);
   const pages = pageSize ? Math.max(1, Math.ceil(shown.length / pageSize)) : 1;
   const pageRows = pageSize ? shown.slice(page * pageSize, (page + 1) * pageSize) : shown;
@@ -125,6 +149,24 @@ export default function WeaponBrowser() {
             ["bestRiven", "Most DPS + riven"],
           ]}
         />
+        <Segmented<Fight>
+          value={fight}
+          onChange={setFight}
+          options={[
+            ["single", "Single target"],
+            ["group", `Group (${scenario.conditions.groupSize ?? 5})`],
+          ]}
+        />
+        {slot === "melee" && (
+          <Segmented<Attack>
+            value={attack}
+            onChange={setAttack}
+            options={[
+              ["light", "Light / combos"],
+              ["heavy", "Heavy attack"],
+            ]}
+          />
+        )}
       </div>
 
       {usingBest && !best && (
@@ -149,8 +191,8 @@ export default function WeaponBrowser() {
               <th className="px-2 py-2 text-left font-medium">Weapon</th>
               <th className="px-2 py-2 text-left font-medium">Mode</th>
               {th("perShot", "Per shot")}
-              {th("burstDps", "Burst DPS")}
-              {th("sustainedDps", "Sustained")}
+              {th("burstDps", fight === "group" ? "Group burst" : "Burst DPS")}
+              {th("sustainedDps", fight === "group" ? "Group sustained" : "Sustained")}
               <th className="px-2 py-2 text-left font-medium">Coverage</th>
             </tr>
           </thead>
@@ -178,8 +220,8 @@ export default function WeaponBrowser() {
                     </td>
                     <td className="px-2 py-1.5 text-zinc-600 dark:text-zinc-400">{r.failed ?? r.mode}</td>
                     <td className="num px-2 py-1.5 text-right">{fmt(r.perShot)}</td>
-                    <td className="num px-2 py-1.5 text-right font-medium">{fmt(r.burstDps)}</td>
-                    <td className="num px-2 py-1.5 text-right">{fmt(r.sustainedDps)}</td>
+                    <td className="num px-2 py-1.5 text-right font-medium">{fmt(burstOf(r))}</td>
+                    <td className="num px-2 py-1.5 text-right">{fmt(sustainedOf(r))}</td>
                     <td className="px-2 py-1.5">
                       <CoverageBadge c={r.coverage} />
                     </td>

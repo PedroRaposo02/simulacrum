@@ -69,6 +69,9 @@ pub enum Objective {
     /// Damage of a full Incarnon charge, or of one magazine for normal weapons. Fire rate adds
     /// nothing here, so it favours damage stats.
     PerCharge,
+    /// Balanced, on the damage dealt to a whole group of enemies (Conditions::group_size): radial
+    /// hits, melee swings with follow-through, Gas, Electricity, Blast and Melee Influence spread.
+    Group,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +234,9 @@ pub struct OptimizeResult {
     pub score: f64,
     pub fire_rate: f64,
     pub sustained_dps: f64,
+    /// Damage per second to the whole group (Conditions::group_size), burst and sustained.
+    pub group_dps: f64,
+    pub group_sustained_dps: f64,
     pub per_shot: f64,
     pub per_charge: Option<f64>,
     /// Chosen Incarnon evolutions (one per tier that has options).
@@ -375,27 +381,31 @@ pub fn is_explosive(mode: &wf_data::AttackMode) -> bool {
     total > 0.0 && radial / total >= EXPLOSIVE_SHARE
 }
 
+/// Sustained damage where attacks past `cap` per second count for nothing.
+fn balanced(m: &wf_calc::ModeResult, cap: f64, burst: f64, sustained: f64) -> f64 {
+    if m.fire_rate <= cap || m.fire_rate <= 0.0 {
+        return sustained;
+    }
+    // Melee: swings past the cap don't count.
+    if m.attack_speed.is_some() {
+        return sustained * cap / m.fire_rate;
+    }
+    // Same shots, but only `cap` of them per second count; reloads still apply.
+    let per_shot = burst / m.fire_rate;
+    match m.magazine {
+        Some(mag) if sustained < burst * (1.0 - 1e-9) => {
+            let mag = mag as f64;
+            let reload = mag / m.fire_rate * (burst / sustained - 1.0);
+            per_shot * mag / (mag / cap + reload)
+        }
+        _ => per_shot * cap,
+    }
+}
+
 fn objective_value(objective: Objective, m: &wf_calc::ModeResult, cap: f64) -> f64 {
     match objective {
-        Objective::Balanced => {
-            if m.fire_rate <= cap || m.fire_rate <= 0.0 {
-                return m.sustained_dps;
-            }
-            // Melee: swings past the cap don't count.
-            if m.attack_speed.is_some() {
-                return m.sustained_dps * cap / m.fire_rate;
-            }
-            // Same shots, but only `cap` of them per second count; reloads still apply.
-            let per_shot = m.burst_dps / m.fire_rate;
-            match m.magazine {
-                Some(mag) if m.sustained_dps < m.burst_dps * (1.0 - 1e-9) => {
-                    let mag = mag as f64;
-                    let reload = mag / m.fire_rate * (m.burst_dps / m.sustained_dps - 1.0);
-                    per_shot * mag / (mag / cap + reload)
-                }
-                _ => per_shot * cap,
-            }
-        }
+        Objective::Balanced => balanced(m, cap, m.burst_dps, m.sustained_dps),
+        Objective::Group => balanced(m, cap, m.group_dps, m.group_sustained_dps),
         Objective::Burst => m.burst_dps,
         Objective::Sustained => m.sustained_dps,
         Objective::PerShot => m.per_shot,
@@ -856,7 +866,7 @@ fn optimize_mode(
     let base_rate = ctx.mode_result(&[], None, &[]).map_or(0.0, |m| m.fire_rate);
     if base_rate > 0.0 {
         ctx.rate_cap = balanced_rate_cap(weapon, &weapon.modes[mode], base_rate);
-        if opts.objective == Objective::Balanced && weapon.modes[mode].melee_role == Some(wf_data::MeleeRole::Heavy) {
+        if matches!(opts.objective, Objective::Balanced | Objective::Group) && weapon.modes[mode].melee_role == Some(wf_data::MeleeRole::Heavy) {
             ctx.min_rate = Some(base_rate * (1.0 + BALANCED_HEAVY_SPEED_BONUS));
         }
         ctx.max_rate = opts.max_fire_rate_bonus.map(|b| base_rate * (1.0 + b));
@@ -1204,6 +1214,8 @@ fn optimize_mode(
         score: best,
         fire_rate: fm.map_or(0.0, |m| m.fire_rate),
         sustained_dps: fm.map_or(0.0, |m| m.sustained_dps),
+        group_dps: fm.map_or(0.0, |m| m.group_dps),
+        group_sustained_dps: fm.map_or(0.0, |m| m.group_sustained_dps),
         per_shot: fm.map_or(0.0, |m| m.per_shot),
         per_charge: fm.and_then(|m| m.per_charge),
         attack_speed,

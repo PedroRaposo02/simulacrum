@@ -155,6 +155,10 @@ export interface Conditions {
   triggers?: string[];
   /** Share of normal-form hits on weak points while charging an Incarnon gauge. */
   incarnonChargeShare?: number;
+  /** Enemies in a group fight (group DPS). */
+  groupSize?: number;
+  /** Fight length in seconds (Heat stacks keep growing while refreshed). */
+  fightS?: number;
 }
 
 /** What the engine receives. */
@@ -224,6 +228,8 @@ export interface ModeResult {
   sustainedDps: number;
   perCharge: number | null;
   statusDps: number;
+  groupDps: number;
+  groupSustainedDps: number;
   viralStacks: number;
   corrosiveStacks: number;
   attackSpeed?: number;
@@ -251,6 +257,8 @@ export interface RankRow {
   mode: string;
   burstDps: number;
   sustainedDps: number;
+  groupDps: number;
+  groupSustainedDps: number;
   perShot: number;
   coverage: Coverage;
   failed: string | null;
@@ -285,7 +293,7 @@ export interface OptimizeResult {
 }
 
 export interface CapacityOptions { capacity: number; polarities: (string | null)[]; rivenDrain: number }
-export type Objective = "balanced" | "burst" | "sustained" | "perShot" | "perCharge";
+export type Objective = "balanced" | "burst" | "sustained" | "perShot" | "perCharge" | "group";
 
 export interface OptimizeOptions {
   objective?: Objective;
@@ -312,6 +320,9 @@ export interface RivenRanking { weapon: string; mode: string; mods: string[]; ar
 export interface BestEntry {
   modeIndex: number;
   burstDps: number;
+  sustainedDps?: number;
+  groupDps?: number;
+  groupSustainedDps?: number;
   mods: string[];
   arcane: string | null;
   riven?: RivenPick[];
@@ -323,5 +334,17 @@ export interface BestBuilds {
   dataVersion: string;
   generatedAtUnix: number;
   conditions: Conditions;
-  targets: Record<string, Record<string, { plain?: BestEntry; riven?: BestEntry; error?: string }>>;
+  targets: Record<string, Record<string, BestPair>>;
+}
+/** Precomputed best builds for one weapon and target: single target / group fight, riven or not, and melee heavies. */
+export interface BestPair {
+  plain?: BestEntry;
+  riven?: BestEntry;
+  groupPlain?: BestEntry;
+  groupRiven?: BestEntry;
+  heavyPlain?: BestEntry;
+  heavyRiven?: BestEntry;
+  heavyGroupPlain?: BestEntry;
+  heavyGroupRiven?: BestEntry;
+  error?: string;
 }

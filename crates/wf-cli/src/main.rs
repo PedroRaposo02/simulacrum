@@ -67,7 +67,7 @@ enum Cmd {
         heavy: bool,
         #[arg(long, default_value_t = 5.0)]
         heavy_combo: f64,
-        /// Objective: balanced | burst | sustained | per-shot | per-charge.
+        /// Objective: balanced | burst | sustained | per-shot | per-charge | group.
         #[arg(long, default_value = "balanced")]
         objective: String,
         /// Comfort for guns: maximum fire-rate bonus over the unmodded rate (1.5 = +150%).
@@ -161,6 +161,9 @@ fn tol() -> f64 {
 struct BestEntry {
     mode_index: usize,
     burst_dps: f64,
+    sustained_dps: f64,
+    group_dps: f64,
+    group_sustained_dps: f64,
     mods: Vec<String>,
     arcane: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -180,6 +183,20 @@ struct BestPair {
     plain: Option<BestEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     riven: Option<BestEntry>,
+    /// Best builds for a group fight (Group objective); not computed against bosses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group_plain: Option<BestEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group_riven: Option<BestEntry>,
+    /// Melee heavy attack builds, single target and group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    heavy_plain: Option<BestEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    heavy_riven: Option<BestEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    heavy_group_plain: Option<BestEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    heavy_group_riven: Option<BestEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -198,6 +215,9 @@ fn entry(r: OptimizeResult) -> BestEntry {
     BestEntry {
         mode_index: r.mode_index,
         burst_dps: r.burst_dps,
+        sustained_dps: r.sustained_dps,
+        group_dps: r.group_dps,
+        group_sustained_dps: r.group_sustained_dps,
         mods: r.mods,
         arcane: r.arcane,
         riven: r.riven,
@@ -210,11 +230,13 @@ fn entry(r: OptimizeResult) -> BestEntry {
 fn print_optimized(r: &OptimizeResult) {
     println!("{} / {}: {} burst DPS ({} evaluations)", r.weapon, r.mode, fmt(r.burst_dps), r.evaluations);
     println!(
-        "  {:.2} shots/s, per shot {}, sustained {}{}  [objective {:?}: {}]",
+        "  {:.2} shots/s, per shot {}, sustained {}{}, group {} (sustained {})  [objective {:?}: {}]",
         r.fire_rate,
         fmt(r.per_shot),
         fmt(r.sustained_dps),
         r.per_charge.map(|c| format!(", per charge {}", fmt(c))).unwrap_or_default(),
+        fmt(r.group_dps),
+        fmt(r.group_sustained_dps),
         r.objective,
         fmt(r.score)
     );
@@ -376,6 +398,7 @@ fn run() -> Result<bool, String> {
                     "sustained" => wf_opt::Objective::Sustained,
                     "per-shot" => wf_opt::Objective::PerShot,
                     "per-charge" => wf_opt::Objective::PerCharge,
+                    "group" => wf_opt::Objective::Group,
                     "burst" => wf_opt::Objective::Burst,
                     _ => wf_opt::Objective::Balanced,
                 };
@@ -406,10 +429,37 @@ fn run() -> Result<bool, String> {
                 .map(|&(ti, wi)| {
                     let w = &data.weapons[wi];
                     let t = &targets[ti].1;
-                    let run = |riven| optimize(&data, &w.id, &Build::default(), t, &OptimizeOptions { riven, ..Default::default() });
-                    let pair = match run(false) {
-                        Ok(p) => BestPair { plain: Some(entry(p)), riven: run(true).ok().map(entry), error: None },
-                        Err(e) => BestPair { plain: None, riven: None, error: Some(e.message) },
+                    let run = |riven, objective, mode| {
+                        optimize(&data, &w.id, &Build::default(), t, &OptimizeOptions { riven, objective, mode, ..Default::default() }).ok().map(entry)
+                    };
+                    let single = wf_opt::Objective::Balanced;
+                    let group = wf_opt::Objective::Group;
+                    // Group fights make no sense against a lone boss.
+                    let groups = !data.enemies.iter().any(|e| Some(&e.id) == t.enemy.as_ref() && e.is_boss);
+                    let heavy = w.modes.iter().position(|m| m.melee_role == Some(wf_data::MeleeRole::Heavy));
+                    let pair = match optimize(&data, &w.id, &Build::default(), t, &OptimizeOptions::default()) {
+                        Ok(p) => BestPair {
+                            plain: Some(entry(p)),
+                            riven: run(true, single, None),
+                            group_plain: if groups { run(false, group, None) } else { None },
+                            group_riven: if groups { run(true, group, None) } else { None },
+                            heavy_plain: heavy.and_then(|h| run(false, single, Some(h))),
+                            heavy_riven: heavy.and_then(|h| run(true, single, Some(h))),
+                            heavy_group_plain: heavy.filter(|_| groups).and_then(|h| run(false, group, Some(h))),
+                            heavy_group_riven: heavy.filter(|_| groups).and_then(|h| run(true, group, Some(h))),
+                            error: None,
+                        },
+                        Err(e) => BestPair {
+                            plain: None,
+                            riven: None,
+                            group_plain: None,
+                            group_riven: None,
+                            heavy_plain: None,
+                            heavy_riven: None,
+                            heavy_group_plain: None,
+                            heavy_group_riven: None,
+                            error: Some(e.message),
+                        },
                     };
                     let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     if n % 200 == 0 {

@@ -11,6 +11,7 @@ const OBJECTIVES: [Objective, string, string][] = [
   ["sustained", "Sustained DPS", "Includes reloads"],
   ["perShot", "Damage per shot / combo", "Ignores fire rate entirely"],
   ["perCharge", "Damage per magazine / Incarnon charge", "Fire rate adds nothing: favours damage stats"],
+  ["group", "Group fight", "Balanced, on the damage to a whole group (Scenario › Conditions › group size): explosions, melee swings, Gas, Electricity, Blast and Melee Influence"],
 ];
 
 const POLARITIES = ["madurai", "vazarin", "naramon", "zenurik", "unairu", "penjaga", "umbra"];

@@ -194,6 +194,9 @@ pub struct HitComponent {
     pub falloff: Option<Falloff>,
     #[serde(default)]
     pub rules: HitRules,
+    /// Status procs this hit always applies (stance combos: Bleed = Slash, Tesla Chain = Electricity).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forced_procs: Vec<DamageType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

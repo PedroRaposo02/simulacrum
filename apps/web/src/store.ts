@@ -61,6 +61,8 @@ export const defaultConditions = (): Conditions => ({
   shields: 0,
   triggers: [],
   incarnonChargeShare: 0.5,
+  groupSize: 5,
+  fightS: 15,
 });
 
 export interface BuffState {

@@ -4,6 +4,7 @@ export default function BestBuildDisclaimer({ compact = false }: { compact?: boo
     "Fire rate past +150% over the weapon's own fire rate counts for nothing, so slots go to damage and status instead. Pure burst DPS can be higher.",
     "Explosive weapons (Torid, Tonkor, Bramma…) carry an explosion-radius mod, which adds no single-target damage; the exilus gets a fitting utility mod (beam range, projectile speed, recoil) unless a damage mod is better, and is dropped if the build can't fit 60 capacity even with forma.",
     "Heavy Caliber is avoided unless nothing else comes within 5%.",
+    "DPS includes status damage (Bleed, Burn, Toxin, Gas, Electricity, Blast). Heat stacks are averaged over a 15 s fight; group numbers assume 5 enemies within 5 m.",
     "Situational bonuses (with overshields, channeled abilities, shield break, energy or armor thresholds) are off in best builds; enable them under Scenario › Situational triggers.",
     "Incarnon sustained DPS includes refilling the gauge in normal form, with half the hits on weak points.",
     "Arcanes assume steady play: Melee Exposure kept at 4 ability casts, on-kill arcanes at the uptime slider, status-stack arcanes (Primary Blight, Cascadia Flare…) at the stacks the weapon's own procs keep up.",

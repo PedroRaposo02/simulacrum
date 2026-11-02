@@ -53,7 +53,7 @@ Working list after 0.2.0-beta.1. Checked items are done; notes say what "done" m
 - [x] Faction mods (Bane / Expel / Smite / Cleanse) and riven faction stats excluded by default; "Allow faction mods" option.
 
 - [x] Objectives (burst / sustained / per shot / per magazine or charge) and a gun fire-rate cap for comfortable builds; spliced riven stats allowed (one per riven).
-  - [ ] Confirm in-game how many spliced stats one riven can hold (currently capped at 1).
+  - [x] One spliced stat per riven (confirmed).
 
 ## UI
 - [x] Theme selector: 7 dark + 2 light schemes (`apps/web/src/themes.css`, generated).
@@ -77,5 +77,6 @@ Working list after 0.2.0-beta.1. Checked items are done; notes say what "done" m
 - [ ] Laetum golden builds (need the exact build definitions).
 - [ ] Verify buff defaults (Eclipse value, Roar/Eclipse stacking).
 - [x] Melee arcanes (Duplicate, Doughty, Animosity, Exposure, Retaliation, Crescendo); class-restricted melee mods match the melee class.
-  - [ ] Melee Influence (spreads elemental status to enemies within 20 m) and Careen (x2.5 vs frozen) are multi-target / situational: not modelled.
+  - [x] Melee Influence: modelled in group fights (spread damage and procs, uptime from Electricity procs).
+  - [ ] Careen (x2.5 vs frozen) is situational: not modelled.
   - [ ] Cascadia Overcharge (overshields), Cascadia Empowered (flat damage per status), Primary Overcharge (energy), Secondary Surge, Primary Bulwark: not modelled.

@@ -165,6 +165,24 @@ export default function ScenarioPanel() {
 
       <Section title="Conditions" defaultOpen={false}>
         <Slider
+          label="Group fight: enemies"
+          value={conditions.groupSize ?? 5}
+          min={1}
+          max={12}
+          step={1}
+          display={String(conditions.groupSize ?? 5)}
+          onChange={(v) => setC({ groupSize: v })}
+        />
+        <Slider
+          label="Fight length (Heat stacks grow while refreshed)"
+          value={conditions.fightS ?? 15}
+          min={0}
+          max={60}
+          step={5}
+          display={`${conditions.fightS ?? 15} s`}
+          onChange={(v) => setC({ fightS: v })}
+        />
+        <Slider
           label="Incarnon charging: weak point hit share"
           value={conditions.incarnonChargeShare ?? 0.5}
           onChange={(v) => setC({ incarnonChargeShare: Math.max(0.05, v) })}

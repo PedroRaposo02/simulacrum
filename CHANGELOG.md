@@ -2,6 +2,14 @@
 
 Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the version lives in `Cargo.toml` (workspace) and the `package.json` files, and each release is tagged `v<version>`.
 
+## 0.6.0-beta.1 — 2026-11-02
+
+- **Status damage counts in DPS**: burst and sustained DPS now include status damage (it used to be a separate tile the optimizer ignored), with the wiki's rules: Slash 35% and Heat/Toxin/Electricity/Gas 50% of modded base per tick for the status duration, Heat/Toxin/Electricity/Gas ticks scaled by their own elemental mods, faction counted twice; Heat stacks refresh and keep growing over the fight (new fight length setting, 15 s); Gas keeps at most 10 clouds; Blast deals 30% per proc and detonates at 10 stacks.
+- **Group fights**: new group DPS (5 enemies by default, Scenario › Conditions): melee swings reach enemies by range with follow-through, explosions by radius, Electricity arcs 3 m, Gas clouds, Blast detonations (300% per stack in 5 m) and Melee Influence spreading elemental damage and procs (faction counted again) to the group. Melee Influence is now modelled; it wins group fights unless armor makes Corrosive (Exposure) better.
+- **Precomputed builds**: single target and group fight, riven and rivenless, and for melee also heavy-attack builds (both fight types); the weapon list has Single / Group and Light / Heavy switches. New "Group fight" optimizer objective.
+- **Stance forced procs**: Bleed (Slash) and Tesla Chain (Electricity) procs from stance combos are counted.
+- **Magazine weapons**: beams now include their reload in sustained DPS.
+
 ## 0.5.0-beta.1 — 2026-11-02
 
 - **Heavy attack builds** aim for a comfortable heavy: about +100% speed over the unmodded heavy (wind-up and attack speed together). The Balanced objective requires it when reachable and values nothing past it.

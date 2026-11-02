@@ -71,9 +71,13 @@ fn unmodded_expected_shot() {
     let r = run(&[], Target::default());
     let m = &r.modes[0];
     assert!(close(m.per_shot, 160.0 * (1.0 + 0.22 * 1.2)));
-    assert!(close(m.burst_dps, m.per_shot * 2.5));
-    // 12 rounds over 12/2.5 s + 2 s reload.
-    assert!(close(m.sustained_dps, m.per_shot * 12.0 / (12.0 / 2.5 + 2.0)));
+    // Bleed: 2.5 shots/s x 22% x 62.5% Slash share (96 quantizes to 100 of 160), 6 ticks of 35% x 160 x crit 1.264.
+    let bleed = 2.5 * 0.22 * 0.625 * 6.0 * 0.35 * 160.0 * (1.0 + 0.22 * 1.2);
+    assert!(close(m.status_dps, bleed), "status {} vs {bleed}", m.status_dps);
+    assert!(close(m.burst_dps, m.per_shot * 2.5 + bleed));
+    // 12 rounds over 12/2.5 s + 2 s reload; status keeps the same uptime.
+    let hits = m.per_shot * 12.0 / (12.0 / 2.5 + 2.0);
+    assert!(close(m.sustained_dps, hits + bleed * hits / (m.per_shot * 2.5)));
 }
 
 #[test]
@@ -765,9 +769,65 @@ fn incarnon_sustained_includes_gauge_recharge() {
     let r = compute(&d, &Build { weapon: "Laetum".into(), ..Default::default() }, &Target::default()).unwrap();
     let (normal, inc) = (&r.modes[0], &r.modes[1]);
     // 10 weak point hits refill 40 rounds; half the normal form's hits land on weak points.
-    let hits_per_s = normal.sustained_dps / normal.per_shot * 0.5;
+    let hits_per_s = normal.fire_rate * normal.sustained_dps / normal.burst_dps * 0.5;
     let t = 10.0 / hits_per_s;
-    let expected = (inc.per_shot * 40.0 + normal.sustained_dps * t) / (40.0 / inc.fire_rate + t);
+    let hits = (inc.per_shot * 40.0 + normal.sustained_dps * t) / (40.0 / inc.fire_rate + t);
+    let expected = hits + inc.status_dps * hits / (inc.per_shot * inc.fire_rate);
     assert!(close(inc.sustained_dps, expected));
     assert!(inc.sustained_dps < inc.burst_dps);
+}
+
+fn status_weapon(damage: serde_json::Value, status: f64) -> GameData {
+    let mut d = fixture();
+    d.weapons[0].modes[0].components[0].damage = serde_json::from_value(damage).unwrap();
+    d.weapons[0].modes[0].components[0].status_chance = status;
+    d.weapons[0].modes[0].components[0].crit_chance = 0.0;
+    d
+}
+
+fn status_run(d: &GameData, cond: Conditions, enemy: Option<&str>) -> ModeResult {
+    let b = Build { weapon: "Laetum".into(), conditions: cond, ..Default::default() };
+    compute(d, &b, &Target { enemy: enemy.map(String::from), ..Default::default() }).unwrap().modes.remove(0)
+}
+
+#[test]
+fn heat_stacks_grow_over_the_fight() {
+    // Pure Heat, 100% status: 2.5 procs/s, ticks of 50% x 100.
+    let d = status_weapon(json!({"heat": 100.0}), 1.0);
+    let short = status_run(&d, Conditions { fight_s: 0.0, ..Default::default() }, None);
+    assert!(close(short.status_dps, 2.5 * 6.0 * 50.0), "independent stacks: {}", short.status_dps);
+    let long = status_run(&d, Conditions { fight_s: 30.0, ..Default::default() }, None);
+    assert!(close(long.status_dps, 2.5 * 15.0 * 50.0), "refreshed stacks average over the fight: {}", long.status_dps);
+}
+
+#[test]
+fn gas_caps_at_ten_clouds() {
+    let d = status_weapon(json!({"gas": 100.0}), 1.0);
+    let m = status_run(&d, Conditions::default(), None);
+    // 2.5 procs/s x 6 s = 15 clouds, capped at 10.
+    assert!(close(m.status_dps, 10.0 * 50.0));
+}
+
+#[test]
+fn blast_detonates_for_the_group_at_ten_stacks() {
+    let d = status_weapon(json!({"blast": 100.0}), 5.0);
+    let solo = status_run(&d, Conditions { group_size: 1.0, ..Default::default() }, None);
+    // 12.5 procs/s x 30% x 100 on the target.
+    assert!(close(solo.status_dps, 12.5 * 30.0));
+    let group = status_run(&d, Conditions { group_size: 5.0, ..Default::default() }, None);
+    // 12.5 procs/s reach 10 stacks within the 1.5 s fuse: 300% per stack to the 4 others (all within 5 m).
+    assert!(close(group.group_dps - group.burst_dps, 4.0 * 12.5 * 300.0), "{}", group.group_dps - group.burst_dps);
+}
+
+#[test]
+fn elemental_mods_scale_their_own_ticks() {
+    let mut d = status_weapon(json!({"toxin": 100.0}), 1.0);
+    d.mods.push(serde_json::from_value(json!({"id": "tx", "name": "Toxin Mod", "pool": "secondary", "compat": null, "polarity": "naramon",
+        "baseDrain": 4, "maxRank": 5, "isExilus": false,
+        "modifiers": [{"source": "Toxin Mod", "stat": {"kind": "element", "of": "toxin"}, "value": 1.0}]})).unwrap());
+    let plain = status_run(&d, Conditions::default(), None);
+    let b = Build { weapon: "Laetum".into(), mods: vec!["Toxin Mod".into()], ..Default::default() };
+    let modded = compute(&d, &b, &Target::default()).unwrap().modes.remove(0);
+    // Ticks: 50% of modded base (unchanged) x (1 + 100% Toxin mods).
+    assert!(close(modded.status_dps, plain.status_dps * 2.0));
 }

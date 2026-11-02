@@ -23,6 +23,10 @@ pub struct Conditions {
     pub triggers: Vec<String>,
     /// Share of normal-form hits that land on weak points while charging an Incarnon gauge.
     pub incarnon_charge_share: f64,
+    /// Enemies in a group fight (group DPS); they stand within GROUP_SPREAD_M of the main target.
+    pub group_size: f64,
+    /// Fight length in seconds: Heat stacks keep growing while procs refresh them.
+    pub fight_s: f64,
     /// Set by the engine for companion weapons: their AI doesn't aim or reliably headshot.
     #[serde(skip)]
     pub companion: bool,
@@ -40,6 +44,8 @@ impl Default for Conditions {
             shields: 0.0,
             triggers: vec![],
             incarnon_charge_share: 0.5,
+            group_size: 5.0,
+            fight_s: 15.0,
             companion: false,
         }
     }
@@ -140,7 +146,11 @@ pub struct ModeResult {
     pub burst_dps: f64,
     pub sustained_dps: f64,
     pub per_charge: Option<f64>,
+    /// Status damage per second on the main target (DoTs and Blast), included in burst/sustained DPS.
     pub status_dps: f64,
+    /// Damage per second to every enemy of a group fight (Conditions::group_size), burst and sustained.
+    pub group_dps: f64,
+    pub group_sustained_dps: f64,
     pub procs_per_s: BTreeMap<DamageType, f64>,
     /// Modded status duration in seconds (status-stack arcanes use it).
     #[serde(skip)]
