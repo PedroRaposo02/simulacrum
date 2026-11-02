@@ -2,6 +2,10 @@
 
 Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the version lives in `Cargo.toml` (workspace) and the `package.json` files, and each release is tagged `v<version>`.
 
+## Unreleased
+
+- **CI**: GitHub Actions updated to their Node 24 versions (checkout v7, setup-node v7, artifacts v7/v8, Pages v5, pnpm v6, gh-release v3); no more Node 20 deprecation warnings.
+
 ## 0.7.0-beta.1 — 2026-11-02
 
 - **Keep my evolutions / Keep my arcane**: optimizer options that keep the Incarnon evolutions and arcane you picked (e.g. the best Devouring Attrition build); tiers left at none are still searched. CLI `--evolutions` works the same way now (other tiers searched).

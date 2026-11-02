@@ -24,7 +24,7 @@ jobs:
       ref: ${{ steps.v.outputs.ref }}
       release: ${{ steps.v.outputs.release }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.sha }}
       - id: v
@@ -60,7 +60,7 @@ jobs:
     env:
       TAG: ${{ needs.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -68,7 +68,7 @@ jobs:
       - run: cargo build --release -p wf-cli
       - name: Optimize this slice
         run: ./target/release/wfcalc optimize --all --shard ${{ matrix.shard }}/16 --out best-${{ matrix.shard }}.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: best-${{ matrix.shard }}
@@ -87,7 +87,7 @@ jobs:
     env:
       TAG: ${{ needs.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -96,10 +96,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -107,7 +107,7 @@ jobs:
       - run: pnpm build:wasm
       - run: mkdir -p apps/web/public && cp data/gamedata.json apps/web/public/gamedata.json
       - run: pnpm build
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: site
           path: apps/web/dist
@@ -133,7 +133,7 @@ jobs:
       TAG: ${{ needs.version.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: site
           path: site
@@ -147,12 +147,12 @@ jobs:
             fi
           done
           [ -f site/best-builds.json ] || echo "no earlier best builds; rankings appear with the final deploy"
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
           name: pages-early
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
         with:
           artifact_name: pages-early
 
@@ -173,17 +173,17 @@ jobs:
     env:
       TAG: ${{ needs.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.ref }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: site
           path: apps/web/dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: best-*
           path: best-parts
@@ -207,29 +207,29 @@ jobs:
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: best-builds-log
           path: best-builds.log
       - name: Package
         run: cd apps/web/dist && zip -r "../../../simulacrum-web-${TAG}.zip" .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: web
           path: |
             simulacrum-web-*.zip
             best-builds.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: site-final
           path: apps/web/dist
           retention-days: 3
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: apps/web/dist
           name: pages-final
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
         with:
           artifact_name: pages-final
 
@@ -256,7 +256,7 @@ jobs:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -266,15 +266,15 @@ jobs:
       - name: Linux libraries
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev libssl-dev
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: site-final
           path: apps/web/dist
@@ -297,7 +297,7 @@ jobs:
             Linux) cp "$b"/appimage/*.AppImage "$b"/appimage/*.AppImage.sig out/ ;;
           esac
           ls -la out
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.target }}
           path: out/*
@@ -322,7 +322,7 @@ jobs:
     env:
       TAG: ${{ needs.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
@@ -339,7 +339,7 @@ jobs:
           else
             zip -r "wfcalc-${TAG}-${{ matrix.target }}.zip" "wfcalc-${TAG}-${{ matrix.target }}" > /dev/null
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.target }}
           path: wfcalc-*.zip
@@ -351,19 +351,19 @@ jobs:
     env:
       TAG: ${{ needs.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.ref }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: web
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: cli-*
           path: dist
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: desktop-*
           path: desktop
@@ -379,7 +379,7 @@ jobs:
             found { print }
           ' CHANGELOG.md > notes.md
           [ -s notes.md ] || echo "Release ${TAG}" > notes.md
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TAG }}
           target_commitish: ${{ github.sha }}
