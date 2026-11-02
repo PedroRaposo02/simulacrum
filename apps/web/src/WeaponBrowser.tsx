@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
+import { usePersistent } from "./persist";
 import { weaponTypeLabel } from "./labels";
 import BestBuildDisclaimer from "./Disclaimer";
 import { Star, useFavorites } from "./favorites";
@@ -29,11 +30,12 @@ type SortKey = "burstDps" | "sustainedDps" | "perShot";
 
 export default function WeaponBrowser() {
   const { data, engine, best, bestStale, scenario, browserBuild, setBrowserBuild, openWeapon } = useStore();
-  const [slot, setSlot] = useState<Slot>("primary");
+  const [slot, setSlot] = usePersistent<Slot>("browser.slot", "primary");
   const [query, setQuery] = useState("");
-  const [favOnly, setFavOnly] = useState(false);
+  const [favOnly, setFavOnly] = usePersistent("browser.favOnly", false);
   const favs = useFavorites();
-  const [sortKey, setSortKey] = useState<SortKey>("burstDps");
+  // Sustained by default: burst flatters weapons that must reload after every shot.
+  const [sortKey, setSortKey] = usePersistent<SortKey>("browser.sort", "sustainedDps");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [pageSize, setPageSizeState] = useState<number>(savedPageSize);
   const [page, setPage] = useState(0);
@@ -119,20 +121,20 @@ export default function WeaponBrowser() {
           onChange={setBrowserBuild}
           options={[
             ["unmodded", "Unmodded"],
-            ["best", "Best build"],
-            ["bestRiven", "Best + riven"],
+            ["best", "Most DPS Build"],
+            ["bestRiven", "Most DPS + riven"],
           ]}
         />
       </div>
 
       {usingBest && !best && (
         <p className="rounded-md bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-          No precomputed best builds found. Run <code>pnpm optimize</code> to generate them; showing unmodded numbers.
+          No precomputed Most DPS builds found. Run <code>pnpm optimize</code> to generate them; showing unmodded numbers.
         </p>
       )}
       {usingBest && best && (
         <p className="text-xs text-zinc-500">
-          Theoretical best builds (any polarity, no capacity limit{browserBuild === "bestRiven" ? ", max-roll riven" : ""}), optimized for this enemy with
+          Most DPS builds (any polarity, no capacity limit{browserBuild === "bestRiven" ? ", max-roll riven" : ""}), optimized for this enemy with
           full conditional uptime, then re-evaluated with your scenario. Buffs and outsourced status weren't part of the search.
           {bestStale && " Game data changed since these were generated; rerun pnpm optimize."}
         </p>

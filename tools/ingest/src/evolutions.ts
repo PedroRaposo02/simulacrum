@@ -62,7 +62,8 @@ function variantIndex(headers: string[], weaponName: string): number {
 
 function substitute(text: string, values: Record<string, string>): string {
   // Values may carry their own unit ("18%", "0.6x"); drop it when the template already has one.
-  return text.replace(/\b([XYZW])\b(%|x)?/g, (m, v: string, unit: string | undefined) => {
+  // "+Yx" has no word boundary between Y and x: allow a trailing x/% unit.
+  return text.replace(/\b([XYZW])(?![A-Za-wyz0-9])(%|x)?/g, (m, v: string, unit: string | undefined) => {
     const val = values[v];
     if (val == null) return m;
     return unit ? val.replace(/[%x]$/, "") + unit : val;
@@ -154,6 +155,9 @@ export function parseEvolutions(wikitext: string, weaponName: string): ScrapedTi
     }
     if (line.startsWith("*") && cells && cells.length) {
       cells[cells.length - 1].push(line.replace(/^\*+\s*/, ""));
+    } else if (/^[XYZW]\s*=/.test(line) && cells && cells.length) {
+      // A value cell continued on the next line ("X = 12" then "Y = 12").
+      cells[cells.length - 1].push(line);
     }
   }
   flush();

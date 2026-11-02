@@ -1,5 +1,37 @@
 {
   "_note": "Incarnon evolutions per weapon, hand-curated from each weapon's wiki page (no wiki data module has them). Tier I (the Incarnon form itself) is implicit. Each option: name, text (as in game), forms ('both' | 'incarnon' | 'normal'), modifiers (engine stat lines) and/or behaviour (named mechanic with tunable parameters). Options with no damage effect just have text. Incarnon magazine sizes come from the wiki weapon modules (IncarnonCharges); 'rounds' here overrides them.",
+  "options": {
+    "_note": "Hand definitions per evolution name, applied to every weapon with that option (the wiki text can't be parsed into these). keepParsed: keep the parser's modifiers (e.g. +X base damage per variant) and add these. trigger: situational, off unless enabled in the scenario.",
+    "Reaver's Rapture": {
+      "forms": "normal",
+      "modifiers": [
+        { "source": "Reaver's Rapture (on full burst hit, resets on reload)", "stat": { "kind": "baseDamage" }, "value": 0.2, "maxStacks": 5, "condition": "onHit" }
+      ]
+    },
+    "Stalker's Resentment": {
+      "keepParsed": true,
+      "modifiers": [
+        { "source": "Stalker's Resentment (on hit, resets on a miss)", "stat": { "kind": "baseDamageFlat" }, "value": 10, "maxStacks": 5, "condition": "onHit", "trigger": "with hate and despair equipped" },
+        { "source": "Stalker's Resentment (on hit, resets on a miss)", "stat": { "kind": "fireRate" }, "value": 0.1, "maxStacks": 5, "condition": "onHit", "trigger": "with hate and despair equipped" }
+      ]
+    },
+    "Steadfast Grit": {
+      "keepParsed": true,
+      "modifiers": [
+        { "source": "Steadfast Grit (on shield/overguard break, 6 s)", "stat": { "kind": "critMultMultiplier" }, "value": 2.0, "trigger": "on shield/overguard break" }
+      ]
+    },
+    "Devastation Cascade": {
+      "modifiers": [
+        { "source": "Devastation Cascade (hits in Incarnon Form)", "stat": { "kind": "critChance" }, "value": 0.05, "maxStacks": 50, "condition": "onHit", "modeContains": "Charge" },
+        { "source": "Devastation Cascade (hits in Incarnon Form)", "stat": { "kind": "critDamage" }, "value": 0.05, "maxStacks": 50, "condition": "onHit", "modeContains": "Charge" }
+      ]
+    },
+    "Flensing Spikes": { "behaviour": { "kind": "armorStripPerStatus", "status": "puncture", "perStack": 0.2 } },
+    "King's Gambit": { "keepParsed": true, "behaviour": { "kind": "headshotOnlyCrits", "headCritChance": 1.5 } },
+    "Sawblade Storm": {},
+    "Renewed Horror": {}
+  },
   "weapons": {
     "Laetum": {
       "source": "https://wiki.warframe.com/w/Laetum (read 2026-11-01)",

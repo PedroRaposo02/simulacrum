@@ -11,7 +11,9 @@ export interface Modifier {
   value: number;
   maxStacks?: number;
   condition?: string;
-  per?: "statusType" | "comboMultiplier";
+  per?: "statusType" | "comboMultiplier" | "shields200";
+  trigger?: string;
+  modeContains?: string;
   appliesTo?: string;
 }
 
@@ -82,6 +84,10 @@ export interface Weapon {
   polarities?: string[];
   exilusPolarity?: string;
   stancePolarity?: string;
+  /** Capacity a max-rank stance adds (doubled when polarities match). */
+  stanceCapacity?: number;
+  /** Kuva / Tenet weapon with a progenitor bonus element. */
+  progenitor?: boolean;
   modes: WeaponMode[];
 }
 
@@ -94,6 +100,11 @@ export interface Arcane {
   description: string;
   rarity?: string;
   image?: string;
+  /** Weapon classes it fits (empty = the whole slot). */
+  classes?: string[];
+  /** Stacks from the weapon's own procs of a status; modifiers are per stack. */
+  stacking?: { status: string; maxStacks: number; durationS?: number };
+  comboFloor?: number;
 }
 export interface EnemyProfile { id: string; name: string; faction: string; armor: number; note?: string }
 
@@ -138,6 +149,12 @@ export interface Conditions {
   comboMultiplier: number;
   heavyComboMultiplier: number;
   headshotEffects: boolean;
+  /** Warframe shields (Melee Retaliation). */
+  shields: number;
+  /** Situational triggers in effect ("with overshields"...). */
+  triggers?: string[];
+  /** Share of normal-form hits on weak points while charging an Incarnon gauge. */
+  incarnonChargeShare?: number;
 }
 
 /** What the engine receives. */
@@ -148,6 +165,7 @@ export interface EngineBuild {
   riven: Modifier[];
   buffs: Modifier[];
   evolutions: string[];
+  progenitor?: string | null;
   conditions: Conditions;
 }
 
@@ -174,6 +192,8 @@ export interface EditorBuild {
   riven: RivenState;
   /** Chosen Incarnon evolution per tier (name or null). */
   evolutions: string[];
+  /** Kuva / Tenet progenitor element (damage type key), or null. */
+  progenitor?: string | null;
 }
 
 export interface Explain { label: string; value: number; detail?: string; children?: Explain[] }
@@ -269,7 +289,8 @@ export type Objective = "balanced" | "burst" | "sustained" | "perShot" | "perCha
 
 export interface OptimizeOptions {
   objective?: Objective;
-  maxFireRate?: number | null;
+  maxFireRateBonus?: number | null;
+  explosionMod?: boolean;
   minCritChance?: number | null;
   mode?: number | null;
   riven?: boolean;
@@ -296,6 +317,7 @@ export interface BestEntry {
   riven?: RivenPick[];
   rivenNegative?: RivenPick | null;
   evolutions?: string[];
+  progenitor?: string | null;
 }
 export interface BestBuilds {
   dataVersion: string;

@@ -16,10 +16,16 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 const wfcdDir = join(dirname(fileURLToPath(import.meta.url)), "../node_modules/@wfcd/items/data/json");
 const wfcdVersion: string = JSON.parse(readFileSync(join(wfcdDir, "../../package.json"), "utf8")).version;
 const load = (f: string) => JSON.parse(readFileSync(join(wfcdDir, f), "utf8"));
+const STANCE_MODS = new Map<string, { baseDrain: number; fusionLimit: number; polarity: string }>(
+  (load("Mods.json") as any[]).filter((m) => m.type === "Stance Mod").map((m) => [m.name, m]),
+);
 const override = (f: string) => JSON.parse(readFileSync(join(root, "data/overrides", f), "utf8"));
 
 type Stat = { kind: string; of?: string };
-type Modifier = { source: string; stat: Stat; value: number; maxStacks?: number; condition?: string; per?: string; appliesTo?: string; threshold?: number; aiming?: boolean };
+type Modifier = {
+  source: string; stat: Stat; value: number; maxStacks?: number; condition?: string; per?: string; appliesTo?: string; threshold?: number;
+  aiming?: boolean; trigger?: string; modeContains?: string;
+};
 
 /** Split off "per Status Type" / "per Combo Multiplier" qualifiers. */
 function splitPer(text: string): [string, string | undefined] {
@@ -152,6 +158,9 @@ function parseLineInner(source: string, raw: string): Modifier[] | null {
 // Effects that never change damage output.
 const EVO_IRRELEVANT = /Ammo|Magazine|Transmutation|Overshield|Accuracy|Punch Through|Recoil|Projectile Speed|Movement|Holster|Reload Speed|Sprint|Parkour|Aim Glid|Slide|Finisher|Parry|Block|Armor Over|Bounce|Zoom|Range|Instant Reload|Health|Shield Gate|Energy restored|Radar|Ammo Efficiency/i;
 
+// Triggers that depend on loadout or play style rather than on shooting: off unless enabled in the scenario.
+const SITUATIONAL = /overshield|channeled ability|shield break|shield\/overguard|sprint speed|energy max|armor over|energy spent|ability cast|undamaged|punch through|on equip/i;
+
 const EVO_CONDITIONS: [RegExp, string][] = [
   [/^On Kill/i, "onKill"],
   [/^On Headshot Kill|^On Weak ?point Kill/i, "onHeadshotKill"],
@@ -184,8 +193,14 @@ function parseEvolutionSentence(source: string, text: string, cond: string | nul
     const below = cond.match(/Critical Chance Below ([\d.]+)%/i);
     if (below) return { ...m, condition: "critChanceBelow", threshold: +below[1] / 100 };
     const known = EVO_CONDITIONS.find(([re]) => re.test(cond));
-    // Other situational triggers ("With Channeled Ability active", "On Shield Break"...) use the uptime slider.
-    return { ...m, source: `${m.source} (${cond.toLowerCase()})`, condition: known ? known[1] : "onKill" };
+    // Other triggers use the uptime slider; situational ones ("With Overshields", "On Shield Break"...) also need
+    // their scenario toggle.
+    return {
+      ...m,
+      source: `${m.source} (${cond.toLowerCase()})`,
+      condition: known ? known[1] : "onKill",
+      ...(SITUATIONAL.test(cond) ? { trigger: cond.toLowerCase() } : {}),
+    };
   };
   let m: RegExpMatchArray | null;
   if ((m = t.match(/^Increase (?:Base )?Damage by \+?([\d.]+)$/i))) return [withCond({ source, stat: { kind: "baseDamageFlat" }, value: +m[1] })];
@@ -201,6 +216,16 @@ function parseEvolutionSentence(source: string, text: string, cond: string | nul
   if ((m = t.match(/^Multishot consumes ammo directly from Capacity and (?:does|increases Damage by) \+?([\d.]+)%(?: Damage)?$/i)))
     return [withCond({ source, stat: { kind: "multishotDamage" }, value: +m[1] / 100 })];
   if ((m = t.match(/^\+?([\d.]+) (?:Base )?Multishot$/i))) return [withCond({ source, stat: { kind: "multishot" }, value: +m[1] })];
+  // "Increase Base Status Chance to 12%": set, so add the difference to the weapon's base.
+  if ((m = t.match(/^Increase Base Status Chance to \+?([\d.]+)%$/i)))
+    return [withCond({ source, stat: { kind: "statusChanceBase" }, value: Math.max(0, +m[1] / 100 - evoBaseStatus) })];
+  // "Reload increases Fire Rate by +10% per shell" (Felarx): a reload from empty loads the whole magazine.
+  if ((m = t.match(/^Reload increases Fire Rate by \+?([\d.]+)% per shell$/i)) && evoMagazine > 0)
+    return [{ source: `${source} (${evoMagazine} shells reloaded)`, stat: { kind: "fireRate" }, value: (+m[1] / 100) * evoMagazine }];
+  if (/^Resets on (?:reload|missed shot)$/i.test(t)) return [];
+  // "+3 Multishot on last shot in magazine": one shot per magazine, so its average over the magazine.
+  if ((m = t.match(/^\+?([\d.]+) Multishot on last shot in magazine$/i)) && evoMagazine > 0)
+    return [{ source: `${source} (last shot, averaged over ${evoMagazine})`, stat: { kind: "multishot" }, value: +m[1] / evoMagazine }];
   // "Enemies suffering from fewer than 3 Status Effects will receive: +100% Critical Damage"
   if ((m = t.match(/^Enemies suffering from fewer than (\d+) Status Effects will receive:?\s*\+?([\d.]+)% ([A-Za-z ]+)$/i))) {
     const stat = statOf(m[3]);
@@ -250,8 +275,38 @@ function evolutionForms(e: ScrapedEvolution): string {
   return "both";
 }
 
+// Magazine and base status chance of the weapon whose evolutions are being parsed.
+let evoMagazine = 0;
+let evoBaseStatus = 0;
+
+// Hand definitions per option name (data/overrides/incarnon.json "options"), for mechanics the text parser
+// can't read. `keepParsed` keeps what the parser finds and adds these on top.
+const optionDefs: Record<string, any> = override("incarnon.json").options ?? {};
+
 function parseEvolution(e: ScrapedEvolution) {
   const text = e.effects.join(" ");
+  const def = optionDefs[e.name];
+  if (def && !def.keepParsed) {
+    return {
+      name: e.name, text, forms: def.forms ?? evolutionForms(e),
+      ...(def.modifiers?.length ? { modifiers: def.modifiers } : {}),
+      ...(def.behaviour ? { behaviour: def.behaviour } : {}),
+    };
+  }
+  if (def) {
+    const parsed: any = parseEvolutionText(e, text);
+    return {
+      ...parsed,
+      forms: def.forms ?? parsed.forms,
+      ...(def.modifiers?.length || parsed.modifiers ? { modifiers: [...(parsed.modifiers ?? []), ...(def.modifiers ?? [])] } : {}),
+      ...(def.behaviour ? { behaviour: def.behaviour } : {}),
+      unparsed: undefined,
+    };
+  }
+  return parseEvolutionText(e, text);
+}
+
+function parseEvolutionText(e: ScrapedEvolution, text: string) {
   // Named mechanics are recognised by their text, since a few weapons reuse them under other names.
   for (const fn of Object.values(NAMED_BEHAVIOURS)) {
     const behaviour = fn(text);
@@ -361,14 +416,23 @@ function buildMods() {
 }
 
 function buildArcanes() {
-  const behaviours: Record<string, string> = override("arcanes.json").behaviours;
+  const { behaviours, defs } = override("arcanes.json") as { behaviours: Record<string, string>; defs: Record<string, any> };
+  // Shotgun and bow arcanes go in the primary slot, restricted by weapon class (set in defs).
+  const SLOT_OF: Record<string, string> = {
+    "Primary Arcane": "primary", "Secondary Arcane": "secondary", "Melee Arcane": "melee",
+    "Shotgun Arcane": "primary", "Bow Arcane": "primary",
+  };
   return (load("Arcanes.json") as any[])
-    .filter((a) => /^(Primary|Secondary) Arcane$/.test(a.type) && a.levelStats?.length)
+    .filter((a) => SLOT_OF[a.type] && a.levelStats?.length)
     .map((a) => {
+      const slot = SLOT_OF[a.type];
+      const def = defs[a.name];
       const first = String(a.levelStats.at(-1).stats[0] ?? "").replace(/<[^>]+>/g, "");
       const segs = first.split(/\\n|\n/).map((s) => s.trim()).filter(Boolean);
       const modifiers: Modifier[] = [];
-      if (!behaviours[a.name]) {
+      // Hand definitions win; melee arcane wording is too varied to parse reliably.
+      if (def) modifiers.push(...(def.modifiers ?? []));
+      else if (!behaviours[a.name] && slot !== "melee") {
         let i = 0;
         if (segs[0]?.endsWith(":") && segs[1]) {
           modifiers.push(...(parseLine(a.name, `${segs[0]}\n${segs[1]}`) ?? []));
@@ -377,8 +441,11 @@ function buildArcanes() {
         for (const s of segs.slice(i)) modifiers.push(...(parseLine(a.name, s) ?? []));
       }
       return {
-        id: a.uniqueName, name: a.name, slot: a.type.startsWith("Primary") ? "primary" : "secondary",
+        id: a.uniqueName, name: a.name, slot,
         behaviour: behaviours[a.name] ?? null, modifiers, description: segs.join(" "),
+        ...(def?.classes ? { classes: def.classes } : {}),
+        ...(def?.stacking ? { stacking: def.stacking } : {}),
+        ...(def?.comboFloor ? { comboFloor: def.comboFloor } : {}),
         ...(a.rarity ? { rarity: a.rarity } : {}),
         ...(a.imageName ? { image: `https://cdn.warframestat.us/img/${a.imageName}` } : {}),
       };
@@ -412,12 +479,17 @@ const incarnon: Record<string, { rounds?: number; rechargeS?: number; evolutions
 
 // Incarnon magazine sizes from the wiki gun modules: attack-level IncarnonCharges, keyed by internal path.
 const wikiIncarnonRounds = new Map<string, number>();
+// Gauge charge per weak point hit (IncarnonChargeGain), weapon-level.
+const wikiChargeGain = new Map<string, number>();
 for (const file of ["primary.json", "secondary.json"]) {
   for (const w of Object.values(wikiJson(file)) as any[]) {
     const atk = (w?.Attacks ?? []).find((a: any) => a?.IncarnonCharges);
     if (w?.InternalName && atk) wikiIncarnonRounds.set(w.InternalName, atk.IncarnonCharges);
+    if (w?.InternalName && w.IncarnonChargeGain) wikiChargeGain.set(w.InternalName, w.IncarnonChargeGain);
   }
 }
+// Charged by any direct hit instead of weak point hits (Incarnon page).
+const CHARGE_ON_ANY_HIT = /^(Angstrum|Torid)\b/;
 
 function kindOf(a: any): string {
   if (a.shot_type === "AoE") return "radial";
@@ -489,9 +561,14 @@ function buildWeapon(w: any, slotFile: string) {
       fireRate: a.speed ?? 0, magazine: isIncarnon || isMelee ? null : w.magazineSize ?? null, reloadS: isMelee ? 0 : w.reloadTime ?? 0,
       ...(a.charge_time ? { chargeTimeS: a.charge_time } : {}),
       ammoPool: isIncarnon
-        ? { kind: "incarnon", rounds: inc?.rounds ?? wikiIncarnonRounds.get(w.uniqueName) ?? null, recharge_s: inc?.rechargeS ?? null }
+        ? {
+          kind: "incarnon", rounds: inc?.rounds ?? wikiIncarnonRounds.get(w.uniqueName) ?? null, recharge_s: inc?.rechargeS ?? null,
+          ...(wikiChargeGain.has(w.uniqueName) ? { charge_gain: wikiChargeGain.get(w.uniqueName) } : {}),
+          ...(CHARGE_ON_ANY_HIT.test(w.name) ? { charge_on_any_hit: true } : {}),
+        }
         : isMelee ? { kind: "none" } : { kind: "magazine" },
       ...(isIncarnon ? { incarnonForm: true } : {}),
+      shot: w.trigger === "Held" ? "beam" : a.shot_type === "Projectile" ? "projectile" : a.shot_type === "Thrown" ? "thrown" : a.shot_type === "AoE" ? "aoe" : "hitscan",
       components: [comp],
       ...(isMelee && !/^Normal Attack$/i.test(a.name) ? { headline: false } : {}),
       coverage: hasDamage && hasRate && !eventTriggered ? "computed" : "unsupported",
@@ -536,6 +613,14 @@ function buildWeapon(w: any, slotFile: string) {
   }
   const slot = SLOT[slotFile];
   const cls = isMelee ? "melee" : CLASS[w.type] ?? "rifle";
+  // A max-rank stance adds its drain as capacity, doubled in a matching stance slot: best of the weapon's stances.
+  const stanceCapacity = Math.max(
+    0,
+    ...(melee?.stances ?? []).map((n: string) => {
+      const s = STANCE_MODS.get(n);
+      return s ? (-s.baseDrain + s.fusionLimit) * (s.polarity === w.stancePolarity ? 2 : 1) : 0;
+    }),
+  );
   return {
     id: w.uniqueName, name: w.name, slot, class: cls, modPool: modPoolOf(slot, cls, w.uniqueName),
     family: w.name.replace(FAMILY_AFFIXES, "").trim(), modes, innate: [], mechanicTags: [...tags],
@@ -544,9 +629,22 @@ function buildWeapon(w: any, slotFile: string) {
     ...(w.polarities?.length ? { polarities: w.polarities } : {}),
     ...(w.exilusPolarity ? { exilusPolarity: w.exilusPolarity } : {}),
     ...(w.stancePolarity ? { stancePolarity: w.stancePolarity } : {}),
+    ...(stanceCapacity > 0 ? { stanceCapacity } : {}),
+    // Kuva Lich / Sister of Parvos weapons carry a progenitor bonus element.
+    ...(/^(Kuva|Tenet) /.test(w.name) ? { progenitor: true } : {}),
     ...(incarnon[w.name]?.evolutions ? { evolutions: incarnon[w.name].evolutions } : {}),
     sources: { base: "wfcd", attacks: "wfcd (wiki-derived)", ...(melee ? { melee: "wiki Module:Weapons/data/melee + Module:Stances/data" } : {}) },
   };
+}
+
+// Drifter / Operator weapons (Sirocco, Rumblejack) and anything listed in excluded-weapons.json.
+const excluded = override("excluded-weapons.json");
+function isExcluded(w: any): boolean {
+  return (
+    excluded.names.includes(w.name) ||
+    excluded.pathPrefixes.some((p: string) => String(w.uniqueName).startsWith(p)) ||
+    excluded.productCategories.includes(w.productCategory)
+  );
 }
 
 function buildWeapons() {
@@ -558,6 +656,7 @@ function buildWeapons() {
   for (const [slot, f] of files) {
     for (const w of load(f) as any[]) {
       if (!w.attacks?.length || w.uniqueName.includes("/PvPVariant")) continue;
+      if (isExcluded(w)) continue;
       if (slot === "Melee" && w.type !== "Melee") continue;
       if (slot === "Primary" && w.type === "Pistol") w.type = "Rifle";
       out.push(buildWeapon(w, slot));
@@ -577,6 +676,8 @@ const weapons = buildWeapons();
     if (w.evolutions) continue;
     const s = scraped[w.name];
     if (!s) continue;
+    evoMagazine = w.modes.find((m: any) => m.magazine)?.magazine ?? 0;
+    evoBaseStatus = w.modes[0]?.components?.[0]?.statusChance ?? 0;
     w.evolutions = s.tiers.map((t) => ({ tier: t.tier, options: t.options.map(parseEvolution) }));
     w.sources.evolutions = `wiki ${s.page}`;
   }
@@ -606,7 +707,8 @@ const arcanes = buildArcanes();
 const enemies = override("enemies.json").enemies;
 const { _note: _rivenNote, source: _rivenSource, readOn: _rivenReadOn, ...riven } = override("riven.json");
 const buffs = override("buffs.json").buffs;
-const body = { weapons, mods, arcanes, enemies, riven, buffs };
+const { _note: _rulesNote, ...rules } = override("optimizer-rules.json");
+const body = { weapons, mods, arcanes, enemies, riven, buffs, rules };
 const hash = createHash("sha256").update(JSON.stringify(body)).digest("hex").slice(0, 12);
 const gamedata = {
   version: hash, generatedAt: new Date().toISOString(),

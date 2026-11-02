@@ -17,6 +17,12 @@ pub struct Conditions {
     pub heavy_combo_multiplier: f64,
     /// Whether on-headshot / on-weak-point-kill effects are active (Deadhead, Galvanized Crosshairs).
     pub headshot_effects: bool,
+    /// Warframe shields, for shield-scaled effects (Melee Retaliation).
+    pub shields: f64,
+    /// Situational triggers in effect ("with overshields", "on shield break"...); others are off.
+    pub triggers: Vec<String>,
+    /// Share of normal-form hits that land on weak points while charging an Incarnon gauge.
+    pub incarnon_charge_share: f64,
     /// Set by the engine for companion weapons: their AI doesn't aim or reliably headshot.
     #[serde(skip)]
     pub companion: bool,
@@ -31,6 +37,9 @@ impl Default for Conditions {
             combo_multiplier: 12.0,
             heavy_combo_multiplier: 5.0,
             headshot_effects: true,
+            shields: 0.0,
+            triggers: vec![],
+            incarnon_charge_share: 0.5,
             companion: false,
         }
     }
@@ -47,6 +56,9 @@ pub struct Build {
     pub buffs: Vec<Modifier>,
     /// Incarnon evolution names (one per tier).
     pub evolutions: Vec<String>,
+    /// Kuva / Tenet progenitor element (60% of base damage, innate). Ignored on other weapons.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progenitor: Option<DamageType>,
     pub conditions: Conditions,
 }
 
@@ -130,6 +142,9 @@ pub struct ModeResult {
     pub per_charge: Option<f64>,
     pub status_dps: f64,
     pub procs_per_s: BTreeMap<DamageType, f64>,
+    /// Modded status duration in seconds (status-stack arcanes use it).
+    #[serde(skip)]
+    pub status_duration_s: f64,
     pub viral_stacks: f64,
     pub corrosive_stacks: f64,
     /// Melee: modded attack speed (weapon base x (1 + bonus)) and range in meters.

@@ -165,7 +165,11 @@ fn deterministic() {
 fn exilus_slot_only_takes_exilus_mods() {
     let mut d = fixture();
     // Make the exilus mod strong so the optimizer wants it as a 9th mod.
-    d.mods.iter_mut().find(|m| m.name == "Hush").unwrap().modifiers[0].stat = Stat::CritDamage;
+    let hush = d.mods.iter_mut().find(|m| m.name == "Hush").unwrap();
+    hush.modifiers[0].stat = Stat::CritDamage;
+    // A real exilus mod drains little, so the build still fits 60 with forma.
+    hush.base_drain = 0;
+    hush.max_rank = 3;
     let r = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &OptimizeOptions::default()).unwrap();
     assert_eq!(r.mods.len(), 9);
     assert_eq!(r.mods.last().map(String::as_str), Some("Hush"));
@@ -227,6 +231,8 @@ fn fixed_riven_grades_below_or_at_god_roll() {
         aiming: false,
         only_slots: vec![],
         not_slots: vec![],
+        trigger: None,
+        mode_contains: None,
     }];
     let graded = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { fixed_riven: weak, ..Default::default() }).unwrap();
     assert!(graded.burst_dps < god.burst_dps);
@@ -244,21 +250,20 @@ fn objective_per_charge_ignores_fire_rate_and_cap_is_respected() {
     let per = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { objective: Objective::PerCharge, ..Default::default() }).unwrap();
     assert!(per.per_shot >= burst.per_shot, "damage per magazine favours damage over fire rate");
     assert!(!per.mods.iter().any(|m| m == "Gunslinger"), "{:?}", per.mods);
-    let capped = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { max_fire_rate: Some(3.0), objective: Objective::Burst, ..Default::default() }).unwrap();
+    // Base 2.5/s, at most +20% -> 3.0/s.
+    let capped = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { max_fire_rate_bonus: Some(0.2), objective: Objective::Burst, ..Default::default() }).unwrap();
     assert!(capped.fire_rate <= 3.0 + 1e-9, "fire rate {}", capped.fire_rate);
     assert!(!capped.below_attack_speed_floor);
 }
 
 #[test]
 fn balanced_objective_ignores_fire_rate_above_the_comfort_cap() {
-    let mut d = fixture();
-    // Make base fire rate already above the semi-auto cap (6/s): extra fire rate is worthless.
-    d.weapons[0].modes[0].fire_rate = 8.0;
+    let d = fixture();
     let t = Target { viral_stacks: Some(10.0), ..Default::default() };
     let r = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions::default()).unwrap();
     assert_eq!(r.objective, Objective::Balanced);
-    assert!(!r.mods.iter().any(|m| m == "Gunslinger" || m == "Lethal Torrent"), "{:?}", r.mods);
-    assert!((comfort_rate_cap(&d.weapons[0].modes[0]) - 10.0).abs() < 1e-9, "base x1.25 beats the semi cap");
+    // Base 2.5/s: fire rate is only worth something up to +150% (6.25/s).
+    assert!(r.fire_rate <= 2.5 * (1.0 + BALANCED_FIRE_RATE_BONUS) * 1.2 + 1e-9, "fire rate {} with {:?}", r.fire_rate, r.mods);
 }
 
 #[test]
@@ -270,4 +275,53 @@ fn riven_ranking_is_sorted_and_relative() {
     assert!((r.rolls[0].ratio - 1.0).abs() < 1e-12);
     assert!(r.rolls.windows(2).all(|w| w[0].score >= w[1].score));
     assert!(r.rolls.iter().all(|x| x.ratio <= 1.0 + 1e-12 && x.ratio > 0.0));
+}
+
+#[test]
+fn exilus_dropped_when_build_cannot_fit_even_fully_forma_d() {
+    let mut d = fixture();
+    // Strong but expensive exilus: 8 mods at 7 (forma'd) + 7 = 63 > 60.
+    d.mods.iter_mut().find(|m| m.name == "Hush").unwrap().modifiers[0].stat = Stat::CritDamage;
+    let r = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &OptimizeOptions::default()).unwrap();
+    assert_eq!(r.mods.len(), 8, "{:?}", r.mods);
+}
+
+#[test]
+fn explosive_detection_needs_a_sizeable_projectile_explosion() {
+    let d = fixture();
+    let mut m = d.weapons[0].modes[0].clone();
+    assert!(!is_explosive(&m), "no radial component");
+    let mut radial = m.components[0].clone();
+    radial.kind = wf_data::HitKind::Radial;
+    radial.falloff = Some(wf_data::Falloff { start_m: 0.0, end_m: 4.0, reduction: 0.5 });
+    m.components.push(radial);
+    m.shot = Some("projectile".into());
+    assert!(is_explosive(&m));
+    m.shot = Some("hitscan".into());
+    assert!(!is_explosive(&m), "hitscan rifles with a pop don't count");
+    m.shot = Some("projectile".into());
+    m.components[1].falloff.as_mut().unwrap().end_m = 2.0;
+    assert!(!is_explosive(&m), "2 m pops don't count");
+}
+
+#[test]
+fn forced_explosion_mod_survives_making_room_for_a_riven() {
+    let mut d = fixture();
+    // Explosive main attack, and a no-damage radius mod the optimizer must keep.
+    let mut radial = d.weapons[0].modes[0].components[0].clone();
+    radial.kind = wf_data::HitKind::Radial;
+    radial.falloff = Some(wf_data::Falloff { start_m: 0.0, end_m: 4.0, reduction: 0.5 });
+    d.weapons[0].modes[0].components.push(radial);
+    d.weapons[0].modes[0].shot = Some("projectile".into());
+    let mut radius = d.mods[0].clone();
+    radius.id = "pf".into();
+    radius.name = "Primed Fulmination".into();
+    radius.exclusive_group = None;
+    radius.is_exilus = false;
+    radius.modifiers[0].stat = Stat::StatusDuration;
+    d.mods.push(radius);
+    d.rules.explosion_radius.insert("secondary".into(), vec!["Primed Fulmination".into()]);
+    let r = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &OptimizeOptions { riven: true, ..Default::default() }).unwrap();
+    assert!(r.mods.iter().any(|m| m == "Primed Fulmination"), "{:?}", r.mods);
+    assert!(!r.riven.is_empty());
 }

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { usePersistent } from "./persist";
 import { formatRivenValue, layoutOf, rivenType, rowValue } from "./riven";
 import { RIVEN_SLOT, SLOT_COUNT, useStore } from "./store";
 import { planCapacity, type SlotPlan } from "./capacity";
@@ -21,6 +22,8 @@ const STAT_LABEL: Record<string, string> = {
   statusDuration: "Status Duration",
   abilityDamage: "Damage (ability)",
   windUpSpeed: "Heavy Wind Up Speed",
+  finalDamage: "Damage (separate multiplier)",
+  critMultMultiplier: "Critical Damage (multiplier)",
 };
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -36,12 +39,40 @@ export function statLine(m: Modifier, melee = false): string {
   if (k === "factionDamageAll") return `x${(1 + m.value).toFixed(2)} Damage to all`;
   if (m.appliesTo === "heavyOnly") what += " (heavy)";
   if (m.appliesTo === "tennokaiOnly") what += " (Tennokai)";
-  const per = m.per === "statusType" ? " per status" : m.per === "comboMultiplier" ? " per combo" : "";
+  const per =
+    m.per === "statusType" ? " per status" : m.per === "comboMultiplier" ? " per combo" : m.per === "shields200" ? ` per 200 shields (max ×${m.maxStacks})` : "";
   const trig =
     m.condition && m.condition !== "always"
-      ? ` ${m.condition.replace(/^on/, "on ").replace(/([A-Z])/g, " $1").toLowerCase().trim()}${m.maxStacks && m.maxStacks > 1 ? ` ×${m.maxStacks}` : ""}`
+      ? m.condition === "headshotShare"
+        ? " after a weak point hit"
+        : ` ${m.condition.replace(/^on/, "on ").replace(/([A-Z])/g, " $1").toLowerCase().trim()}${m.maxStacks && m.maxStacks > 1 ? ` ×${m.maxStacks}` : ""}`
       : "";
-  return `${pct} ${what}${per}${trig}`;
+  const situational = m.trigger ? ` [${m.trigger}]` : "";
+  const scope = m.modeContains ? ` (${m.modeContains} attack)` : "";
+  if (k === "critMultMultiplier") return `x${(1 + m.value).toFixed(1)} Critical Damage${trig}${situational}`;
+  return `${pct} ${what}${per}${scope}${trig}${situational}`;
+}
+
+const cap1 = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** Whether the engine models any effect of this arcane. */
+export const arcaneModelled = (a: Arcane) => !!(a.behaviour || a.modifiers.length || a.stacking || a.comboFloor);
+
+/** Effect lines for an arcane card / picker. */
+export function arcaneLines(a: Arcane, melee = false): string[] {
+  if (a.comboFloor) return [`Combo never below ${a.comboFloor}x`, "after enough finisher kills"];
+  if (a.behaviour) return [a.description];
+  if (!a.modifiers.length) return [`${a.description} (not modelled)`];
+  const lines = a.modifiers.map((x) => statLine(x, melee) + (a.stacking ? " per stack" : ""));
+  if (a.stacking) {
+    const s = a.stacking;
+    lines.push(
+      s.durationS
+        ? `On ${cap1(s.status)} proc, up to ${s.maxStacks} stacks (${s.durationS}s)`
+        : `Per ${cap1(s.status)} stack on the target (max ${s.maxStacks})`,
+    );
+  }
+  return lines;
 }
 
 export function modSummary(m: Mod, melee = false): string {
@@ -53,16 +84,28 @@ export function modSummary(m: Mod, melee = false): string {
 
 export const modDrain = (m: Mod) => Math.max(0, m.baseDrain + m.maxRank);
 
-const POLARITY_GLYPH: Record<string, string> = {
-  madurai: "V",
-  vazarin: "D",
-  naramon: "—",
-  zenurik: "≡",
-  unairu: "◣",
-  penjaga: "⧖",
-  umbra: "◆",
-  universal: "∗",
+// Simple line icons for the polarities (drawn here, not game art).
+const POLARITY_PATHS: Record<string, string> = {
+  madurai: "M5 5 L12 19 L19 5 M9 5 L12 11 L15 5",
+  vazarin: "M7 4 H12 A7 8 0 0 1 12 20 H7 Z M10 9 V15",
+  naramon: "M4 13 H20 M8 9 L12 13 L16 9",
+  zenurik: "M4 7 H20 M7 12 H17 M10 17 H14",
+  unairu: "M5 19 L12 5 L19 19 M8.5 14 H15.5",
+  penjaga: "M6 5 H18 L6 19 H18 Z",
+  umbra: "M12 3 L20 12 L12 21 L4 12 Z M12 8 L16 12 L12 16 L8 12 Z",
+  universal: "M12 4 V20 M5 8 L19 16 M19 8 L5 16",
 };
+
+export function PolarityIcon({ polarity, className = "h-3 w-3" }: { polarity?: string | null; className?: string }) {
+  const d = polarity ? POLARITY_PATHS[polarity] : undefined;
+  if (!d) return null;
+  return (
+    <svg viewBox="0 0 24 24" className={`inline-block ${className}`} fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinejoin="round" strokeLinecap="round" aria-label={polarity ?? ""}>
+      <title>{polarity}</title>
+      <path d={d} />
+    </svg>
+  );
+}
 
 // ---- Card frames (Warframe-style, independent of the page theme) -----------------------------
 
@@ -97,15 +140,18 @@ interface CardProps {
   title: string;
   lines: string[];
   image?: string;
-  corner?: string;
+  corner?: ReactNode;
   /** Small tag in the top-left corner (e.g. FORMA). */
   badge?: string;
+  /** DPS this card adds on top of the rest of the build (0.5 = +50%; Infinity = needed). */
+  share?: number;
+  shareTitle?: string;
   pips?: number;
   label: string;
   onClick: () => void;
 }
 
-function Card({ frame, title, lines, image, corner, badge, pips, label, onClick }: CardProps) {
+function Card({ frame, title, lines, image, corner, badge, share, shareTitle, pips, label, onClick }: CardProps) {
   const [imgOk, setImgOk] = useState(true);
   return (
     <button
@@ -126,6 +172,14 @@ function Card({ frame, title, lines, image, corner, badge, pips, label, onClick 
       )}
       {badge && (
         <span className="absolute left-1.5 top-1 z-10 rounded bg-amber-400 px-1 text-[9px] font-bold uppercase tracking-wide text-black">{badge}</span>
+      )}
+      {share != null && (
+        <span
+          className="absolute bottom-[48%] left-1.5 z-10 mb-1 rounded bg-black/65 px-1 text-[10px] font-semibold tabular-nums"
+          title={shareTitle}
+        >
+          {!isFinite(share) ? "needed" : share >= 0.0005 ? `+${(share * 100).toFixed(share < 0.1 ? 1 : 0)}%` : "+0%"}
+        </span>
       )}
       <div className="relative flex h-[52%] w-full items-end justify-center overflow-hidden px-2 pt-5" style={{ borderBottom: `1px solid ${frame.border}` }}>
         {image && imgOk ? (
@@ -238,7 +292,7 @@ function Picker({
                   </span>
                   {i.drain != null && (
                     <span className="shrink-0 text-xs tabular-nums text-zinc-500">
-                      {i.drain} {POLARITY_GLYPH[i.polarity ?? ""] ?? ""}
+                      {i.drain} <PolarityIcon polarity={i.polarity} />
                     </span>
                   )}
                 </button>
@@ -262,23 +316,73 @@ export default function ModGrid({
   setBuild,
   compatible,
   arcanes,
+  contributions,
+  vsEnemy,
 }: {
   weapon: Weapon;
   build: EditorBuild;
   setBuild: (b: EditorBuild) => void;
   compatible: Mod[];
   arcanes: Arcane[];
+  /** Damage share per slot index, plus "riven" and "arcane". */
+  contributions?: Record<string, number> | null;
+  vsEnemy?: boolean;
 }) {
   const { data } = useStore();
   const [picker, setPicker] = useState<PickerState>(null);
-  const [capacity, setCapacity] = useState(60);
-  const plan = useMemo(() => planCapacity(data!, weapon, build, capacity), [data, weapon, build, capacity]);
+  const [capacity, setCapacity] = usePersistent("cards.catalyst", 60);
+  const shareTitle = vsEnemy
+    ? "DPS this adds on top of the rest of the build, against the scenario enemy (armor and the build's own Viral/Corrosive/Heat included)"
+    : "DPS this adds on top of the rest of the build, on raw weapon damage (no armor, no Viral or other status)";
+  const [withStance, setWithStance] = usePersistent("cards.stance", true);
+  const stanceBonus = withStance ? weapon.stanceCapacity ?? 0 : 0;
+  const plan = useMemo(() => planCapacity(data!, weapon, build, capacity + stanceBonus), [data, weapon, build, capacity, stanceBonus]);
   const slotPlan = (i: number): SlotPlan => plan.slots[i];
   const corner = (i: number, fallbackPolarity?: string) => {
     const sp = slotPlan(i);
     const pol = sp.polarity && sp.polarity !== "any" ? sp.polarity : fallbackPolarity ?? "";
-    return `${sp.drain} ${POLARITY_GLYPH[pol] ?? ""}`.trim();
+    return (
+      <span className="inline-flex items-center gap-0.5">
+        {sp.drain}
+        <PolarityIcon polarity={pol} />
+      </span>
+    );
   };
+  // Drag a normal slot onto another to swap them (slot order sets how elements combine).
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState<number | null>(null);
+  const movable = (i: number) => i < SLOT_COUNT && !(hasRiven && i === RIVEN_SLOT);
+  const dragProps = (i: number) =>
+    movable(i)
+      ? {
+          draggable: !!build.slots[i],
+          onDragStart: (e: DragEvent) => {
+            setDragFrom(i);
+            e.dataTransfer.effectAllowed = "move";
+          },
+          onDragOver: (e: DragEvent) => {
+            if (dragFrom == null || dragFrom === i) return;
+            e.preventDefault();
+            setDragOver(i);
+          },
+          onDragLeave: () => setDragOver((v) => (v === i ? null : v)),
+          onDrop: (e: DragEvent) => {
+            e.preventDefault();
+            if (dragFrom != null && dragFrom !== i) {
+              const slots = [...build.slots];
+              [slots[dragFrom], slots[i]] = [slots[i], slots[dragFrom]];
+              setBuild({ ...build, slots });
+            }
+            setDragFrom(null);
+            setDragOver(null);
+          },
+          onDragEnd: () => {
+            setDragFrom(null);
+            setDragOver(null);
+          },
+          className: `rounded-lg ${dragOver === i ? "ring-2 ring-indigo-500" : ""} ${dragFrom === i ? "opacity-50" : ""}`,
+        }
+      : {};
   const melee = weapon.slot === "melee";
   const hasRiven = build.riven.positives.length > 0;
   const modById = (id: string) => data!.mods.find((m) => m.id === id);
@@ -305,6 +409,8 @@ export default function ModGrid({
         image={m.image}
         corner={corner(i, m.polarity)}
         badge={slotPlan(i).forma ? "Forma" : undefined}
+        share={contributions?.[String(i)]}
+        shareTitle={shareTitle}
         pips={m.maxRank}
         onClick={() => setPicker({ kind: "mod", slot: i })}
       />
@@ -330,6 +436,8 @@ export default function ModGrid({
         lines={lines}
         corner={corner(RIVEN_SLOT)}
         badge={slotPlan(RIVEN_SLOT).forma ? "Forma" : undefined}
+        share={contributions?.riven}
+        shareTitle={shareTitle}
         pips={8}
         onClick={() => document.getElementById("riven-editor")?.scrollIntoView({ behavior: "smooth", block: "center" })}
       />
@@ -354,6 +462,12 @@ export default function ModGrid({
         <span className={`rounded px-1.5 py-0.5 font-semibold tabular-nums ${plan.fits ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300" : "bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300"}`}>
           Capacity {plan.used} / {plan.capacity}
         </span>
+        {weapon.stanceCapacity ? (
+          <label className="flex items-center gap-1 text-zinc-500" title="A max-rank stance adds its drain as capacity, doubled when its polarity matches the stance slot">
+            <input type="checkbox" className="accent-indigo-600" checked={withStance} onChange={(e) => setWithStance(e.target.checked)} />
+            Stance +{weapon.stanceCapacity}
+          </label>
+        ) : null}
         <span className="font-medium">{plan.forma} forma</span>
         {formaList.length > 0 && <span className="text-zinc-500">{formaList.join(" · ")}</span>}
         <label className="ml-auto flex items-center gap-1 text-zinc-500">
@@ -363,11 +477,19 @@ export default function ModGrid({
       </div>
       <p className="-mt-1 text-[11px] text-zinc-500">
         Drain at max rank; matching polarity halves it, a different one adds 25%. Innate polarities: {innate.length ? innate.join(", ") : "none"}.
-        {!plan.fits && " Even with forma on every slot this build doesn't fit."}
-        {melee && " Melee: a matching stance adds capacity, not counted here."}
+        {!plan.fits && " Even with forma on every slot this build doesn't fit: remove or swap the exilus mod (or another mod)."}
+
       </p>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        {Array.from({ length: SLOT_COUNT }, (_, i) => (hasRiven && i === RIVEN_SLOT ? rivenCard() : modCard(i)))}
+        {Array.from({ length: SLOT_COUNT }, (_, i) =>
+          hasRiven && i === RIVEN_SLOT ? (
+            rivenCard()
+          ) : (
+            <div key={i} {...dragProps(i)}>
+              {modCard(i)}
+            </div>
+          ),
+        )}
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {modCard(SLOT_COUNT)}
@@ -377,8 +499,10 @@ export default function ModGrid({
               label="Arcane"
               frame={FRAMES.arcane}
               title={arcane.name}
-              lines={arcane.modifiers.length ? arcane.modifiers.map((x) => statLine(x, melee)) : [arcane.description.slice(0, 90)]}
+              lines={arcaneLines(arcane, melee).map((l) => l.slice(0, 90))}
               image={arcane.image}
+              share={contributions?.arcane}
+              shareTitle={shareTitle}
               pips={5}
               onClick={() => setPicker({ kind: "arcane" })}
             />
@@ -411,7 +535,7 @@ export default function ModGrid({
             id: a.name,
             name: a.name,
             rarity: "arcane",
-            summary: a.behaviour || a.modifiers.length ? (a.modifiers.length ? a.modifiers.map((x) => statLine(x, melee)).join(", ") : a.description) : `${a.description} (not modelled)`,
+            summary: arcaneLines(a, melee).join(", "),
           }))}
           current={build.arcane ?? undefined}
           onPick={(id) => {

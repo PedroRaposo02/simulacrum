@@ -1,0 +1,14 @@
+{
+  "_note": "Opinionated rules for 'Most DPS' builds. explosionRadius: mods slotted on weapons whose main attack is mostly explosion damage (first one that fits wins). utilityExilus: what goes in an otherwise empty exilus slot, by mod pool and the attack's shot kind. never: mods the optimizer must not use. discouraged: mods kept only if every alternative is worse by more than this fraction.",
+  "explosionRadius": {
+    "primary": ["Primed Firestorm", "Firestorm"],
+    "secondary": ["Primed Fulmination", "Fulmination"]
+  },
+  "utilityExilus": {
+    "primary": { "beam": ["Sinister Reach"], "projectile": ["Terminal Velocity"], "hitscan": ["Vigilante Supplies"] },
+    "secondary": { "beam": ["Ruinous Extension"], "projectile": ["Lethal Momentum"], "hitscan": ["Primed Steady Hands", "Steady Hands"] },
+    "shotgun": { "beam": ["Galvanized Acceleration"], "projectile": ["Fatal Acceleration"], "hitscan": [] }
+  },
+  "never": ["Adhesive Blast"],
+  "discouraged": { "Heavy Caliber": 0.05 }
+}

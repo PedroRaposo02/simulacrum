@@ -1,0 +1,6 @@
+{
+  "_note": "Weapons left out of the app. productCategories catch whole groups (Operator amps, which includes the Drifter's Sirocco); names catch individual ones; pathPrefixes are available for whole internal-path groups.",
+  "pathPrefixes": [],
+  "productCategories": ["OperatorAmps"],
+  "names": ["Sirocco"]
+}

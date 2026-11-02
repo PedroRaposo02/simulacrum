@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { readSetting, writeSetting } from "./persist";
 import init, { Engine } from "./wasm/wf_wasm.js";
 import { emptyRiven, rivenFromPicks, rivenModifiers } from "./riven";
 import type {
@@ -57,6 +58,9 @@ export const defaultConditions = (): Conditions => ({
   comboMultiplier: 12,
   heavyComboMultiplier: 5,
   headshotEffects: true,
+  shields: 0,
+  triggers: [],
+  incarnonChargeShare: 0.5,
 });
 
 export interface BuffState {
@@ -89,6 +93,21 @@ export const defaultScenario = (): Scenario => ({
   buffs: {},
 });
 
+/** A stored scenario merged over the defaults (fields added later keep their default). */
+export function mergeScenario(saved: Partial<Scenario> | null | undefined): Scenario {
+  const d = defaultScenario();
+  if (!saved || typeof saved !== "object") return d;
+  return {
+    target: { ...d.target, ...(saved.target ?? {}) },
+    conditions: { ...d.conditions, ...(saved.conditions ?? {}) },
+    strength: typeof saved.strength === "number" ? saved.strength : d.strength,
+    buffs: saved.buffs && typeof saved.buffs === "object" ? saved.buffs : d.buffs,
+  };
+}
+
+/** The user's default scenario (Settings), or the built-in one. */
+export const userDefaultScenario = (): Scenario => mergeScenario(readSetting<Partial<Scenario> | null>("defaultScenario", null));
+
 export type BrowserBuild = "unmodded" | "best" | "bestRiven";
 
 interface State {
@@ -98,7 +117,7 @@ interface State {
   engine?: Engine;
   best?: BestBuilds;
   bestStale: boolean;
-  tab: "home" | "browser" | "build";
+  tab: "home" | "browser" | "build" | "settings";
   build: EditorBuild;
   scenario: Scenario;
   browserBuild: BrowserBuild;
@@ -142,7 +161,10 @@ export function slotsFrom(data: GameData, mods: string[], hasRiven: boolean): st
 
 export function buildFromBest(data: GameData, weapon: Weapon, e: BestEntry): EditorBuild {
   const riven = e.riven?.length && data.riven ? rivenFromPicks(data.riven, e.riven, e.rivenNegative, weapon.modPool) : emptyRiven();
-  return { weapon: weapon.id, slots: slotsFrom(data, e.mods, !!e.riven?.length), arcane: e.arcane, riven, evolutions: e.evolutions ?? [] };
+  return {
+    weapon: weapon.id, slots: slotsFrom(data, e.mods, !!e.riven?.length), arcane: e.arcane, riven, evolutions: e.evolutions ?? [],
+    progenitor: e.progenitor ?? null,
+  };
 }
 
 export function buffModifiers(data: GameData, s: Scenario): Modifier[] {
@@ -168,6 +190,7 @@ export function engineBuild(data: GameData, b: EditorBuild, s: Scenario): Engine
     riven: weapon ? rivenModifiers(data, b.riven, weapon.modPool) : [],
     buffs: buffModifiers(data, s),
     evolutions: (b.evolutions ?? []).filter(Boolean),
+    progenitor: weapon?.progenitor ? b.progenitor ?? null : null,
     conditions: s.conditions,
   };
 }
@@ -182,19 +205,34 @@ export const targetKey = (t: Target) => t.enemy ?? "raw";
 export const useStore = create<State>((set, get) => ({
   status: "loading",
   bestStale: false,
-  tab: "home",
+  // Restored from the last visit; the build is checked against the data once it loads.
+  tab: readSetting<State["tab"]>("tab", "home"),
   build: emptyBuild(),
-  scenario: defaultScenario(),
-  browserBuild: "unmodded",
-  setTab: (tab) => set({ tab }),
-  setBuild: (build) => set({ build }),
-  setScenario: (scenario) => set({ scenario }),
-  setBrowserBuild: (browserBuild) => set({ browserBuild }),
+  scenario: mergeScenario(readSetting<Partial<Scenario> | null>("scenario", null) ?? userDefaultScenario()),
+  browserBuild: readSetting<BrowserBuild>("browserBuild", "unmodded"),
+  setTab: (tab) => {
+    set({ tab });
+    writeSetting("tab", tab);
+  },
+  setBuild: (build) => {
+    set({ build });
+    writeSetting("build", build);
+  },
+  setScenario: (scenario) => {
+    set({ scenario });
+    writeSetting("scenario", scenario);
+  },
+  setBrowserBuild: (browserBuild) => {
+    set({ browserBuild });
+    writeSetting("browserBuild", browserBuild);
+  },
   openWeapon: (id, best) => {
     const { data, build } = get();
     const weapon = data!.weapons.find((w) => w.id === id)!;
     const next = best ? buildFromBest(data!, weapon, best) : build.weapon === id ? build : emptyBuild(id);
     set({ tab: "build", build: next });
+    writeSetting("tab", "build");
+    writeSetting("build", next);
   },
   load: async () => {
     try {
@@ -215,7 +253,14 @@ export const useStore = create<State>((set, get) => ({
         best = undefined;
       }
       const shared = readShared();
+      // Last build, if its weapon still exists in this data version.
+      const saved = readSetting<EditorBuild | null>("build", null);
+      const restored =
+        saved && data.weapons.some((w) => w.id === saved.weapon)
+          ? { ...emptyBuild(saved.weapon), ...saved, slots: [...(saved.slots ?? []), ...emptyBuild().slots].slice(0, SLOT_COUNT + 1) }
+          : null;
       set({
+        ...(restored ? { build: restored } : {}),
         status: "ready",
         engine,
         data,

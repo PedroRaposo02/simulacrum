@@ -104,7 +104,7 @@
     },
     {
       "id": "tenacious-bond",
-      "name": "Tenacious Bond",
+      "name": "Tenacious Bond (+1.2 crit multiplier)",
       "source": "Companion mod",
       "scalesWithStrength": false,
       "modifiers": [
@@ -119,7 +119,7 @@
           ]
         }
       ],
-      "note": "+1.2x final crit multiplier on your weapons while the companion's crit chance is at least 50% (check it on the companion weapon). Not the companion's own weapon."
+      "note": "Adds a flat +1.2 to your weapons' FINAL critical multiplier (e.g. 4.0x becomes 5.2x), while the companion's crit chance is at least 50% (check it on the companion weapon). Not the companion's own weapon."
     },
     {
       "id": "fired-up",
@@ -140,6 +140,25 @@
         }
       ],
       "note": "Sentinel weapons only: +5% Heat per hit up to +100% (20 hits), resets after 5s without hits."
+    },
+    {
+      "id": "arcane-strike",
+      "name": "Arcane Strike",
+      "source": "Warframe arcane",
+      "scalesWithStrength": false,
+      "modifiers": [
+        {
+          "source": "Arcane Strike",
+          "stat": {
+            "kind": "fireRate"
+          },
+          "value": 0.6,
+          "onlySlots": [
+            "melee"
+          ]
+        }
+      ],
+      "note": "Melee only: 15% chance on hit for +60% attack speed for 18s, refreshed by new procs (kept up in practice). Additive with Fury mods."
     }
   ]
 }

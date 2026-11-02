@@ -8,6 +8,7 @@ import Logo from "./Logo";
 import { APP_VERSION } from "./version";
 import ThemePicker from "./ThemePicker";
 import { SITE } from "./site";
+import Settings from "./Settings";
 
 export default function App() {
   const { status, error, tab, setTab, data, load } = useStore();
@@ -41,6 +42,7 @@ export default function App() {
         </span>
         {tabBtn("browser", "Weapons")}
         {tabBtn("build", "Build editor")}
+        {tabBtn("settings", "Settings")}
         <span className="ml-auto hidden text-xs text-zinc-500 md:inline">
           data {data?.version} · {data?.weapons.length} weapons · {data?.mods.length} mods
         </span>
@@ -49,6 +51,10 @@ export default function App() {
       {tab === "home" ? (
         <main className="min-w-0 flex-1">
           <Home />
+        </main>
+      ) : tab === "settings" ? (
+        <main className="min-w-0 flex-1">
+          <Settings />
         </main>
       ) : (
         <div className="grid flex-1 gap-4 lg:grid-cols-[300px_1fr]">

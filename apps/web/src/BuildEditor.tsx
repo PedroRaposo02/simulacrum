@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState } from "react";
+import { usePersistent } from "./persist";
 import { compute, engineBuild, fmt, pct, RIVEN_SLOT, shareLink, SLOT_COUNT, useStore } from "./store";
 import { formatRivenValue, layoutOf, rivenType, rowValue } from "./riven";
 import { CoverageBadge, ExplainTree } from "./Common";
@@ -10,10 +11,41 @@ import { weaponTypeLabel } from "./labels";
 import { buildJson, buildMarkdown } from "./exportBuild";
 import { Star, useFavorites } from "./favorites";
 import { downloadJson } from "./store";
-import ModGrid, { modSummary as cardSummary } from "./ModGrid";
+import ModGrid, { arcaneModelled, modSummary as cardSummary } from "./ModGrid";
 
 type ModView = "cards" | "list";
 const VIEW_KEY = "simulacrum.modView";
+const STATS_KEY = "simulacrum.liveStats";
+const SHARE_KEY = "simulacrum.shareVsEnemy";
+function savedLiveStats(): boolean {
+  try {
+    return localStorage.getItem(STATS_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+/** Compact live stats shown next to the mod cards. */
+function LiveStats({ m }: { m: ModeResult }) {
+  const tile = (label: string, v: number | null | undefined) => (
+    <div className="rounded-md bg-zinc-100 px-2 py-1.5 dark:bg-zinc-800/60">
+      <div className="text-[10px] uppercase text-zinc-500">{label}</div>
+      <div className="num text-base font-semibold">{v == null ? "—" : fmt(v)}</div>
+    </div>
+  );
+  return (
+    <div className="space-y-2 rounded-lg border border-zinc-200 p-2 dark:border-zinc-800 lg:sticky lg:top-2 lg:self-start">
+      <div className="text-xs font-semibold">{m.mode}</div>
+      <div className="grid grid-cols-2 gap-1.5">
+        {tile("Per shot", m.perShot)}
+        {tile("Burst DPS", m.burstDps)}
+        {tile("Sustained DPS", m.sustainedDps)}
+        {m.perCharge != null ? tile("Per charge", m.perCharge) : tile("Status DPS", m.statusDps)}
+      </div>
+      <StatSheet m={m} />
+    </div>
+  );
+}
 function savedView(): ModView {
   try {
     return localStorage.getItem(VIEW_KEY) === "list" ? "list" : "cards";
@@ -349,7 +381,10 @@ function OptimizerPanel({ state, onUndo }: { state: OptimizerState; onUndo: () =
         {result.rangeCost != null && <span>range costs {pct(result.rangeCost)} DPS</span>}
         {result.drain != null && <span>capacity used {result.drain}</span>}
       </div>
-      <p className="text-xs text-zinc-500">Applied to the editor. Marginal value = share of the optimized value lost if that piece is removed.</p>
+      <p className="text-xs text-zinc-500">
+        Applied to the editor. Marginal value = how much each piece adds on top of the rest (additive bonuses share a pool, so +360% base damage adds less
+        than +360% when other base damage mods are present).
+      </p>
       <div className="space-y-1">
         {result.marginal.map((m) => (
           <div key={m.label} className="flex items-center gap-2 text-sm">
@@ -362,9 +397,10 @@ function OptimizerPanel({ state, onUndo }: { state: OptimizerState; onUndo: () =
                   m.kind === "riven" ? "bg-fuchsia-500" : m.kind === "arcane" ? "bg-amber-500" : m.kind === "evolution" ? "bg-teal-500" : "bg-indigo-500"
                 }`}
                 style={{ width: `${Math.min(100, Math.max(0, m.loss * 100))}%` }}
+                title={`${pct(m.loss)} of the DPS is lost without it`}
               />
             </div>
-            <span className="num w-14 text-right">{pct(m.loss)}</span>
+            <span className="num w-16 text-right">{m.loss >= 1 - 1e-9 ? "needed" : `+${pct(1 / (1 - m.loss) - 1)}`}</span>
           </div>
         ))}
       </div>
@@ -381,8 +417,32 @@ export default function BuildEditor() {
   const { data, engine, build, setBuild, scenario, best } = useStore();
   const [copied, setCopied] = useState(false);
   const [opt, setOpt] = useState<OptimizerState | null>(null);
-  const [comfort, setComfort] = useState<ComfortSettings>({ on: false, minAttackSpeed: 1.5, rangeTolerance: 0.05, maxFireRate: 9 });
+  const [comfort, setComfort] = usePersistent<ComfortSettings>("opt.comfort", { on: false, minAttackSpeed: 1.5, rangeTolerance: 0.05, maxFireRateBonus: 1.5 });
   const [view, setViewState] = useState<ModView>(savedView);
+  const [liveStats, setLiveStatsState] = useState<boolean>(savedLiveStats);
+  const [shareVsEnemy, setShareVsEnemyState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(SHARE_KEY) === "on";
+    } catch {
+      return false;
+    }
+  });
+  const setShareVsEnemy = (on: boolean) => {
+    setShareVsEnemyState(on);
+    try {
+      localStorage.setItem(SHARE_KEY, on ? "on" : "off");
+    } catch {
+      // not persisted
+    }
+  };
+  const setLiveStats = (on: boolean) => {
+    setLiveStatsState(on);
+    try {
+      localStorage.setItem(STATS_KEY, on ? "on" : "off");
+    } catch {
+      // not persisted
+    }
+  };
   const setView = (v: ModView) => {
     setViewState(v);
     try {
@@ -399,7 +459,7 @@ export default function BuildEditor() {
     return data!.mods.filter((m) => ids.has(m.id) && m.modifiers.length).sort((a, b) => a.name.localeCompare(b.name));
   }, [weapon, data, engine]);
   const exilusOptions = compatible.filter((m) => m.isExilus);
-  const arcanes = data!.arcanes.filter((a) => weapon && a.slot === weapon.slot);
+  const arcanes = data!.arcanes.filter((a) => weapon && a.slot === weapon.slot && (!a.classes?.length || a.classes.includes(weapon.class)));
 
   const used = new Set(build.slots.filter(Boolean));
   const setSlot = (i: number, id: string) => {
@@ -423,6 +483,34 @@ export default function BuildEditor() {
     return [at(0), weapon.slot === "companion" ? null : at(1)];
   }, [engine, data, build, scenario, weapon]);
   const forMode = (r: { modes: ModeResult[] } | null, i: number) => r?.modes.find((x) => x.modeIndex === i);
+  // The build's main attack: the headline mode with the most burst DPS (bodyshots).
+  const mainMode = useMemo(() => {
+    if (!weapon || !bodyRes) return null;
+    const headline = bodyRes.modes.filter((m) => weapon.modes[m.modeIndex]?.headline !== false);
+    const pool = headline.length ? headline : bodyRes.modes;
+    return pool.reduce<ModeResult | null>((a, m) => (!a || m.burstDps > a.burstDps ? m : a), null);
+  }, [weapon, bodyRes]);
+  // DPS each mod / the riven / the arcane adds, on the main attack. By default on the weapon's raw
+  // damage (no enemy armor, no Viral or other status multipliers); optionally against the scenario enemy.
+  const contributions = useMemo(() => {
+    if (!weapon || !mainMode || !(mainMode.burstDps > 0)) return null;
+    const s0 = { ...scenario, conditions: { ...scenario.conditions, headshotShare: 0 } };
+    const val = (b: typeof build) => {
+      const m = compute(engine!, engineBuild(data!, b, s0), s0.target).ok?.modes.find((x) => x.modeIndex === mainMode.modeIndex);
+      return (shareVsEnemy ? m?.burstDps : m?.burstDpsRaw) ?? 0;
+    };
+    const base = val(build);
+    if (!(base > 0)) return null;
+    const out: Record<string, number> = {};
+    // Gain = how much DPS this piece adds on top of everything else (base / without - 1).
+    const gain = (without: number) => (without > 0 ? Math.max(0, base / without - 1) : Infinity);
+    build.slots.forEach((id, i) => {
+      if (id) out[String(i)] = gain(val({ ...build, slots: build.slots.map((x, j) => (j === i ? "" : x)) }));
+    });
+    if (build.riven.positives.length) out.riven = gain(val({ ...build, riven: { positives: [], negative: null } }));
+    if (build.arcane) out.arcane = gain(val({ ...build, arcane: null }));
+    return out;
+  }, [engine, data, build, scenario, weapon, mainMode, shareVsEnemy]);
 
   const precomputed = weapon ? best?.targets[scenario.target.enemy ?? "raw"]?.[weapon.id] : undefined;
 
@@ -437,7 +525,7 @@ export default function BuildEditor() {
               value={build.weapon}
               onChange={(e) => {
                 setOpt(null);
-                setBuild({ weapon: e.target.value, slots: Array(SLOT_COUNT + 1).fill(""), arcane: null, riven: { positives: [], negative: null }, evolutions: [] });
+                setBuild({ weapon: e.target.value, slots: Array(SLOT_COUNT + 1).fill(""), arcane: null, riven: { positives: [], negative: null }, evolutions: [], progenitor: null });
               }}
             >
               <option value="">Choose a weapon…</option>
@@ -460,7 +548,7 @@ export default function BuildEditor() {
               <OptimizerControls weapon={weapon} comfort={comfort} setComfort={setComfort} onResult={setOpt} />
               {precomputed?.plain && (
                 <p className="text-[11px] text-zinc-500">
-                  Precomputed theoretical best: {fmt(precomputed.plain.burstDps)}
+                  Precomputed Most DPS build: {fmt(precomputed.plain.burstDps)}
                   {precomputed.riven ? ` / ${fmt(precomputed.riven.burstDps)} with riven` : ""}.
                 </p>
               )}
@@ -482,6 +570,20 @@ export default function BuildEditor() {
               </div>
               )}
               <EvolutionPicker weapon={weapon} build={build} setBuild={setBuild} />
+              {weapon.progenitor && (
+                <div>
+                  <label className="label">Progenitor element (60%)</label>
+                  <select className="field" value={build.progenitor ?? ""} onChange={(e) => setBuild({ ...build, progenitor: e.target.value || null })}>
+                    <option value="">None</option>
+                    {["impact", "heat", "cold", "electricity", "toxin", "magnetic", "radiation"].map((t) => (
+                      <option key={t} value={t}>
+                        {t.charAt(0).toUpperCase() + t.slice(1)}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[11px] text-zinc-500">Innate bonus element of a Kuva Lich / Sister weapon; combines after mod elements.</p>
+                </div>
+              )}
               {view === "list" && (
               <div>
                 <label className="label">Arcane</label>
@@ -490,12 +592,12 @@ export default function BuildEditor() {
                   {arcanes.map((a) => (
                     <option key={a.id} value={a.name} title={a.description}>
                       {a.name}
-                      {!a.behaviour && !a.modifiers.length ? " (not modelled)" : ""}
+                      {!arcaneModelled(a) ? " (not modelled)" : ""}
                     </option>
                   ))}
                 </select>
-                {weapon.slot === "melee" || weapon.slot === "archGun" || weapon.slot === "companion" ? (
-                  <p className="mt-1 text-[11px] text-zinc-500">No arcanes modelled for this slot yet.</p>
+                {weapon.slot === "archGun" || weapon.slot === "companion" ? (
+                  <p className="mt-1 text-[11px] text-zinc-500">This weapon type has no arcane slot in the game.</p>
                 ) : null}
               </div>
               )}
@@ -567,7 +669,18 @@ export default function BuildEditor() {
             <div className="flex items-center gap-2">
               <h3 className="font-semibold">Build</h3>
               <span className="text-xs text-zinc-500">slot order matters for elements</span>
-              <div className="ml-auto inline-flex rounded-md border border-zinc-300 p-0.5 text-xs dark:border-zinc-700" role="group" aria-label="Mod view">
+              <label className="ml-auto flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-300">
+                <input type="checkbox" className="accent-indigo-600" checked={liveStats} onChange={(e) => setLiveStats(e.target.checked)} />
+                Stats
+              </label>
+              <label
+                className="flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-300"
+                title="Card percentages: off = the weapon's raw damage (no armor, Viral or other status); on = against the scenario enemy, including the Viral/Corrosive/Heat the build applies itself"
+              >
+                <input type="checkbox" className="accent-indigo-600" checked={shareVsEnemy} onChange={(e) => setShareVsEnemy(e.target.checked)} />
+                % vs enemy
+              </label>
+              <div className="inline-flex rounded-md border border-zinc-300 p-0.5 text-xs dark:border-zinc-700" role="group" aria-label="Mod view">
                 {(["cards", "list"] as const).map((v) => (
                   <button
                     key={v}
@@ -580,11 +693,22 @@ export default function BuildEditor() {
                 ))}
               </div>
             </div>
-            {view === "cards" ? (
-              <ModGrid weapon={weapon} build={build} setBuild={setBuild} compatible={compatible} arcanes={arcanes} />
-            ) : (
-              <p className="text-xs text-zinc-500">List view: edit mods and the arcane in the left column.</p>
-            )}
+            <div className={liveStats && mainMode ? "grid gap-4 lg:grid-cols-[minmax(0,1fr)_300px]" : ""}>
+              {view === "cards" ? (
+                <ModGrid
+                  weapon={weapon}
+                  build={build}
+                  setBuild={setBuild}
+                  compatible={compatible}
+                  arcanes={arcanes}
+                  contributions={contributions}
+                  vsEnemy={shareVsEnemy}
+                />
+              ) : (
+                <p className="text-xs text-zinc-500">List view: edit mods and the arcane in the left column.</p>
+              )}
+              {liveStats && mainMode && <LiveStats m={mainMode} />}
+            </div>
           </div>
         )}
         {opt && opt.result.weaponId === weapon?.id && (

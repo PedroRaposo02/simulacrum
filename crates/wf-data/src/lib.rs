@@ -200,7 +200,16 @@ pub struct HitComponent {
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum AmmoPool {
     Magazine,
-    Incarnon { rounds: Option<u32>, recharge_s: Option<f64> },
+    Incarnon {
+        rounds: Option<u32>,
+        recharge_s: Option<f64>,
+        /// Gauge charge per weak point hit in normal form (wiki IncarnonChargeGain), in rounds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        charge_gain: Option<f64>,
+        /// Charged by any direct hit instead of weak point hits (Angstrum, Torid).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        charge_on_any_hit: bool,
+    },
     Battery,
     None,
 }
@@ -233,6 +242,9 @@ pub struct AttackMode {
     /// Incarnon form attack (evolutions can target one form or both).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub incarnon_form: bool,
+    /// "hitscan", "projectile", "beam", "thrown" or "aoe" (from the attack's shot type).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shot: Option<String>,
 }
 
 /// Which weapon form an Incarnon evolution affects.
@@ -254,6 +266,10 @@ pub enum BehaviourDef {
     /// A hit that neither crits nor procs status adds a stack of +`bonus` base damage (additive),
     /// up to `max_stacks`; each stack lasts `duration_s`, decaying one at a time.
     OverwhelmingAttrition { bonus: f64, max_stacks: u32, duration_s: f64 },
+    /// Each stack of `status` the weapon keeps on the target removes `per_stack` of its armor (Flensing Spikes).
+    ArmorStripPerStatus { status: DamageType, per_stack: f64 },
+    /// No crits on bodyshots; weak point hits get +`head_crit_chance` crit chance, additive with mods (King's Gambit).
+    HeadshotOnlyCrits { head_crit_chance: f64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -346,6 +362,12 @@ pub struct Weapon {
     pub exilus_polarity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stance_polarity: Option<String>,
+    /// Kuva / Tenet weapon: carries a progenitor bonus element (60% of base damage at max).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub progenitor: bool,
+    /// Capacity a max-rank stance adds (doubled when its polarity matches the stance slot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stance_capacity: Option<f64>,
     #[serde(default)]
     pub sources: BTreeMap<String, String>,
 }
@@ -396,6 +418,10 @@ pub enum Stat {
     Range,
     /// Heavy attack wind-up speed (percent).
     WindUpSpeed,
+    /// A damage multiplier of its own, multiplying everything else (Longbow Sharpshot).
+    FinalDamage,
+    /// Multiplies the final crit multiplier ("x3 Critical Damage": value 2.0).
+    CritMultMultiplier,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -423,6 +449,10 @@ pub enum Condition {
     Aiming,
     OnReload,
     OnStatus,
+    /// Scales with the share of hits on weak points (Longbow Sharpshot: next shot after a weak point hit).
+    HeadshotShare,
+    /// Builds up from hits (uptime slider, like on-kill stacks).
+    OnHit,
 }
 
 /// Modifiers whose value repeats per counted thing (Condition Overload, Blood Rush, Galvanized Shot).
@@ -431,6 +461,8 @@ pub enum Condition {
 pub enum PerCount {
     StatusType,
     ComboMultiplier,
+    /// Per 200 Warframe shields (Melee Retaliation), up to `max_stacks`.
+    Shields200,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -459,6 +491,13 @@ pub struct Modifier {
     /// Weapon slots it never applies to (Tenacious Bond: not the companion's own weapon).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub not_slots: Vec<Slot>,
+    /// Situational trigger ("with overshields", "on shield break"): active only when the scenario
+    /// enables it, on top of the condition's own scaling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<String>,
+    /// Only attack modes whose name contains this (Devastation Cascade: the charged blast).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_contains: Option<String>,
 }
 
 fn one() -> u8 { 1 }
@@ -519,11 +558,34 @@ pub struct Arcane {
     pub behaviour: Option<String>,
     #[serde(default)]
     pub modifiers: Vec<Modifier>,
+    /// Weapon classes it fits (empty = every weapon of the slot): Shotgun Vendetta, Longbow Sharpshot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub classes: Vec<WeaponClass>,
+    /// Stacks driven by the weapon's own status procs; `modifiers` are then per stack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stacking: Option<ArcaneStacking>,
+    /// Combo multiplier never drops below this (Melee Crescendo's initial combo).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub combo_floor: Option<f64>,
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rarity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+}
+
+/// How a status-driven arcane builds its stacks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArcaneStacking {
+    /// Status type whose procs add stacks.
+    pub status: DamageType,
+    pub max_stacks: f64,
+    /// Shared buff timer refreshed by every proc (Primary Blight: 12 s): stacks build to the max
+    /// as long as procs come faster than this. None = stacks are the status stacks on the target
+    /// (Secondary Shiver: Cold stacks, which last the status duration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_s: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -637,6 +699,17 @@ pub struct BuffDef {
     pub note: Option<String>,
 }
 
+/// Opinionated optimizer rules (data/overrides/optimizer-rules.json). Keys are mod pools
+/// ("primary", "secondary", "shotgun"…) and shot kinds ("beam", "projectile", "hitscan").
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OptimizerRules {
+    pub explosion_radius: BTreeMap<String, Vec<String>>,
+    pub utility_exilus: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    pub never: Vec<String>,
+    pub discouraged: BTreeMap<String, f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GameData {
@@ -653,6 +726,8 @@ pub struct GameData {
     pub riven: Option<RivenTable>,
     #[serde(default)]
     pub buffs: Vec<BuffDef>,
+    #[serde(default)]
+    pub rules: OptimizerRules,
 }
 
 impl GameData {
@@ -698,9 +773,12 @@ impl Mod {
             Some("bow") => w.class == WeaponClass::Bow,
             Some("assault rifle") => w.class == WeaponClass::Rifle,
             Some(name) => {
+                // Melee class mods name the class in plural ("polearms", "whips"); glaives are "thrown melee".
+                let class_name = if name == "thrown melee" { "glaive" } else { name.trim_end_matches('s') };
                 w.name.to_lowercase() == name
                     || w.family.to_lowercase() == name
                     || w.subtype.as_deref().is_some_and(|t| t.to_lowercase() == name)
+                    || w.melee.as_ref().is_some_and(|m| m.class.to_lowercase().trim_end_matches('s') == class_name)
             }
         }
     }

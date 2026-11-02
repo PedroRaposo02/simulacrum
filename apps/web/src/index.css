@@ -27,3 +27,17 @@ body {
     @apply mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400;
   }
 }
+
+/* Tailwind v4 no longer sets this; every clickable control gets the pointer. */
+@layer base {
+  button:not(:disabled),
+  [role="button"],
+  [role="option"],
+  select:not(:disabled),
+  summary,
+  label:has(> input[type="checkbox"]),
+  input[type="checkbox"],
+  input[type="range"] {
+    cursor: pointer;
+  }
+}

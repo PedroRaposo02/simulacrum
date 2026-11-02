@@ -34,6 +34,9 @@ enum Cmd {
         /// Incarnon evolutions, comma separated.
         #[arg(long, value_delimiter = ',')]
         evolutions: Vec<String>,
+        /// Kuva / Tenet progenitor element (heat, cold, electricity, toxin, impact, magnetic, radiation).
+        #[arg(long)]
+        progenitor: Option<String>,
         #[arg(long)]
         enemy: Option<String>,
         #[arg(long)]
@@ -67,9 +70,12 @@ enum Cmd {
         /// Objective: balanced | burst | sustained | per-shot | per-charge.
         #[arg(long, default_value = "balanced")]
         objective: String,
-        /// Comfort for guns: maximum fire rate (shots/s).
+        /// Comfort for guns: maximum fire-rate bonus over the unmodded rate (1.5 = +150%).
         #[arg(long)]
-        max_fire_rate: Option<f64>,
+        max_fire_rate_bonus: Option<f64>,
+        /// Don't force the explosion-radius mod on explosive weapons.
+        #[arg(long)]
+        no_explosion_mod: bool,
         /// Comfort: minimum modded attack speed / fire rate.
         #[arg(long)]
         min_attack_speed: Option<f64>,
@@ -163,6 +169,8 @@ struct BestEntry {
     riven_negative: Option<RivenPick>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     evolutions: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    progenitor: Option<wf_data::DamageType>,
 }
 
 #[derive(Serialize)]
@@ -195,6 +203,7 @@ fn entry(r: OptimizeResult) -> BestEntry {
         riven: r.riven,
         riven_negative: r.riven_negative,
         evolutions: r.evolutions,
+        progenitor: r.progenitor,
     }
 }
 
@@ -230,22 +239,29 @@ fn print_optimized(r: &OptimizeResult) {
     if !r.evolutions.is_empty() {
         println!("  evolutions: {}", r.evolutions.join(", "));
     }
+    if let Some(p) = r.progenitor {
+        println!("  progenitor: {p:?} (60%)");
+    }
     for p in &r.riven {
         println!("  riven +{:.1}% {}", p.value * 100.0, p.label);
     }
     if let Some(n) = &r.riven_negative {
         println!("  riven {:.1}% {} (harmless)", n.value * 100.0, n.label);
     }
-    println!("  marginal value (DPS lost without it):");
+    println!("  marginal value (DPS this adds on top of the rest):");
     for m in &r.marginal {
-        println!("    {:>6.1}%  {}", m.loss * 100.0, m.label);
+        if m.loss >= 1.0 - 1e-9 {
+            println!("    {:>7}  {}", "needed", m.label);
+        } else {
+            println!("    {:>+6.1}%  {}", (1.0 / (1.0 - m.loss) - 1.0) * 100.0, m.label);
+        }
     }
 }
 
 fn run() -> Result<bool, String> {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Explain { weapon, build, mods, arcane, evolutions, enemy, json } => {
+        Cmd::Explain { weapon, build, mods, arcane, evolutions, progenitor, enemy, json } => {
             let data = load(&cli.data)?;
             let mut b: Build = match build {
                 Some(p) => serde_json::from_str(&std::fs::read_to_string(&p).map_err(|e| e.to_string())?)
@@ -261,6 +277,9 @@ fn run() -> Result<bool, String> {
             }
             if !evolutions.is_empty() {
                 b.evolutions = evolutions.into_iter().map(|e| e.trim().to_string()).collect();
+            }
+            if let Some(p) = progenitor {
+                b.progenitor = Some(serde_json::from_value(serde_json::Value::String(p.to_lowercase())).map_err(|e| format!("progenitor: {e}"))?);
             }
             let target = Target { enemy, ..Default::default() };
             let res = compute(&data, &b, &target).map_err(|e| e.to_string())?;
@@ -333,7 +352,7 @@ fn run() -> Result<bool, String> {
             }
             Ok(regressions == 0)
         }
-        Cmd::Optimize { weapon, enemy, riven, all, out, mode, heavy, heavy_combo, objective, max_fire_rate, min_attack_speed, range_tolerance, capacity, polarities } => {
+        Cmd::Optimize { weapon, enemy, riven, all, out, mode, heavy, heavy_combo, objective, max_fire_rate_bonus, no_explosion_mod, min_attack_speed, range_tolerance, capacity, polarities } => {
             let data = load(&cli.data)?;
             if !all {
                 let w = weapon.ok_or("give a weapon name or --all")?;
@@ -360,7 +379,17 @@ fn run() -> Result<bool, String> {
                     "burst" => wf_opt::Objective::Burst,
                     _ => wf_opt::Objective::Balanced,
                 };
-                let opts = OptimizeOptions { riven, mode, objective, max_fire_rate, min_attack_speed, range_tolerance, capacity: cap, ..Default::default() };
+                let opts = OptimizeOptions {
+                    riven,
+                    mode,
+                    objective,
+                    max_fire_rate_bonus,
+                    explosion_mod: !no_explosion_mod,
+                    min_attack_speed,
+                    range_tolerance,
+                    capacity: cap,
+                    ..Default::default()
+                };
                 let t0 = std::time::Instant::now();
                 let r = optimize(&data, &w, &base, &target, &opts).map_err(|e| e.to_string())?;
                 print_optimized(&r);

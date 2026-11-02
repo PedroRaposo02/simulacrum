@@ -92,6 +92,7 @@ impl Engine {
                 arcane: wb.and_then(|b| b.arcane.clone()),
                 riven: wb.map(|b| riven_modifiers(&self.data, &b.riven)).unwrap_or_default(),
                 evolutions: wb.map(|b| b.evolutions.clone()).unwrap_or_default(),
+                progenitor: wb.and_then(|b| b.progenitor),
                 ..base.clone()
             };
             match compute(&self.data, &build, &target) {
@@ -157,4 +158,5 @@ struct WeaponBuild {
     riven: Vec<RivenPick>,
     mode_index: Option<usize>,
     evolutions: Vec<String>,
+    progenitor: Option<wf_data::DamageType>,
 }

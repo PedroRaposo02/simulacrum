@@ -1,6 +1,73 @@
 {
-  "_note": "Arcanes whose effect is a named engine behaviour (crates/wf-calc/src/behaviours.rs) instead of a stat line.",
+  "_note": "Arcanes whose effect is a named engine behaviour (crates/wf-calc/src/behaviours.rs and engine.rs) instead of a stat line, and arcanes defined by hand (defs): their modifiers replace whatever the description parser finds. With `stacking`, modifiers are per stack. Melee arcanes without a def have no modelled effect.",
   "behaviours": {
-    "Secondary Enervate": "enervate"
+    "Secondary Enervate": "enervate",
+    "Melee Duplicate": "meleeDuplicate",
+    "Melee Doughty": "meleeDoughty"
+  },
+  "defs": {
+    "Primary Blight": {
+      "stacking": { "status": "toxin", "maxStacks": 40, "durationS": 12 },
+      "modifiers": [
+        { "source": "Primary Blight", "stat": { "kind": "critDamage" }, "value": 0.036 },
+        { "source": "Primary Blight", "stat": { "kind": "multishot" }, "value": 0.018 }
+      ]
+    },
+    "Primary Frostbite": {
+      "stacking": { "status": "cold", "maxStacks": 40, "durationS": 12 },
+      "modifiers": [
+        { "source": "Primary Frostbite", "stat": { "kind": "critDamage" }, "value": 0.03 },
+        { "source": "Primary Frostbite", "stat": { "kind": "multishot" }, "value": 0.0225 }
+      ]
+    },
+    "Conjunction Voltage": {
+      "stacking": { "status": "electricity", "maxStacks": 40, "durationS": 12 },
+      "modifiers": [
+        { "source": "Conjunction Voltage", "stat": { "kind": "multishot" }, "value": 0.03 },
+        { "source": "Conjunction Voltage", "stat": { "kind": "reloadSpeed" }, "value": 0.015 }
+      ]
+    },
+    "Cascadia Flare": {
+      "stacking": { "status": "heat", "maxStacks": 40, "durationS": 10 },
+      "modifiers": [{ "source": "Cascadia Flare", "stat": { "kind": "baseDamage" }, "value": 0.12 }]
+    },
+    "Secondary Shiver": {
+      "stacking": { "status": "cold", "maxStacks": 10 },
+      "modifiers": [{ "source": "Secondary Shiver (per Cold stack)", "stat": { "kind": "baseDamage" }, "value": 0.45, "appliesTo": "directOnly" }]
+    },
+    "Shotgun Vendetta": {
+      "classes": ["shotgun"],
+      "modifiers": [
+        { "source": "Shotgun Vendetta (on kill within 5 m)", "stat": { "kind": "multishot" }, "value": 1.8, "condition": "onKill" },
+        { "source": "Shotgun Vendetta (on kill within 5 m)", "stat": { "kind": "reloadSpeed" }, "value": 0.75, "condition": "onKill" }
+      ]
+    },
+    "Longbow Sharpshot": {
+      "classes": ["bow"],
+      "modifiers": [
+        { "source": "Longbow Sharpshot (shot after a weak point hit)", "stat": { "kind": "finalDamage" }, "value": 3.0, "condition": "headshotShare" }
+      ]
+    },
+    "Melee Animosity": {
+      "modifiers": [
+        { "source": "Melee Animosity (10 normal hits before the heavy)", "stat": { "kind": "critChance" }, "value": 4.2, "appliesTo": "heavyOnly" }
+      ]
+    },
+    "Melee Exposure": {
+      "modifiers": [
+        { "source": "Melee Exposure (4 ability casts within 25 s)", "stat": { "kind": "element", "of": "corrosive" }, "value": 2.4 }
+      ]
+    },
+    "Melee Retaliation": {
+      "modifiers": [
+        { "source": "Melee Retaliation (per 200 shields)", "stat": { "kind": "baseDamage" }, "value": 0.3, "per": "shields200", "maxStacks": 14 }
+      ]
+    },
+    "Melee Crescendo": { "comboFloor": 12, "modifiers": [] },
+    "Cascadia Overcharge": {
+      "modifiers": [
+        { "source": "Cascadia Overcharge (with overshields)", "stat": { "kind": "critChance" }, "value": 3.0, "trigger": "with overshields" }
+      ]
+    }
   }
 }

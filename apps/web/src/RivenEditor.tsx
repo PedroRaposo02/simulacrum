@@ -5,6 +5,38 @@ import type { RivenRanking, RivenRow, RivenState, Weapon } from "./types";
 
 const SHOWN = 30;
 
+// Community riven grading: deviation of a roll from the centre of its range (-10%..+10%).
+const GRADES: [number, string][] = [
+  [9.5, "A+"], [7.5, "A"], [5.5, "A-"], [3.5, "B+"], [1.5, "B"], [-1.5, "C"],
+  [-3.5, "C-"], [-5.5, "D+"], [-7.5, "D"], [-9.5, "D-"],
+];
+/** Roll 0..1 across rollMin..rollMax -> % deviation from the centre value. */
+function deviation(roll: number, min: number, max: number): number {
+  const centre = (min + max) / 2;
+  return ((min + roll * (max - min)) / centre - 1) * 100;
+}
+function grade(dev: number): string {
+  return GRADES.find(([t]) => dev >= t - 1e-9)?.[1] ?? "F";
+}
+function gradeClass(g: string): string {
+  if (g.startsWith("A")) return "bg-emerald-600 text-white";
+  if (g.startsWith("B")) return "bg-sky-600 text-white";
+  if (g.startsWith("C")) return "bg-zinc-500 text-white";
+  if (g.startsWith("D")) return "bg-amber-600 text-white";
+  return "bg-red-700 text-white";
+}
+function GradeBadge({ dev }: { dev: number }) {
+  const g = grade(dev);
+  return (
+    <span
+      className={`inline-block w-7 rounded text-center text-[10px] font-bold ${gradeClass(g)}`}
+      title={`${dev >= 0 ? "+" : ""}${dev.toFixed(1)}% from the centre of the roll range (A+ ≥ 9.5%, C ≈ centre, F ≤ -9.5%)`}
+    >
+      {g}
+    </span>
+  );
+}
+
 /** Every 2-3 positive roll for this weapon, best to worst, scored with its best riven build. */
 function RollRanking({ weapon, onUse }: { weapon: Weapon; onUse: (keys: string[]) => void }) {
   const { data, scenario } = useStore();
@@ -144,6 +176,11 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
           <span className={`num w-20 shrink-0 self-center text-right text-sm font-medium ${negative ? "text-red-600 dark:text-red-400" : ""}`}>
             {value == null || !r ? "" : formatRivenValue(table, r.key, value)}
           </span>
+          {r && range ? (
+            <span className="self-center">
+              <GradeBadge dev={deviation(r.roll, table.rollMin, table.rollMax)} />
+            </span>
+          ) : null}
         </div>
         {r && range && (
           <div className="flex items-center gap-2">
@@ -168,16 +205,21 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
 
   const slots = [...riven.positives];
   const showEmpty = slots.length < 3;
-  const avgRoll =
-    riven.positives.length > 0 ? riven.positives.reduce((a, p) => a + p.roll, 0) / riven.positives.length : null;
+  const graded = [...riven.positives, ...(riven.negative ? [riven.negative] : [])];
+  const avgRoll = graded.length > 0 ? graded.reduce((a, p) => a + p.roll, 0) / graded.length : null;
 
   return (
     <div id="riven-editor" className="card space-y-3">
       <div className="flex items-center justify-between">
         <label className="label mb-0">Riven</label>
-        <span className="text-xs text-zinc-500">
+        <span className="flex items-center gap-2 text-xs text-zinc-500">
           {layout ? `${layout.positives}+${layout.negative ? 1 : 0} layout` : "pick 2–3 positives"}
-          {avgRoll != null && ` · ${pct(avgRoll, 0)} of max roll`}
+          {avgRoll != null && layout && (
+            <>
+              <span>· roll grade</span>
+              <GradeBadge dev={deviation(avgRoll, table.rollMin, table.rollMax)} />
+            </>
+          )}
         </span>
       </div>
       {slots.map((r, i) => row(r, i, false))}

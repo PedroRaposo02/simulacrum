@@ -9,6 +9,18 @@ const MAX_DR: f64 = 0.9;
 const STATUS_DURATION_S: f64 = 6.0;
 /// Armor removed per Corrosive Projection aura at max rank.
 const CORROSIVE_PROJECTION: f64 = 0.18;
+/// Max progenitor bonus on Kuva / Tenet weapons: 60% of base damage as an innate element.
+pub const PROGENITOR_BONUS: f64 = 0.6;
+/// Elements a Kuva Lich or Sister of Parvos can carry.
+pub const PROGENITOR_ELEMENTS: [DamageType; 7] = [
+    DamageType::Impact,
+    DamageType::Heat,
+    DamageType::Cold,
+    DamageType::Electricity,
+    DamageType::Toxin,
+    DamageType::Magnetic,
+    DamageType::Radiation,
+];
 
 /// DoT statuses: (type, fraction of modded base damage per tick, ticks per proc).
 /// Approximate values from the wiki's status table; kept here until moved to overrides.
@@ -56,6 +68,8 @@ struct Pools {
     ability: f64,
     range: f64,
     wind_up: f64,
+    final_damage: f64,
+    crit_mult_mult: f64,
     sources: Vec<(String, Stat, f64)>,
 }
 
@@ -99,6 +113,8 @@ impl Pools {
             Stat::AbilityDamage => self.ability += v,
             Stat::Range => self.range += v,
             Stat::WindUpSpeed => self.wind_up += v,
+            Stat::FinalDamage => self.final_damage += v,
+            Stat::CritMultMultiplier => self.crit_mult_mult += v,
         }
         self.sources.push((m.source.clone(), m.stat, v));
     }
@@ -193,6 +209,9 @@ fn resolve<'a>(data: &'a GameData, build: &Build, target: &Target) -> Result<Res
 }
 
 fn condition_scale(m: &Modifier, c: &Conditions) -> f64 {
+    if m.trigger.as_ref().is_some_and(|t| !c.triggers.contains(t)) {
+        return 0.0;
+    }
     let stacks = m.max_stacks.max(1) as f64;
     let cond = match m.condition {
         Condition::Always | Condition::CritChanceBelow => 1.0,
@@ -203,13 +222,15 @@ fn condition_scale(m: &Modifier, c: &Conditions) -> f64 {
                 0.0
             }
         }
-        Condition::OnHeadshot | Condition::OnHeadshotKill if !c.headshot_effects || c.companion => 0.0,
+        Condition::OnHeadshot | Condition::OnHeadshotKill | Condition::HeadshotShare if !c.headshot_effects || c.companion => 0.0,
+        Condition::HeadshotShare => c.headshot_share.clamp(0.0, 1.0),
         _ => c.conditional_uptime.clamp(0.0, 1.0) * stacks,
     };
     let per = match m.per {
         None => 1.0,
         Some(PerCount::StatusType) => c.status_types.max(0.0),
         Some(PerCount::ComboMultiplier) => (c.combo_multiplier - 1.0).max(0.0),
+        Some(PerCount::Shields200) => (c.shields.max(0.0) / 200.0).floor().min(stacks),
     };
     cond * per
 }
@@ -286,6 +307,7 @@ fn all_modifiers<'a>(r: &'a Resolved, build: &'a Build, mode: &'a AttackMode) ->
         .chain(build.buffs.iter())
         .filter(move |m| !(companion && m.aiming))
         .filter(move |m| (m.only_slots.is_empty() || m.only_slots.contains(&slot)) && !m.not_slots.contains(&slot))
+        .filter(move |m| m.mode_contains.as_deref().map_or(true, |s| mode.name.contains(s)))
 }
 
 fn finite(v: f64, what: &str) -> Result<f64, CalcError> {
@@ -310,7 +332,74 @@ struct Partial {
     explain: Vec<Explain>,
 }
 
-fn compute_mode(
+/// Arcane behaviours the engine implements (others are reported as not modelled).
+const ARCANE_BEHAVIOURS: [&str; 3] = ["enervate", "meleeDuplicate", "meleeDoughty"];
+
+/// A status-stack arcane (Primary Blight, Cascadia Flare, Secondary Shiver...) needs the weapon's own
+/// procs, which the arcane can raise (Blight adds multishot): evaluate, derive the stacks, repeat.
+/// Stacks only grow with each pass, so this settles in a few passes.
+fn compute_mode(r: &Resolved, build: &Build, target: &Target, mode: &AttackMode, index: usize) -> Result<ModeResult, CalcError> {
+    let Some((arcane, st)) = r.arcane.and_then(|a| a.stacking.as_ref().map(|s| (a, s))) else {
+        return compute_mode_once(r, build, target, mode, index);
+    };
+    let at = |stacks: f64| {
+        let scaled = Arcane {
+            modifiers: arcane
+                .modifiers
+                .iter()
+                .map(|m| Modifier { value: m.value * stacks, source: format!("{} ({stacks:.1} stacks)", m.source), ..m.clone() })
+                .collect(),
+            stacking: None,
+            ..arcane.clone()
+        };
+        let rr = Resolved {
+            weapon: r.weapon,
+            mods: r.mods.clone(),
+            arcane: Some(&scaled),
+            evolutions: r.evolutions.clone(),
+            enemy: r.enemy.clone(),
+            warnings: vec![],
+        };
+        compute_mode_once(&rr, build, target, mode, index)
+    };
+    let stacks_of = |res: &ModeResult| {
+        let pps = res.procs_per_s.get(&st.status).copied().unwrap_or(0.0);
+        match st.duration_s {
+            // Shared timer refreshed by every proc: full stacks once procs outpace it.
+            Some(d) if pps * d >= 1.0 => st.max_stacks,
+            Some(d) => pps * d,
+            None => (pps * res.status_duration_s).min(st.max_stacks),
+        }
+    };
+    let mut stacks = 0.0;
+    let mut res = at(stacks)?;
+    for _ in 0..4 {
+        let next = stacks_of(&res).max(stacks);
+        if next - stacks < 0.01 {
+            break;
+        }
+        stacks = next;
+        res = at(stacks)?;
+    }
+    let pps = res.procs_per_s.get(&st.status).copied().unwrap_or(0.0);
+    res.approximations.push(match st.duration_s {
+        Some(d) => format!(
+            "{}: {stacks:.1} of {} stacks from {:.2} {:?} procs/s (shared {d} s timer{})",
+            arcane.name,
+            st.max_stacks,
+            pps,
+            st.status,
+            if pps > 0.0 { format!(", full after {:.0} s", st.max_stacks / pps) } else { String::new() }
+        ),
+        None => format!("{}: {stacks:.1} {:?} stacks kept on the target by this weapon", arcane.name, st.status),
+    });
+    if res.coverage == Coverage::Computed {
+        res.coverage = Coverage::Approximate;
+    }
+    Ok(res)
+}
+
+fn compute_mode_once(
     r: &Resolved,
     build: &Build,
     target: &Target,
@@ -331,11 +420,18 @@ fn compute_mode(
 
     // Companion weapons: AI fire, so no aiming, headshot effects or headshot share.
     let companion = r.weapon.slot == Slot::Companion;
-    let base_cond = Conditions {
+    let mut base_cond = Conditions {
         companion,
         headshot_share: if companion { 0.0 } else { build.conditions.headshot_share },
         ..build.conditions.clone()
     };
+    if let Some((name, floor)) = r.arcane.and_then(|a| a.combo_floor.map(|f| (&a.name, f))) {
+        if base_cond.combo_multiplier < floor || base_cond.heavy_combo_multiplier < floor {
+            approx.push(format!("{name}: combo never below {floor}x (built up from finisher kills over the mission)"));
+        }
+        base_cond.combo_multiplier = base_cond.combo_multiplier.max(floor);
+        base_cond.heavy_combo_multiplier = base_cond.heavy_combo_multiplier.max(floor);
+    }
     let mut partials = Vec::new();
     let mode_combo = mode.components.first().map_or(base_cond.combo_multiplier, |c| combo_for(&base_cond, &c.rules));
     let mode_cond = with_combo(&base_cond, mode_combo);
@@ -378,7 +474,8 @@ fn compute_mode(
         for m in all_modifiers(r, build, mode).filter(|m| filter_ok(m.applies_to, comp)) {
             p.add(m, condition_scale(m, &cond));
         }
-        partials.push(component(r, comp, &p, faction, &cond, rate, &behaviours, &mut approx)?);
+        let progenitor = build.progenitor.filter(|_| r.weapon.progenitor);
+        partials.push(component(r, comp, &p, faction, &cond, rate, &behaviours, progenitor, &mut approx)?);
     }
 
     let magazine = mode.magazine.map(|m| ((m as f64) * (1.0 + mode_pools.magazine)).round().max(1.0) as u32);
@@ -410,8 +507,21 @@ fn compute_mode(
             let s_corr = if corr_n >= 1.0 { (0.26 + 0.06 * (corr_n - 1.0)).min(0.8) } else { 0.26 * corr_n };
             let s_heat = if heat_on { 0.5 } else { 0.0 };
             let s_cp = (CORROSIVE_PROJECTION * target.corrosive_projection.clamp(0.0, 4.0)).min(1.0);
-            let eff_armor =
-                e.armor.min(ARMOR_CAP) * (1.0 - s_heat) * (1.0 - s_corr) * (1.0 - s_cp) * (1.0 - target.armor_strip.clamp(0.0, 1.0));
+            let (mut s_evo, mut evo_strip) = (0.0, Vec::new());
+            for (name, b) in &behaviours {
+                if let BehaviourDef::ArmorStripPerStatus { status, per_stack } = b {
+                    let n = stacks(*status);
+                    let s = (per_stack * n).clamp(0.0, 1.0);
+                    s_evo = 1.0 - (1.0 - s_evo) * (1.0 - s);
+                    evo_strip.push(Explain::new(name.to_string(), s).detail(format!("{n:.2} {status:?} stacks x {:.0}%", per_stack * 100.0)));
+                }
+            }
+            let eff_armor = e.armor.min(ARMOR_CAP)
+                * (1.0 - s_heat)
+                * (1.0 - s_corr)
+                * (1.0 - s_cp)
+                * (1.0 - s_evo)
+                * (1.0 - target.armor_strip.clamp(0.0, 1.0));
             let dr = MAX_DR * (eff_armor / ARMOR_CAP).sqrt();
             let v = if viral_n >= 1.0 { 2.0 + 0.25 * (viral_n.min(10.0) - 1.0) } else { 1.0 + viral_n };
             if viral_n > 0.0 && viral_n < 1.0 {
@@ -429,6 +539,7 @@ fn compute_mode(
                 Explain::new("Heat strip", s_heat),
                 Explain::new("Corrosive Projection", s_cp).detail(format!("{} aura(s) x 18%", target.corrosive_projection)),
                 Explain::new("External strip", target.armor_strip),
+                Explain::new("Evolution strip", s_evo).with(evo_strip),
                 Explain::new("Effective armor", eff_armor),
                 Explain::new("Damage reduction", dr).detail("0.9·√(armor/2700)"),
                 Explain::new("Viral multiplier", v).detail(format!(
@@ -472,7 +583,8 @@ fn compute_mode(
             let pps = p.status_chance * p.projectiles * rate * share;
             let tick = p.modded_base * frac * p.faction * p.faction * (1.0 + p.crit_chance * (p.crit_mult - 1.0));
             let armor = if t == DamageType::Slash { 1.0 } else { 1.0 - dr };
-            status_dps += pps * ticks * tick * armor * viral_mult * p.ability;
+            let hm = r.enemy.as_ref().and_then(|e| e.health_modifiers.get(&t)).copied().unwrap_or(1.0);
+            status_dps += pps * ticks * tick * armor * hm * viral_mult * p.ability;
         }
         shot_raw += raw_hit * p.projectiles;
         shot_target += target_hit * p.projectiles;
@@ -494,16 +606,30 @@ fn compute_mode(
         approx.push("Status DPS uses approximate DoT tick values".into());
     }
 
-    let burst_raw = shot_raw * rate;
-    let burst = shot_target * rate;
+    // With a one-round magazine every shot is followed by a reload: there is no burst window.
+    let single_round = mode.magazine == Some(1) && mode.reload_s > 0.0;
+    if single_round {
+        approx.push("One-round magazine: burst DPS includes the reload after every shot".into());
+    }
+    let cycle = if single_round { 1.0 / rate + reload } else { 1.0 / rate };
+    let burst_raw = shot_raw / cycle;
+    let burst = shot_target / cycle;
     let (sustained, per_charge) = match (&mode.ammo_pool, magazine) {
-        (AmmoPool::Incarnon { rounds: Some(n), recharge_s }, _) => {
+        (AmmoPool::Incarnon { rounds: Some(n), recharge_s, charge_gain, charge_on_any_hit }, _) => {
             let n = *n as f64;
-            if recharge_s.is_none() {
-                approx.push("Incarnon recharge depends on weakpoint hits: sustained DPS shown as burst; see damage per charge".into());
+            // Normal-form time refilling the gauge, and the normal form's DPS meanwhile.
+            let charging = match (recharge_s, charge_gain) {
+                (Some(t), _) => Some((*t, 0.0)),
+                (None, Some(g)) if *g > 0.0 => incarnon_recharge(r, build, target, n, *g, *charge_on_any_hit, &mut approx),
+                _ => None,
+            };
+            match charging {
+                Some((t, normal_dps)) => ((shot_target * n + normal_dps * t) / (n / rate + t), Some(shot_target * n)),
+                None => {
+                    approx.push("Incarnon recharge unknown: sustained DPS shown as burst; see damage per charge".into());
+                    (shot_target * n / (n / rate), Some(shot_target * n))
+                }
             }
-            let t = recharge_s.unwrap_or(0.0);
-            (shot_target * n / (n / rate + t), Some(shot_target * n))
         }
         (AmmoPool::Incarnon { .. }, _) => {
             approx.push("Incarnon ammo pool unknown: sustained DPS shown as burst".into());
@@ -558,6 +684,7 @@ fn compute_mode(
         per_charge,
         status_dps: finite(status_dps, "status DPS")?,
         procs_per_s: procs,
+        status_duration_s: duration,
         viral_stacks: viral_n,
         corrosive_stacks: corr_n,
         attack_speed: r.weapon.melee.as_ref().map(|m| m.attack_speed * fr_mult),
@@ -566,6 +693,38 @@ fn compute_mode(
         components,
         explain,
     })
+}
+
+/// Time to refill an Incarnon gauge of `rounds` in normal form, and the normal form's sustained DPS
+/// while doing it. Charge comes from weak point hits (or any direct hit), `gain` per hit.
+fn incarnon_recharge(
+    r: &Resolved,
+    build: &Build,
+    target: &Target,
+    rounds: f64,
+    gain: f64,
+    any_hit: bool,
+    approx: &mut Vec<String>,
+) -> Option<(f64, f64)> {
+    let (i, m) = r.weapon.modes.iter().enumerate().find(|(_, m)| {
+        !m.incarnon_form && m.headline && m.melee_role.is_none() && !matches!(m.ammo_pool, AmmoPool::Incarnon { .. })
+    })?;
+    let normal = compute_mode(r, build, target, m, i).ok()?;
+    if !(normal.per_shot > 0.0) {
+        return None;
+    }
+    let shots_per_s = normal.sustained_dps / normal.per_shot;
+    let projectiles = normal.components.first().map_or(1.0, |c| c.projectiles);
+    let share = if any_hit { 1.0 } else { build.conditions.incarnon_charge_share.clamp(0.01, 1.0) };
+    let hits_per_s = shots_per_s * projectiles * share;
+    let t = rounds / gain / hits_per_s;
+    approx.push(format!(
+        "Sustained: {rounds:.0}-round Incarnon charge, then {t:.1} s of {} refilling the gauge ({:.1} {} hits/s, {gain} charge each)",
+        m.name,
+        hits_per_s,
+        if any_hit { "direct" } else { "weak point" }
+    ));
+    Some((t, normal.sustained_dps))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -577,6 +736,7 @@ fn component(
     cond: &Conditions,
     rate: f64,
     behaviours: &[(&str, &BehaviourDef)],
+    progenitor: Option<DamageType>,
     approx: &mut Vec<String>,
 ) -> Result<Partial, CalcError> {
     let listed_total: f64 = comp.damage.values().sum();
@@ -588,8 +748,12 @@ fn component(
     }
     // Incarnon "+X base damage" scales every damage type of the attack proportionally.
     let base_scale = ((listed_total + p.base_flat) / listed_total).max(0.0);
-    let base_damage_map: DamageMap = comp.damage.iter().map(|(t, d)| (*t, d * base_scale)).collect();
-    let base_total = listed_total * base_scale;
+    let mut base_damage_map: DamageMap = comp.damage.iter().map(|(t, d)| (*t, d * base_scale)).collect();
+    // Progenitor bonus: an innate element worth 60% of the listed base damage.
+    if let Some(t) = progenitor {
+        *base_damage_map.entry(t).or_default() += listed_total * base_scale * PROGENITOR_BONUS;
+    }
+    let base_total: f64 = base_damage_map.values().sum();
     let mut crit0 = comp.crit_chance + p.crit_chance_base;
     let mut status0 = comp.status_chance + p.status_chance_base;
     // Linked stats use the other stat's modded value before the link itself (no feedback loop).
@@ -610,11 +774,11 @@ fn component(
 
     let enervate = r.arcane.and_then(|a| a.behaviour.as_deref()) == Some("enervate");
     if let Some(beh) = r.arcane.and_then(|a| a.behaviour.as_deref()) {
-        if beh != "enervate" {
+        if !ARCANE_BEHAVIOURS.contains(&beh) {
             approx.push(format!("Arcane behaviour '{beh}' not implemented; ignored"));
         }
     } else if let Some(a) = r.arcane {
-        if a.modifiers.is_empty() {
+        if a.modifiers.is_empty() && a.stacking.is_none() && a.combo_floor.is_none() {
             approx.push(format!("{} has no modelled effect; ignored", a.name));
         }
     }
@@ -703,7 +867,7 @@ fn component(
     let combo = if comp.rules.combo_scaling { cond.combo_multiplier.max(1.0) } else { 1.0 };
     // Multishot-only damage bonus applies to the extra projectiles: averaged over all of them.
     let ms_bonus = if ms > 1.0 && p.multishot_damage != 0.0 { (1.0 + (ms - 1.0) * (1.0 + p.multishot_damage)) / ms } else { 1.0 };
-    let a = (1.0 + p.ability).max(0.0) * combo * ms_bonus * co_mult;
+    let a = (1.0 + p.ability).max(0.0) * combo * ms_bonus * co_mult * (1.0 + p.final_damage).max(0.0);
 
     // 7. Crit. Expected multiplier split into its non-crit and crit parts so behaviours that act
     // on non-critical hits (Devouring Attrition) and critical headshots can be applied.
@@ -725,7 +889,26 @@ fn component(
             cc * 100.0
         )));
     }
-    let cd = ((comp.crit_mult + p.crit_mult_base + crit_mult_extra) * (1.0 + p.crit_damage + crit_damage_extra) + p.crit_damage_flat).max(1.0);
+    let beh = r.arcane.and_then(|a| a.behaviour.as_deref());
+    let mut doughty_explain = None;
+    let doughty = if beh == Some("meleeDoughty") {
+        let total: f64 = damage.values().sum();
+        let share = damage.get(&DamageType::Puncture).copied().unwrap_or(0.0) / total.max(f64::MIN_POSITIVE);
+        // +1.0x per 10% Puncture status chance (rounded to 0.1x, max 50x), on the Puncture portion only:
+        // as a multiplier on the whole hit that is the bonus times the Puncture share.
+        let bonus = ((10.0 * sc * share * 10.0).round() / 10.0).min(50.0);
+        doughty_explain = Some(Explain::new(r.arcane.map_or(String::new(), |a| a.name.clone()), bonus * share).detail(format!(
+            "+{bonus:.1}x on the Puncture part ({:.0}% of the damage; Puncture status chance {:.1}%)",
+            share * 100.0,
+            sc * share * 100.0
+        )));
+        bonus * share
+    } else {
+        0.0
+    };
+    let cd = ((comp.crit_mult + p.crit_mult_base + crit_mult_extra) * (1.0 + p.crit_damage + crit_damage_extra) + p.crit_damage_flat + doughty).max(1.0)
+        * (1.0 + p.crit_mult_mult).max(0.0);
+    let cd = cd.max(1.0);
     let m_crit = 1.0 + cc * (cd - 1.0);
     let p_crit = cc.min(1.0);
     let crit_part = m_crit - (1.0 - p_crit);
@@ -747,10 +930,38 @@ fn component(
         }
     }
 
+    // Melee Duplicate: every yellow (tier 1) crit strikes a second time, with its own crit and status
+    // rolls, so it counts as extra hits. Tier 1 share: CC below 100%, 2 - CC between 100% and 200%.
+    let mut projectiles = ms;
+    let mut dup_explain = None;
+    if beh == Some("meleeDuplicate") {
+        let tier1 = if cc < 1.0 { cc } else { (2.0 - cc).max(0.0) };
+        projectiles *= 1.0 + tier1;
+        dup_explain = Some(Explain::new(r.arcane.map_or(String::new(), |a| a.name.clone()), 1.0 + tier1).detail(format!(
+            "{:.0}% of hits are yellow crits and strike again (best near CC = (3·CD−4)/(2·CD−2))",
+            tier1 * 100.0
+        )));
+    }
+
     // 8. Headshots: headshot ×2, critical headshots a further ×2.
     let h = if comp.rules.can_headshot { cond.headshot_share.clamp(0.0, 1.0) } else { 0.0 };
-    let body = (1.0 - p_crit) * non_crit + crit_part;
-    let head = (1.0 - p_crit) * non_crit + 2.0 * crit_part;
+    let headshot_only = behaviours.iter().find_map(|(_, b)| match b {
+        BehaviourDef::HeadshotOnlyCrits { head_crit_chance } => Some(*head_crit_chance),
+        _ => None,
+    });
+    let parts = |c: f64| {
+        let p = c.min(1.0);
+        (p, 1.0 + c * (cd - 1.0) - (1.0 - p))
+    };
+    let ((pb, cb), (ph, ch)) = match headshot_only {
+        Some(bonus) => (parts(0.0), parts(cc + crit0 * bonus)),
+        None => ((p_crit, crit_part), (p_crit, crit_part)),
+    };
+    if let Some(bonus) = headshot_only {
+        approx.push(format!("No crits on bodyshots; weak point hits +{:.0}% crit chance", bonus * 100.0));
+    }
+    let body = (1.0 - pb) * non_crit + cb;
+    let head = (1.0 - ph) * non_crit + 2.0 * ch;
     let crit_hs = (1.0 - h) * body + h * 2.0 * (1.0 + p.headshot) * head;
 
 
@@ -768,6 +979,9 @@ fn component(
     if let Some(e) = da_explain {
         crit_factor = crit_factor.child(e);
     }
+    if let Some(e) = dup_explain {
+        crit_factor = crit_factor.child(e);
+    }
     let explain = vec![
         Explain::new("Base damage", base_total).with(p.sources_for(|s| s == Stat::BaseDamageFlat)),
         Explain::new("Base damage multiplier", b).with(base_children),
@@ -782,11 +996,13 @@ fn component(
             .with(p.sources_for(|s| matches!(s, Stat::Element(_) | Stat::Physical(_)))),
         Explain::new("Faction multiplier", f).with(p.sources_for(|s| matches!(s, Stat::FactionDamage(_) | Stat::FactionDamageAll))),
         Explain::new("Ability damage multiplier", (1.0 + p.ability).max(0.0)).with(p.sources_for(|s| s == Stat::AbilityDamage)),
+        Explain::new("Separate damage multiplier", (1.0 + p.final_damage).max(0.0)).with(p.sources_for(|s| s == Stat::FinalDamage)),
         Explain::new("Heavy attack combo multiplier", combo),
         Explain::new("Crit chance", cc).with(crit_children).with(p.sources_for(|s| s == Stat::CritChanceBase)),
         Explain::new("Crit multiplier", cd)
             .with(p.sources_for(|s| matches!(s, Stat::CritDamage | Stat::CritDamageFlat | Stat::CritMultBase)))
-            .with(threshold_explain),
+            .with(threshold_explain)
+            .with(doughty_explain.into_iter().collect()),
         crit_factor,
         Explain::new("Status chance", sc).with(p.sources_for(|s| matches!(s, Stat::StatusChance | Stat::StatusChanceFlat))),
         Explain::new("Multishot", ms).with(p.sources_for(|s| s == Stat::Multishot)),
@@ -795,7 +1011,7 @@ fn component(
     Ok(Partial {
         name: comp.name.clone(),
         damage,
-        projectiles: ms,
+        projectiles,
         crit_chance: cc,
         crit_mult: cd,
         status_chance: sc,

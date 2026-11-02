@@ -1,9 +1,9 @@
 {
-  "_note": "Health-class damage modifiers are left empty until verified against the current damage table; results then reflect armor, faction mods and status only.",
+  "_note": "Faction damage modifiers from Update 36 (wiki Damage/Grineer, Damage/Corpus, Damage/Infested, read 2026-11-02): vulnerable x1.5, no resistances. Shields and Overguard are not modelled.",
   "enemies": [
-    { "id": "sp-grineer", "name": "Steel Path Grineer (armor cap)", "faction": "grineer", "armor": 2700 },
-    { "id": "sp-corpus", "name": "Steel Path Corpus (unarmored)", "faction": "corpus", "armor": 0, "shields": true, "note": "Shields not modelled yet" },
-    { "id": "sp-infested", "name": "Steel Path Infested (light armor)", "faction": "infested", "armor": 300 },
+    { "id": "sp-grineer", "name": "Steel Path Grineer (armor cap)", "faction": "grineer", "armor": 2700, "healthModifiers": { "impact": 1.5, "corrosive": 1.5 } },
+    { "id": "sp-corpus", "name": "Steel Path Corpus (unarmored)", "faction": "corpus", "armor": 0, "shields": true, "note": "Shields not modelled yet", "healthModifiers": { "puncture": 1.5, "magnetic": 1.5 } },
+    { "id": "sp-infested", "name": "Steel Path Infested (light armor)", "faction": "infested", "armor": 300, "healthModifiers": { "slash": 1.5, "heat": 1.5 } },
     { "id": "boss-armored", "name": "Armored boss (armor cap)", "faction": "none", "armor": 2700, "isBoss": true }
   ]
 }

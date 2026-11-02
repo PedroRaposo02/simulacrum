@@ -8,7 +8,7 @@ import { loadSaved } from "./store";
 const FEATURES: [string, string][] = [
   ["Every weapon", "Primaries, secondaries, melee with stances, arch-guns and companion weapons, each attack mode computed separately."],
   ["Explainable numbers", "Every figure opens into the step-by-step calculation: mods, crit, status, armor and Viral."],
-  ["Best builds", "A search over mods, arcanes, Incarnon evolutions and a theoretical riven, with comfort and capacity options."],
+  ["Most DPS builds", "A search over mods, arcanes, Incarnon evolutions and a theoretical riven, with comfort and capacity options."],
   ["Rivens", "Real roll ranges with sliders, spliced stats, and a grade against the god roll for your weapon."],
   ["Scenario", "Enemy presets, outsourced Viral and Corrosive, Corrosive Projection, Roar, Eclipse, Nourish and companion bonds."],
 ];
@@ -30,11 +30,11 @@ export default function Home() {
       <div className="grid gap-3 sm:grid-cols-2">
         <button onClick={() => setTab("browser")} className="card text-left hover:border-indigo-500">
           <div className="font-semibold">Weapons →</div>
-          <p className="text-sm text-zinc-500">Rank all {data?.weapons.length ?? ""} weapons by category, unmodded or with their best builds.</p>
+          <p className="text-sm text-zinc-500">Rank all {data?.weapons.length ?? ""} weapons by category, unmodded or with their Most DPS builds.</p>
         </button>
         <button onClick={() => setTab("build")} className="card text-left hover:border-indigo-500">
           <div className="font-semibold">Build editor →</div>
-          <p className="text-sm text-zinc-500">Mod a weapon, add a riven and evolutions, and let the optimizer find the best build.</p>
+          <p className="text-sm text-zinc-500">Mod a weapon, add a riven and evolutions, and let the optimizer find the Most DPS build.</p>
         </button>
       </div>
       {(favWeapons.length > 0 || favBuilds.length > 0) && (

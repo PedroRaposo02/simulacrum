@@ -224,6 +224,8 @@ fn ability_damage_is_a_separate_multiplier() {
         aiming: false,
         only_slots: vec![],
         not_slots: vec![],
+        trigger: None,
+        mode_contains: None,
     };
     let base = Build { weapon: "Laetum".into(), mods: vec!["Hornet Strike".into()], ..Default::default() };
     let buffed = Build { buffs: vec![roar], ..base.clone() };
@@ -455,6 +457,8 @@ fn roar_is_faction_type_and_adds_to_bane() {
         aiming: false,
         only_slots: vec![],
         not_slots: vec![],
+        trigger: None,
+        mode_contains: None,
     };
     let t = Target { enemy: Some("sp-grineer".into()), armor_strip: 1.0, ..Default::default() };
     let base = compute(&fixture(), &Build { weapon: "Laetum".into(), ..Default::default() }, &t).unwrap().modes[0].per_shot;
@@ -480,6 +484,8 @@ fn with_mod(stat: wf_data::Stat, value: f64, condition: wf_data::Condition, thre
             aiming: false,
             only_slots: vec![],
             not_slots: vec![],
+            trigger: None,
+            mode_contains: None,
         }],
         ..Default::default()
     }
@@ -607,4 +613,161 @@ fn slot_scoped_buffs() {
     let mut not_secondary = with_mod(Stat::BaseDamage, 1.0, Always, None);
     not_secondary.buffs[0].not_slots = vec![Slot::Secondary];
     assert!(close(compute(&d, &not_secondary, &Target::default()).unwrap().modes[0].per_shot, base));
+}
+
+fn arcane(v: serde_json::Value) -> wf_data::Arcane {
+    serde_json::from_value(v).unwrap()
+}
+
+fn arcane_run(d: &mut GameData, a: serde_json::Value, weapon: &str, mods: &[&str], cond: Conditions) -> (BuildResult, BuildResult) {
+    let a = arcane(a);
+    let name = a.name.clone();
+    d.arcanes.push(a);
+    let b = Build { weapon: weapon.into(), mods: mods.iter().map(|s| s.to_string()).collect(), conditions: cond, ..Default::default() };
+    let without = compute(d, &b, &Target::default()).unwrap();
+    let with = compute(d, &Build { arcane: Some(name), ..b }, &Target::default()).unwrap();
+    (without, with)
+}
+
+#[test]
+fn melee_duplicate_repeats_yellow_crits() {
+    let mut d = melee_fixture();
+    let a = json!({"id": "dup", "name": "Melee Duplicate", "slot": "melee", "behaviour": "meleeDuplicate", "description": ""});
+    // 22% crit chance: 22% of hits are yellow crits.
+    let (base, dup) = arcane_run(&mut d, a.clone(), "Test Sword", &[], Conditions::default());
+    assert!(close(dup.modes[0].per_shot, base.modes[0].per_shot * 1.22));
+    // Blood Rush at 12x: 118.8% crit chance, so 81.2% of hits are yellow.
+    let (base, dup) = arcane_run(&mut melee_fixture(), a, "Test Sword", &["Blood Rush"], Conditions::default());
+    assert!(close(dup.modes[0].per_shot, base.modes[0].per_shot * (1.0 + (2.0 - 0.22 * 5.4))));
+}
+
+#[test]
+fn melee_crescendo_sets_a_combo_floor() {
+    let a = json!({"id": "cre", "name": "Melee Crescendo", "slot": "melee", "behaviour": null, "comboFloor": 12.0, "description": ""});
+    let c = Conditions { combo_multiplier: 1.0, heavy_combo_multiplier: 5.0, ..Default::default() };
+    let (base, cre) = arcane_run(&mut melee_fixture(), a, "Test Sword", &[], c);
+    assert!(close(cre.modes[1].per_shot, base.modes[1].per_shot * 12.0 / 5.0), "heavy combo 5x -> 12x");
+    assert_eq!(cre.modes[2].combo_multiplier, Some(12.0));
+}
+
+#[test]
+fn melee_retaliation_scales_with_shields() {
+    let a = json!({"id": "ret", "name": "Melee Retaliation", "slot": "melee", "behaviour": null, "description": "",
+        "modifiers": [{"source": "Melee Retaliation", "stat": {"kind": "baseDamage"}, "value": 0.3, "per": "shields200", "maxStacks": 14}]});
+    let (base, ret) = arcane_run(&mut melee_fixture(), a.clone(), "Test Sword", &[], Conditions { shields: 1000.0, ..Default::default() });
+    assert!(close(ret.modes[0].per_shot, base.modes[0].per_shot * 2.5));
+    let (base, ret) = arcane_run(&mut melee_fixture(), a, "Test Sword", &[], Conditions { shields: 9000.0, ..Default::default() });
+    assert!(close(ret.modes[0].per_shot, base.modes[0].per_shot * 5.2), "capped at +420%");
+}
+
+#[test]
+fn status_stack_arcane_fills_with_frequent_procs() {
+    // Heat procs about 0.26/s against a shared 10 s timer: Cascadia Flare reaches all 40 stacks.
+    let a = json!({"id": "fl", "name": "Cascadia Flare", "slot": "secondary", "behaviour": null, "description": "",
+        "stacking": {"status": "heat", "maxStacks": 40.0, "durationS": 10.0},
+        "modifiers": [{"source": "Cascadia Flare", "stat": {"kind": "baseDamage"}, "value": 0.12}]});
+    let (base, fl) = arcane_run(&mut fixture(), a, "Laetum", &["Heated Charge"], Conditions::default());
+    assert!(close(fl.modes[0].per_shot_raw, base.modes[0].per_shot_raw * 5.8));
+    assert!(fl.modes[0].approximations.iter().any(|s| s.contains("40.0 of 40")));
+}
+
+#[test]
+fn shiver_uses_cold_stacks_on_the_target() {
+    let a = json!({"id": "sh", "name": "Secondary Shiver", "slot": "secondary", "behaviour": null, "description": "",
+        "stacking": {"status": "cold", "maxStacks": 10.0},
+        "modifiers": [{"source": "Secondary Shiver", "stat": {"kind": "baseDamage"}, "value": 0.45}]});
+    let (base, sh) = arcane_run(&mut fixture(), a, "Laetum", &["Deep Freeze"], Conditions::default());
+    let stacks = (base.modes[0].procs_per_s[&wf_data::DamageType::Cold] * 6.0).min(10.0);
+    assert!(stacks > 0.5 && stacks < 10.0);
+    assert!(close(sh.modes[0].per_shot_raw, base.modes[0].per_shot_raw * (1.0 + 0.45 * stacks)));
+}
+
+#[test]
+fn longbow_sharpshot_follows_the_headshot_share() {
+    let a = json!({"id": "ls", "name": "Longbow Sharpshot", "slot": "primary", "behaviour": null, "description": "", "classes": ["bow"],
+        "modifiers": [{"source": "Longbow Sharpshot", "stat": {"kind": "finalDamage"}, "value": 3.0, "condition": "headshotShare"}]});
+    let (base, ls) = arcane_run(&mut fixture(), a.clone(), "Laetum", &[], Conditions::default());
+    assert!(close(ls.modes[0].per_shot, base.modes[0].per_shot), "no weak point hits, no bonus");
+    let hs = Conditions { headshot_share: 1.0, ..Default::default() };
+    let (base, ls) = arcane_run(&mut fixture(), a, "Laetum", &[], hs);
+    assert!(close(ls.modes[0].per_shot, base.modes[0].per_shot * 4.0));
+}
+
+fn with_evolution(d: &mut GameData, evo: serde_json::Value) {
+    d.weapons[0].modes[1].incarnon_form = true;
+    d.weapons[0].evolutions = serde_json::from_value(json!([{"tier": 4, "options": [evo]}])).unwrap();
+}
+
+#[test]
+fn armor_strip_per_status_stack() {
+    // Slash keeps ~2 stacks up; at 100% per stack the armor is gone, so damage equals raw.
+    let mut d = fixture();
+    with_evolution(&mut d, json!({"name": "Strip", "text": "", "behaviour": {"kind": "armorStripPerStatus", "status": "slash", "perStack": 1.0}}));
+    let t = Target { enemy: Some("sp-grineer".into()), ..Default::default() };
+    let base = evo_run(&d, &[], t.clone());
+    let r = evo_run(&d, &["Strip"], t);
+    assert!(base.modes[0].per_shot < base.modes[0].per_shot_raw);
+    assert!(close(r.modes[0].per_shot, r.modes[0].per_shot_raw));
+}
+
+#[test]
+fn headshot_only_crits() {
+    let mut d = fixture();
+    with_evolution(&mut d, json!({"name": "KG", "text": "", "behaviour": {"kind": "headshotOnlyCrits", "headCritChance": 1.5}}));
+    let b = |hs: f64| Build {
+        weapon: "Laetum".into(),
+        evolutions: vec!["KG".into()],
+        conditions: Conditions { headshot_share: hs, ..Default::default() },
+        ..Default::default()
+    };
+    let body = compute(&d, &b(0.0), &Target::default()).unwrap();
+    assert!(close(body.modes[0].per_shot, 160.0), "no crits on bodyshots");
+    let head = compute(&d, &b(1.0), &Target::default()).unwrap();
+    // Weak points: 22% + 22% x 1.5 = 55% crit chance at 2.2x, then x2 headshot.
+    let cc = 0.22 + 0.22 * 1.5;
+    assert!(close(head.modes[0].per_shot, 160.0 * 2.0 * ((1.0 - cc) + 2.0 * cc * 2.2)));
+}
+
+#[test]
+fn situational_triggers_are_off_unless_enabled() {
+    let mut d = fixture();
+    with_evolution(&mut d, json!({"name": "OS", "text": "", "modifiers": [
+        {"source": "OS", "stat": {"kind": "baseDamage"}, "value": 1.0, "trigger": "with overshields"}]}));
+    let base = evo_run(&d, &[], Target::default());
+    let off = evo_run(&d, &["OS"], Target::default());
+    assert!(close(off.modes[0].per_shot, base.modes[0].per_shot));
+    let b = Build {
+        weapon: "Laetum".into(),
+        evolutions: vec!["OS".into()],
+        conditions: Conditions { triggers: vec!["with overshields".into()], ..Default::default() },
+        ..Default::default()
+    };
+    let on = compute(&d, &b, &Target::default()).unwrap();
+    assert!(close(on.modes[0].per_shot, base.modes[0].per_shot * 2.0));
+}
+
+#[test]
+fn mode_scoped_modifier() {
+    let mut d = fixture();
+    with_evolution(&mut d, json!({"name": "Charge", "text": "", "modifiers": [
+        {"source": "C", "stat": {"kind": "baseDamage"}, "value": 1.0, "modeContains": "Incarnon"}]}));
+    let base = evo_run(&d, &[], Target::default());
+    let r = evo_run(&d, &["Charge"], Target::default());
+    assert!(close(r.modes[0].per_shot, base.modes[0].per_shot));
+    assert!(close(r.modes[1].per_shot, base.modes[1].per_shot * 2.0));
+}
+
+#[test]
+fn incarnon_sustained_includes_gauge_recharge() {
+    let mut d = fixture();
+    d.weapons[0].modes[1].incarnon_form = true;
+    d.weapons[0].modes[1].ammo_pool = serde_json::from_value(json!({"kind": "incarnon", "rounds": 40, "recharge_s": null, "charge_gain": 4.0})).unwrap();
+    let r = compute(&d, &Build { weapon: "Laetum".into(), ..Default::default() }, &Target::default()).unwrap();
+    let (normal, inc) = (&r.modes[0], &r.modes[1]);
+    // 10 weak point hits refill 40 rounds; half the normal form's hits land on weak points.
+    let hits_per_s = normal.sustained_dps / normal.per_shot * 0.5;
+    let t = 10.0 / hits_per_s;
+    let expected = (inc.per_shot * 40.0 + normal.sustained_dps * t) / (40.0 / inc.fire_rate + t);
+    assert!(close(inc.sustained_dps, expected));
+    assert!(inc.sustained_dps < inc.burst_dps);
 }

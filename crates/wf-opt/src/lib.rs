@@ -17,6 +17,7 @@ const MAX_EVOLUTION_COMBOS: usize = 64;
 #[derive(Clone)]
 struct Structure<'a> {
     score: f64,
+    progenitor: Option<wf_data::DamageType>,
     arcane: Option<&'a Arcane>,
     evolutions: Vec<&'a wf_data::Evolution>,
     mods: Vec<&'a Mod>,
@@ -74,8 +75,12 @@ pub enum Objective {
 #[serde(rename_all = "camelCase", default)]
 pub struct OptimizeOptions {
     pub objective: Objective,
-    /// Comfort for guns: builds above this fire rate (shots/s) rank below builds within it.
-    pub max_fire_rate: Option<f64>,
+    /// Comfort for guns: fire rate may rise at most this much over the weapon's unmodded rate
+    /// (1.5 = +150%); builds above it rank below builds within it.
+    pub max_fire_rate_bonus: Option<f64>,
+    /// Slot the explosion-radius mod (Primed Firestorm…) on weapons whose main attack is a
+    /// sizeable explosion.
+    pub explosion_mod: bool,
     /// Builds below this crit chance rank below builds that reach it (Tenacious Bond needs 50%
     /// on the companion's weapon).
     pub min_crit_chance: Option<f64>,
@@ -99,6 +104,8 @@ pub struct OptimizeOptions {
     pub allow_faction: bool,
     /// Search Incarnon evolutions (one per tier) along with the mods.
     pub evolutions: bool,
+    /// Kuva / Tenet progenitor element; None = search every element.
+    pub progenitor: Option<wf_data::DamageType>,
 }
 
 impl Default for OptimizeOptions {
@@ -111,9 +118,11 @@ impl Default for OptimizeOptions {
             min_attack_speed: None,
             range_tolerance: None,
             capacity: None,
+            progenitor: None,
             spliced_riven: true,
             objective: Objective::Balanced,
-            max_fire_rate: None,
+            max_fire_rate_bonus: None,
+            explosion_mod: true,
             min_crit_chance: None,
             fixed_riven: vec![],
             allow_faction: false,
@@ -226,6 +235,9 @@ pub struct OptimizeResult {
     pub per_charge: Option<f64>,
     /// Chosen Incarnon evolutions (one per tier that has options).
     pub evolutions: Vec<String>,
+    /// Progenitor element (Kuva / Tenet weapons).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progenitor: Option<wf_data::DamageType>,
     /// Modded attack speed (melee) and range of the result.
     pub attack_speed: Option<f64>,
     pub range_m: Option<f64>,
@@ -246,6 +258,7 @@ impl OptimizeResult {
             arcane: self.arcane.clone(),
             riven: riven_modifiers(data, &self.riven),
             evolutions: self.evolutions.clone(),
+            progenitor: self.progenitor,
             ..base.clone()
         }
     }
@@ -269,6 +282,8 @@ pub fn riven_modifiers(data: &GameData, picks: &[RivenPick]) -> Vec<Modifier> {
                 aiming: false,
                 only_slots: vec![],
                 not_slots: vec![],
+                trigger: None,
+                mode_contains: None,
             })
         })
         .collect()
@@ -298,30 +313,77 @@ struct Ctx<'a> {
     candidates: Vec<&'a Mod>,
     evals: u64,
     min_attack_speed: Option<f64>,
-    max_fire_rate: Option<f64>,
+    /// Minimum attacks per second (Balanced heavy attacks: +100% over the unmodded heavy).
+    min_rate: Option<f64>,
+    /// Absolute fire rate cap (shots/s) from `max_fire_rate_bonus`.
+    max_rate: Option<f64>,
     min_crit_chance: Option<f64>,
     objective: Objective,
     rate_cap: f64,
     capacity: Option<CapacityOptions>,
     evolutions: Vec<&'a wf_data::Evolution>,
+    /// Mods every build must contain (the explosion-radius mod).
+    forced: Vec<&'a Mod>,
 }
 
-/// Shots per second above which more fire rate stops being useful for a gun mode.
-pub fn comfort_rate_cap(mode: &wf_data::AttackMode) -> f64 {
-    use wf_data::Trigger::*;
-    let by_trigger: f64 = match mode.trigger {
-        Semi | Charge => 6.0,
-        Burst => 8.0,
-        _ => 10.0,
-    };
-    by_trigger.max(mode.fire_rate * 1.25)
+/// The Balanced objective stops valuing fire rate past this bonus over the unmodded rate.
+pub const BALANCED_FIRE_RATE_BONUS: f64 = 1.5;
+/// Melee light attacks: attack speed past this bonus counts for nothing (one Primed Fury's worth),
+/// so slots go to damage; Arcane Strike alone fills it.
+pub const BALANCED_ATTACK_SPEED_BONUS: f64 = 0.6;
+/// Heavy attacks: a comfortable heavy is about +100% faster than unmodded (wind-up speed and attack
+/// speed together). The Balanced objective aims for it and values nothing past it.
+pub const BALANCED_HEAVY_SPEED_BONUS: f64 = 1.0;
+
+/// Balanced cap for an attack: guns by fire rate, melee light attacks by attack speed, heavies uncapped.
+fn balanced_rate_cap(weapon: &Weapon, mode: &wf_data::AttackMode, base_rate: f64) -> f64 {
+    match mode.melee_role {
+        Some(wf_data::MeleeRole::Heavy) => base_rate * (1.0 + BALANCED_HEAVY_SPEED_BONUS),
+        Some(_) => base_rate * (1.0 + BALANCED_ATTACK_SPEED_BONUS),
+        None if weapon.slot == wf_data::Slot::Melee => base_rate * (1.0 + BALANCED_ATTACK_SPEED_BONUS),
+        None => base_rate * (1.0 + BALANCED_FIRE_RATE_BONUS),
+    }
+}
+/// An attack counts as "explosive" when a radial component reaches this radius and share of base damage.
+const EXPLOSIVE_RADIUS_M: f64 = 3.0;
+const EXPLOSIVE_SHARE: f64 = 0.25;
+
+fn pool_key(p: wf_data::ModPool) -> &'static str {
+    match p {
+        wf_data::ModPool::Primary => "primary",
+        wf_data::ModPool::Shotgun => "shotgun",
+        wf_data::ModPool::Secondary => "secondary",
+        wf_data::ModPool::Melee => "melee",
+        wf_data::ModPool::ArchGun => "archGun",
+        wf_data::ModPool::Companion => "companion",
+    }
+}
+
+/// Main damage of this attack is a sizeable explosion delivered by a projectile (Torid, Tonkor),
+/// not a hitscan rifle with a small pop (Trumna auto, Braton Incarnon).
+pub fn is_explosive(mode: &wf_data::AttackMode) -> bool {
+    if mode.shot.as_deref() == Some("hitscan") || mode.shot.as_deref() == Some("beam") {
+        return false;
+    }
+    let total: f64 = mode.components.iter().map(|c| c.damage.values().sum::<f64>()).sum();
+    let radial: f64 = mode
+        .components
+        .iter()
+        .filter(|c| c.kind == wf_data::HitKind::Radial && c.falloff.as_ref().is_some_and(|f| f.end_m >= EXPLOSIVE_RADIUS_M))
+        .map(|c| c.damage.values().sum::<f64>())
+        .sum();
+    total > 0.0 && radial / total >= EXPLOSIVE_SHARE
 }
 
 fn objective_value(objective: Objective, m: &wf_calc::ModeResult, cap: f64) -> f64 {
     match objective {
         Objective::Balanced => {
-            if m.attack_speed.is_some() || m.fire_rate <= cap || m.fire_rate <= 0.0 {
+            if m.fire_rate <= cap || m.fire_rate <= 0.0 {
                 return m.sustained_dps;
+            }
+            // Melee: swings past the cap don't count.
+            if m.attack_speed.is_some() {
+                return m.sustained_dps * cap / m.fire_rate;
             }
             // Same shots, but only `cap` of them per second count; reloads still apply.
             let per_shot = m.burst_dps / m.fire_rate;
@@ -374,7 +436,12 @@ impl<'a> Ctx<'a> {
                         return -(min - speed) - 1.0;
                     }
                 }
-                if let Some(max) = self.max_fire_rate {
+                if let Some(min) = self.min_rate {
+                    if m.fire_rate < min - 1e-9 {
+                        return -(min - m.fire_rate) / min - 1.0;
+                    }
+                }
+                if let Some(max) = self.max_rate {
                     if m.attack_speed.is_none() && m.fire_rate > max + 1e-9 {
                         return -(m.fire_rate - max) - 1.0;
                     }
@@ -398,6 +465,9 @@ impl<'a> Ctx<'a> {
             return false;
         }
         if mods.len() == normal_slots + 1 && !mods[normal_slots].is_exilus {
+            return false;
+        }
+        if !self.forced.iter().all(|f| mods.iter().any(|m| m.id == f.id)) {
             return false;
         }
         if let Some(cap) = &self.capacity {
@@ -435,6 +505,11 @@ impl<'a> Ctx<'a> {
         local: bool,
     ) -> (Vec<&'a Mod>, f64) {
         let mut set = start;
+        for f in self.forced.clone().into_iter().rev() {
+            if !set.iter().any(|m| m.id == f.id) {
+                set.insert(0, f);
+            }
+        }
         let mut best = self.eval(&set, arcane, riven);
         let cands = self.candidates.clone();
 
@@ -519,10 +594,15 @@ impl<'a> Ctx<'a> {
     ) -> (Vec<&'a Mod>, Vec<RivenStat>, f64) {
         // The riven takes one normal slot: drop the weakest normal mod if all 8 are used.
         let normal_slots = NORMAL_SLOTS - 1;
+        // Forced mods (explosion radius) always stay; stop if nothing else is left to drop.
+        let forced = |ctx: &Self, m: &Mod| ctx.forced.iter().any(|f| f.id == m.id);
         while !self.valid(&mods, normal_slots) {
             let full = self.eval(&mods, arcane, &[]);
             let mut weakest: Option<(usize, f64)> = None;
             for i in 0..mods.len() {
+                if forced(self, mods[i]) {
+                    continue;
+                }
                 let mut next = mods.clone();
                 next.remove(i);
                 if !self.valid(&next, normal_slots) && next.len() > normal_slots {
@@ -537,9 +617,12 @@ impl<'a> Ctx<'a> {
                 Some((i, _)) => {
                     mods.remove(i);
                 }
-                None => {
-                    mods.pop();
-                }
+                None => match mods.iter().rposition(|m| !forced(self, m)) {
+                    Some(i) => {
+                        mods.remove(i);
+                    }
+                    None => break,
+                },
             }
         }
 
@@ -654,6 +737,7 @@ fn arcane_slot(w: &Weapon) -> &'static str {
     match w.slot {
         wf_data::Slot::Primary => "primary",
         wf_data::Slot::Secondary => "secondary",
+        wf_data::Slot::Melee => "melee",
         _ => "",
     }
 }
@@ -727,10 +811,11 @@ fn optimize_mode(
     let faction = enemy.as_ref().map_or(Faction::None, |e| e.faction);
     let build = Build { weapon: weapon.id.clone(), mods: vec![], arcane: None, riven: vec![], ..base.clone() };
 
+    let never = |m: &Mod| data.rules.never.iter().any(|n| n.eq_ignore_ascii_case(&m.name));
     let candidates: Vec<&Mod> = data
         .mods
         .iter()
-        .filter(|m| m.fits(weapon) && m.modifiers.iter().any(|x| stat_matters(x.stat, faction, opts.allow_faction)))
+        .filter(|m| m.fits(weapon) && !never(m) && m.modifiers.iter().any(|x| stat_matters(x.stat, faction, opts.allow_faction)))
         .collect();
 
     let mut ctx = Ctx {
@@ -742,12 +827,14 @@ fn optimize_mode(
         candidates,
         evals: 0,
         min_attack_speed: opts.min_attack_speed,
-        max_fire_rate: opts.max_fire_rate,
+        min_rate: None,
+        max_rate: None,
         min_crit_chance: opts.min_crit_chance,
         objective: opts.objective,
         rate_cap: f64::INFINITY,
         capacity: opts.capacity.clone(),
         evolutions: vec![],
+        forced: vec![],
     };
 
     let mode = match opts.mode {
@@ -765,7 +852,28 @@ fn optimize_mode(
         }
     };
     ctx.mode = mode;
-    ctx.rate_cap = weapon.modes.get(mode).map_or(f64::INFINITY, comfort_rate_cap);
+    // Fire rate caps are relative to the unmodded rate of this attack (charge timing included).
+    let base_rate = ctx.mode_result(&[], None, &[]).map_or(0.0, |m| m.fire_rate);
+    if base_rate > 0.0 {
+        ctx.rate_cap = balanced_rate_cap(weapon, &weapon.modes[mode], base_rate);
+        if opts.objective == Objective::Balanced && weapon.modes[mode].melee_role == Some(wf_data::MeleeRole::Heavy) {
+            ctx.min_rate = Some(base_rate * (1.0 + BALANCED_HEAVY_SPEED_BONUS));
+        }
+        ctx.max_rate = opts.max_fire_rate_bonus.map(|b| base_rate * (1.0 + b));
+    }
+    // Judged on the weapon's main fire mode (Torid: grenades yes; Trumna: the auto rifle, no).
+    let main_mode = weapon.modes.iter().find(|m| m.is_headline() && !m.incarnon_form).or(weapon.modes.first());
+    if main_mode.is_some_and(is_explosive) {
+        // Explosions can't headshot: headshot-triggered mods (Galvanized Scope, Deadhead) are dead weight.
+        ctx.build.conditions.headshot_effects = false;
+        ctx.build.conditions.headshot_share = 0.0;
+    }
+    if opts.explosion_mod && main_mode.is_some_and(is_explosive) {
+        let names = data.rules.explosion_radius.get(pool_key(weapon.mod_pool)).cloned().unwrap_or_default();
+        if let Some(m) = names.iter().filter_map(|n| data.find_mod(n)).find(|m| m.fits(weapon)) {
+            ctx.forced = vec![m];
+        }
+    }
     let mode_def = weapon
         .modes
         .get(mode)
@@ -786,7 +894,12 @@ fn optimize_mode(
         let list: Vec<Option<&Arcane>> = if opts.arcane {
             data.arcanes
                 .iter()
-                .filter(|a| a.slot == slot && (a.behaviour.is_some() || a.modifiers.iter().any(|m| stat_matters(m.stat, faction, opts.allow_faction))))
+                .filter(|a| a.slot == slot && (a.classes.is_empty() || a.classes.contains(&weapon.class)))
+                .filter(|a| {
+                    a.behaviour.is_some()
+                        || a.combo_floor.is_some()
+                        || a.modifiers.iter().any(|m| stat_matters(m.stat, faction, opts.allow_faction))
+                })
                 .map(Some)
                 .collect()
         } else {
@@ -803,18 +916,28 @@ fn optimize_mode(
         .collect();
     let structure_slots = if fixed.is_empty() { NORMAL_SLOTS } else { NORMAL_SLOTS - 1 };
 
+    // Kuva / Tenet: the progenitor element is part of the structure (it changes which elements to mod).
+    let progenitors: Vec<Option<wf_data::DamageType>> = match (weapon.progenitor, opts.progenitor) {
+        (false, _) => vec![None],
+        (true, Some(t)) => vec![Some(t)],
+        (true, None) => wf_calc::PROGENITOR_ELEMENTS.iter().map(|t| Some(*t)).collect(),
+    };
     let mut candidates_found: Vec<Structure<'_>> = Vec::new();
-    for &a in &arcanes {
-        for evos in &evo_combos {
-            ctx.evolutions = evos.clone();
-            let (m, v) = ctx.search(vec![], a, &fixed, structure_slots, false);
-            candidates_found.push(Structure { score: v, arcane: a, evolutions: evos.clone(), mods: m });
+    for &pg in &progenitors {
+        ctx.build.progenitor = pg;
+        for &a in &arcanes {
+            for evos in &evo_combos {
+                ctx.evolutions = evos.clone();
+                let (m, v) = ctx.search(vec![], a, &fixed, structure_slots, false);
+                candidates_found.push(Structure { score: v, progenitor: pg, arcane: a, evolutions: evos.clone(), mods: m });
+            }
         }
     }
     candidates_found.sort_by(|x, y| y.score.total_cmp(&x.score));
     let mut finals: Vec<Structure<'_>> = Vec::new();
     for c in candidates_found.into_iter().take(STRUCTURE_FINALISTS) {
         ctx.evolutions = c.evolutions.clone();
+        ctx.build.progenitor = c.progenitor;
         let (m, v) = ctx.search(c.mods.clone(), c.arcane, &fixed, structure_slots, true);
         finals.push(Structure { score: v, mods: m, ..c });
     }
@@ -825,6 +948,7 @@ fn optimize_mode(
     let mut best = top.score;
     let mut arcane = top.arcane;
     ctx.evolutions = top.evolutions.clone();
+    ctx.build.progenitor = top.progenitor;
     let mut riven: Vec<RivenStat> = fixed.clone();
     let mut negative: Option<RivenPick> = None;
 
@@ -839,6 +963,7 @@ fn optimize_mode(
         // The riven can change which structure wins, so try it on the best two.
         for st in finals.iter().take(RIVEN_STRUCTURES) {
             ctx.evolutions = st.evolutions.clone();
+            ctx.build.progenitor = st.progenitor;
             for positives in [3usize, 2] {
                 let Some(layout) = table.layout(positives, true) else { continue };
                 let Some(neg_def) = table.stats.iter().find(|s| s.stat.is_none() && s.base.contains_key(&ty)) else { continue };
@@ -865,6 +990,8 @@ fn optimize_mode(
                                 aiming: false,
                                 only_slots: vec![],
                                 not_slots: vec![],
+                                trigger: None,
+                                mode_contains: None,
                             },
                         })
                     })
@@ -890,42 +1017,97 @@ fn optimize_mode(
         }
     }
 
-    // The exilus slot is never left empty: the best eligible mod by the objective, and on a tie
-    // a utility pick (Ammo Mutation for guns, a Tennokai mod for melee).
+    // Discouraged mods (Heavy Caliber) stay only if every alternative is clearly worse.
     {
         let normal_slots = if riven.is_empty() { NORMAL_SLOTS } else { NORMAL_SLOTS - 1 };
-        if mods.len() == normal_slots {
-            let preference = |m: &Mod| -> i32 {
-                if m.name.starts_with("Primed") && m.name.contains("Ammo Mutation") {
-                    3
-                } else if m.name.contains("Ammo Mutation") {
-                    2
-                } else if m.enables_tennokai {
-                    1
-                } else {
-                    0
+        for (name, tol) in data.rules.discouraged.clone() {
+            let Some(i) = mods.iter().position(|m| m.name.eq_ignore_ascii_case(&name)) else { continue };
+            let mut alt: Option<(Vec<&Mod>, f64)> = None;
+            for &c in ctx.candidates.clone().iter() {
+                if mods.iter().any(|m| m.id == c.id) || c.name.eq_ignore_ascii_case(&name) {
+                    continue;
                 }
-            };
-            let mut pick: Option<(&Mod, f64, i32)> = None;
-            for m in data.mods.iter().filter(|m| m.is_exilus && m.fits(weapon) && !mods.iter().any(|x| x.id == m.id)) {
                 let mut next = mods.clone();
-                next.push(m);
+                next[i] = c;
                 if !ctx.valid(&next, normal_slots) {
                     continue;
                 }
                 let v = ctx.eval(&next, arcane, &riven);
-                let pref = preference(m);
-                let better = match pick {
-                    None => v >= best * (1.0 - 1e-9),
-                    Some((_, pv, pp)) => v > pv * (1.0 + 1e-9) || ((v - pv).abs() <= pv.abs() * 1e-9 && pref > pp),
-                };
-                if better {
-                    pick = Some((m, v, pref));
+                if alt.as_ref().is_none_or(|(_, av)| v > *av) {
+                    alt = Some((next, v));
                 }
             }
-            if let Some((m, v, _)) = pick {
+            if let Some((next, v)) = alt {
+                if v >= best * (1.0 - tol) {
+                    mods = next;
+                    best = v;
+                }
+            }
+        }
+    }
+
+    // Exilus: a damage mod gets there through the search when it helps. Otherwise a utility mod
+    // that suits the attack (beam range, projectile speed, recoil/ammo), never junk.
+    {
+        let normal_slots = if riven.is_empty() { NORMAL_SLOTS } else { NORMAL_SLOTS - 1 };
+        if mods.len() == normal_slots {
+            let shot = weapon.modes.get(mode).and_then(|m| m.shot.clone()).unwrap_or_default();
+            let kind = match shot.as_str() {
+                "beam" => "beam",
+                "hitscan" => "hitscan",
+                _ => "projectile",
+            };
+            let names = data
+                .rules
+                .utility_exilus
+                .get(pool_key(weapon.mod_pool))
+                .and_then(|m| m.get(kind))
+                .cloned()
+                .unwrap_or_default();
+            for n in names {
+                let Some(m) = data.find_mod(&n) else { continue };
+                if !m.is_exilus || !m.fits(weapon) || mods.iter().any(|x| x.id == m.id) {
+                    continue;
+                }
+                let mut next = mods.clone();
+                next.push(m);
+                if ctx.valid(&next, normal_slots) {
+                    let v = ctx.eval(&next, arcane, &riven);
+                    if v >= best * (1.0 - 1e-9) {
+                        mods = next;
+                        best = v;
+                        break;
+                    }
+                }
+            }
+        }
+        // Melee: a matching max-rank stance adds capacity on top of the 60.
+        let max_capacity = 60.0 + weapon.stance_capacity.unwrap_or(0.0);
+        // If even a fully forma'd build can't fit 60 capacity, the exilus goes first.
+        let full_forma = |ms: &[&Mod]| -> f64 {
+            ms.iter().map(|m| ((m.base_drain + m.max_rank as i32).max(0) as f64 / 2.0).ceil()).sum::<f64>()
+                + if riven.is_empty() { 0.0 } else { 9.0 }
+        };
+        if mods.len() == normal_slots + 1 && full_forma(&mods) > max_capacity {
+            let exilus = mods.pop().unwrap();
+            // A cheaper exilus that still fits, if one is as good.
+            let mut swap: Option<(&Mod, f64)> = None;
+            for m in data.mods.iter().filter(|m| m.is_exilus && m.fits(weapon) && !never(m) && m.id != exilus.id) {
+                let mut next = mods.clone();
+                next.push(m);
+                if full_forma(&next) > max_capacity || !ctx.valid(&next, normal_slots) {
+                    continue;
+                }
+                let v = ctx.eval(&next, arcane, &riven);
+                if v >= best * (1.0 - 1e-9) && swap.is_none_or(|(_, sv)| v > sv) {
+                    swap = Some((m, v));
+                }
+            }
+            if let Some((m, v)) = swap {
                 mods.push(m);
-                best = best.max(v);
+                best = v;
+            } else {
+                best = ctx.eval(&mods, arcane, &riven);
             }
         }
     }
@@ -1011,7 +1193,8 @@ fn optimize_mode(
     let below_floor = match (opts.min_attack_speed, &final_mode) {
         (Some(min), Some(m)) => m.attack_speed.unwrap_or(m.fire_rate) < min - 1e-9,
         _ => false,
-    } || matches!((opts.max_fire_rate, &final_mode), (Some(max), Some(m)) if m.attack_speed.is_none() && m.fire_rate > max + 1e-9)
+    } || matches!((ctx.max_rate, &final_mode), (Some(max), Some(m)) if m.attack_speed.is_none() && m.fire_rate > max + 1e-9)
+        || matches!((ctx.min_rate, &final_mode), (Some(min), Some(m)) if m.fire_rate < min - 1e-9)
         || matches!((opts.min_crit_chance, &final_mode), (Some(min), Some(m)) if m.components.iter().map(|c| c.crit_chance).fold(0.0, f64::max) < min - 1e-9);
     let drain = opts.capacity.as_ref().map(|c| total_drain(&mods, normal_slots, c));
 
@@ -1043,6 +1226,7 @@ fn optimize_mode(
         marginal,
         evaluations: ctx.evals,
         evolutions: ctx.evolutions.iter().map(|e| e.name.clone()).collect(),
+        progenitor: ctx.build.progenitor,
     })
 }
 
@@ -1087,18 +1271,24 @@ pub fn rank_rivens(data: &GameData, weapon_key: &str, base: &Build, target: &Tar
         weapon,
         enemy,
         target,
-        build: Build { weapon: weapon.id.clone(), mods: vec![], arcane: None, riven: vec![], ..base.clone() },
+        build: Build { weapon: weapon.id.clone(), mods: vec![], arcane: None, riven: vec![], progenitor: best.progenitor, ..base.clone() },
         mode: best.mode_index,
         candidates: vec![],
         evals: 0,
         min_attack_speed: opts.min_attack_speed,
-        max_fire_rate: opts.max_fire_rate,
+        min_rate: None,
+        max_rate: None,
         min_crit_chance: opts.min_crit_chance,
         objective: opts.objective,
-        rate_cap: weapon.modes.get(best.mode_index).map_or(f64::INFINITY, comfort_rate_cap),
+        rate_cap: f64::INFINITY,
         capacity: None,
         evolutions,
+        forced: vec![],
     };
+    if let Some(base) = ctx.mode_result(&[], None, &[]).map(|m| m.fire_rate).filter(|r| *r > 0.0) {
+        ctx.rate_cap = balanced_rate_cap(weapon, &weapon.modes[best.mode_index], base);
+        ctx.max_rate = opts.max_fire_rate_bonus.map(|b| base * (1.0 + b));
+    }
     let roll = table.roll_max;
     let pool: Vec<&wf_data::RivenStatDef> = table
         .stats
@@ -1132,6 +1322,8 @@ pub fn rank_rivens(data: &GameData, weapon_key: &str, base: &Build, target: &Tar
                             aiming: false,
                             only_slots: vec![],
                             not_slots: vec![],
+                            trigger: None,
+                            mode_contains: None,
                         },
                     })
                     .collect();

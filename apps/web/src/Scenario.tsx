@@ -1,6 +1,6 @@
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Slider, Toggle } from "./Common";
-import { buffBaseValue, defaultScenario, useStore } from "./store";
+import { buffBaseValue, userDefaultScenario, useStore } from "./store";
 import type { Conditions, Target } from "./types";
 
 function Section({ title, children, defaultOpen = true }: { title: string; children: ReactNode; defaultOpen?: boolean }) {
@@ -18,8 +18,23 @@ function Section({ title, children, defaultOpen = true }: { title: string; child
 
 /** Shared enemy, outsourced status, buffs and conditions: applies to the browser and the editor. */
 export default function ScenarioPanel() {
-  const { data, scenario, setScenario } = useStore();
+  const { data, scenario, setScenario, build } = useStore();
   const { target, conditions } = scenario;
+  // Situational triggers anywhere in the data, and the ones the open weapon can use.
+  const { allTriggers, weaponTriggers } = useMemo(() => {
+    const of = (mods: { trigger?: string }[] | undefined) => (mods ?? []).flatMap((m) => (m.trigger ? [m.trigger] : []));
+    const all = new Set<string>();
+    for (const w of data!.weapons) for (const t of w.evolutions ?? []) for (const o of t.options) of(o.modifiers).forEach((x) => all.add(x));
+    for (const a of data!.arcanes) of(a.modifiers).forEach((x) => all.add(x));
+    const weapon = data!.weapons.find((w) => w.id === build.weapon);
+    const mine = new Set<string>();
+    for (const t of weapon?.evolutions ?? []) for (const o of t.options) of(o.modifiers).forEach((x) => mine.add(x));
+    for (const a of data!.arcanes) if (weapon && a.slot === weapon.slot) of(a.modifiers).forEach((x) => mine.add(x));
+    return { allTriggers: [...all].sort(), weaponTriggers: mine };
+  }, [data, build.weapon]);
+  const triggers = conditions.triggers ?? [];
+  const setTrigger = (t: string, on: boolean) => setC({ triggers: on ? [...triggers, t] : triggers.filter((x) => x !== t) });
+  const sortedTriggers = [...allTriggers].sort((a, b) => Number(weaponTriggers.has(b)) - Number(weaponTriggers.has(a)));
   const setT = (t: Partial<Target>) => setScenario({ ...scenario, target: { ...target, ...t } });
   const setC = (c: Partial<Conditions>) => setScenario({ ...scenario, conditions: { ...conditions, ...c } });
 
@@ -27,7 +42,8 @@ export default function ScenarioPanel() {
     <aside className="card space-y-3 self-start">
       <div className="flex items-center justify-between">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Scenario</h2>
-        <button className="text-xs text-indigo-600 hover:underline" onClick={() => setScenario(defaultScenario())}>
+        <button className="text-xs text-indigo-600 hover:underline" onClick={() => setScenario(userDefaultScenario())}
+          title="Back to your default scenario (Settings), or the built-in one">
           Reset
         </button>
       </div>
@@ -134,7 +150,25 @@ export default function ScenarioPanel() {
         <p className="text-xs text-zinc-500">Values are at 100% strength; hover for the scaled value. Defaults need in-game checks.</p>
       </Section>
 
+      <Section title="Situational triggers" defaultOpen={false}>
+        <p className="text-xs text-zinc-500">
+          Bonuses that need a particular loadout or play style. Off by default (best builds assume them off); turn on the ones your setup keeps up.
+        </p>
+        {sortedTriggers.map((t) => (
+          <label key={t} className="flex items-center gap-2 text-xs">
+            <input type="checkbox" className="accent-indigo-600" checked={triggers.includes(t)} onChange={(e) => setTrigger(t, e.target.checked)} />
+            <span className={weaponTriggers.has(t) ? "" : "text-zinc-500"}>{t.charAt(0).toUpperCase() + t.slice(1)}</span>
+            {weaponTriggers.has(t) && <span className="rounded bg-indigo-600/15 px-1 text-[10px] text-indigo-500">this weapon</span>}
+          </label>
+        ))}
+      </Section>
+
       <Section title="Conditions" defaultOpen={false}>
+        <Slider
+          label="Incarnon charging: weak point hit share"
+          value={conditions.incarnonChargeShare ?? 0.5}
+          onChange={(v) => setC({ incarnonChargeShare: Math.max(0.05, v) })}
+        />
         <Slider label="Conditional uptime (on-kill stacks…)" value={conditions.conditionalUptime} onChange={(v) => setC({ conditionalUptime: v })} />
         <Toggle label="Headshot-triggered effects active" checked={conditions.headshotEffects} onChange={(v) => setC({ headshotEffects: v })} />
         <Slider label="Headshot share" value={conditions.headshotShare} onChange={(v) => setC({ headshotShare: v })} />
@@ -164,6 +198,15 @@ export default function ScenarioPanel() {
           step={0.5}
           display={`${conditions.heavyComboMultiplier}×`}
           onChange={(v) => setC({ heavyComboMultiplier: v })}
+        />
+        <Slider
+          label="Warframe shields (Melee Retaliation)"
+          value={conditions.shields ?? 0}
+          min={0}
+          max={3000}
+          step={100}
+          display={String(conditions.shields ?? 0)}
+          onChange={(v) => setC({ shields: v })}
         />
       </Section>
     </aside>

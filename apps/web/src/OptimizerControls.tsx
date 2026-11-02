@@ -1,11 +1,12 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { usePersistent } from "./persist";
 import { rivenModifiers } from "./riven";
 import { buildFromBest, fmt, optimizeInWorker, pct, scenarioBuild, SLOT_COUNT, useStore } from "./store";
 import { Toggle } from "./Common";
 import type { EditorBuild, Objective, OptimizeOptions, OptimizeResult, Weapon } from "./types";
 
 const OBJECTIVES: [Objective, string, string][] = [
-  ["balanced", "Balanced (recommended)", "Sustained DPS where fire rate above a comfortable rate adds nothing: slots go to damage and status"],
+  ["balanced", "Balanced (recommended)", "Sustained DPS where fire rate past +150% over the weapon's base adds nothing: slots go to damage and status"],
   ["burst", "Burst DPS", "Damage per second while firing, ignoring reloads"],
   ["sustained", "Sustained DPS", "Includes reloads"],
   ["perShot", "Damage per shot / combo", "Ignores fire rate entirely"],
@@ -20,8 +21,8 @@ export interface ComfortSettings {
   minAttackSpeed: number;
   /** Melee: accept a range mod up to this DPS cost. */
   rangeTolerance: number;
-  /** Guns: fire rate cap, so the magazine doesn't empty instantly. */
-  maxFireRate: number;
+  /** Guns: max fire-rate bonus over the unmodded rate (1.5 = +150%), so the magazine doesn't empty instantly. */
+  maxFireRateBonus: number;
 }
 
 export interface OptimizerState {
@@ -45,15 +46,18 @@ export default function OptimizerControls({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<number | "auto">("auto");
-  const [realistic, setRealistic] = useState(false);
-  const [capacity, setCapacity] = useState(60);
+  const [realistic, setRealistic] = usePersistent("opt.realistic", false);
+  const [capacity, setCapacity] = usePersistent("opt.capacity", 60);
   const [polarities, setPolarities] = useState<(string | null)[]>(Array(SLOT_COUNT + 1).fill(null));
   const [grade, setGrade] = useState<{ ratio: number; god: number; mine: number } | null>(null);
-  const [allowFaction, setAllowFaction] = useState(false);
-  const [objective, setObjective] = useState<Objective>("balanced");
+  const [allowFaction, setAllowFaction] = usePersistent("opt.allowFaction", false);
+  const [objective, setObjective] = usePersistent<Objective>("opt.objective", "balanced");
   const isCompanion = weapon.slot === "companion";
-  const [tenacious, setTenacious] = useState(false);
-  const [spliced, setSpliced] = useState(true);
+  const [tenacious, setTenacious] = usePersistent("opt.tenacious", false);
+  const [spliced, setSpliced] = usePersistent("opt.spliced", true);
+  const [explosionMod, setExplosionMod] = usePersistent("opt.explosionMod", true);
+  // The last optimizer action, re-run whenever an option changes.
+  const last = useRef<{ label: string; extra: OptimizeOptions; previous: EditorBuild } | null>(null);
 
   const isMelee = !!weapon.melee;
   const heavyIndex = weapon.modes.findIndex((m) => m.meleeRole === "heavy");
@@ -63,7 +67,8 @@ export default function OptimizerControls({
     splicedRiven: spliced,
     mode: mode === "auto" ? null : mode,
     minAttackSpeed: comfort.on && isMelee ? comfort.minAttackSpeed : null,
-    maxFireRate: comfort.on && !isMelee ? comfort.maxFireRate : null,
+    maxFireRateBonus: comfort.on && !isMelee ? comfort.maxFireRateBonus : null,
+    explosionMod,
     minCritChance: isCompanion && tenacious ? 0.5 : null,
     rangeTolerance: comfort.on && isMelee ? comfort.rangeTolerance : null,
     capacity: realistic ? { capacity, polarities, rivenDrain: 9 } : null,
@@ -83,10 +88,12 @@ export default function OptimizerControls({
     return r.ok;
   };
 
-  const apply = async (label: string, extra: OptimizeOptions) => {
+  const apply = async (label: string, extra: OptimizeOptions, rerun = false) => {
     const r = await run(label, extra);
     if (!r) return;
-    const previous = build;
+    // A re-run after an option change keeps "undo" pointing at the build from before the first run.
+    const previous = rerun && last.current ? last.current.previous : build;
+    last.current = { label, extra, previous };
     const next = buildFromBest(data!, weapon, r);
     // A fixed (graded) riven keeps the user's own rolls.
     if (extra.fixedRiven?.length) next.riven = build.riven;
@@ -105,16 +112,33 @@ export default function OptimizerControls({
     if (god && own) setGrade({ ratio: own.score / god.score, god: god.score, mine: own.score });
   };
 
+  // Options change the build: re-run the last optimizer action (debounced for number inputs).
+  // The scenario too: outsourced Viral, buffs or a new enemy change which build and riven win.
+  const optionsKey = JSON.stringify([objective, spliced, explosionMod, mode, comfort, tenacious, realistic, capacity, polarities, allowFaction, scenario]);
+  const firstKey = useRef(optionsKey);
+  useEffect(() => {
+    if (optionsKey === firstKey.current || !last.current) return;
+    const t = setTimeout(() => {
+      if (last.current) apply(last.current.label, last.current.extra, true);
+    }, 400);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [optionsKey]);
+  // A different weapon starts fresh.
+  useEffect(() => {
+    last.current = null;
+  }, [weapon.id]);
+
   const btn = "rounded-md px-3 py-1.5 text-sm text-white disabled:opacity-60";
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-2">
-        <button disabled={!!busy} onClick={() => apply("Best build", {})} className={`${btn} bg-indigo-600 hover:bg-indigo-500`}>
-          {busy === "Best build" ? "Searching…" : "Best build"}
+        <button disabled={!!busy} onClick={() => apply("Most DPS Build", {})} className={`${btn} bg-indigo-600 hover:bg-indigo-500`}>
+          {busy === "Most DPS Build" ? "Searching…" : "Most DPS Build"}
         </button>
-        <button disabled={!!busy} onClick={() => apply("Best build + riven", { riven: true })} className={`${btn} bg-fuchsia-600 hover:bg-fuchsia-500`}>
-          {busy === "Best build + riven" ? "Searching…" : "Best + riven"}
+        <button disabled={!!busy} onClick={() => apply("Most DPS Build + riven", { riven: true })} className={`${btn} bg-fuchsia-600 hover:bg-fuchsia-500`}>
+          {busy === "Most DPS Build + riven" ? "Searching…" : "Most DPS + riven"}
         </button>
         {isMelee && heavyIndex >= 0 && (
           <button
@@ -131,6 +155,7 @@ export default function OptimizerControls({
       <details className="rounded-md border border-zinc-200 p-2 text-sm dark:border-zinc-800">
         <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-zinc-500">Optimizer options</summary>
         <div className="mt-2 space-y-3">
+          <p className="text-[11px] text-zinc-500">Changing an option or the scenario re-runs the last search and updates the build.</p>
           <div>
             <label className="label">Optimize for</label>
             <select className="field" value={objective} onChange={(e) => setObjective(e.target.value as Objective)}>
@@ -161,6 +186,14 @@ export default function OptimizerControls({
           />
 
           <Toggle label="Allow spliced riven stats (Viral, Corrosive…; one per riven)" checked={spliced} onChange={setSpliced} />
+          {!isMelee && (
+            <Toggle
+              label="Explosion radius mod on explosive weapons (Primed Firestorm…)"
+              checked={explosionMod}
+              onChange={setExplosionMod}
+              title="Slotted when the weapon's main fire mode is a sizeable explosion (Torid, Tonkor, Bramma). It adds no single-target damage; turn it off to let the optimizer fill that slot."
+            />
+          )}
           {isCompanion && (
             <Toggle
               label="Reach the Tenacious Bond threshold (companion crit chance ≥ 50%)"
@@ -190,13 +223,13 @@ export default function OptimizerControls({
                 </label>
               ) : (
                 <label className="text-xs text-zinc-500">
-                  Max shots/s
+                  Max fire rate bonus %
                   <input
                     type="number"
-                    step={0.5}
+                    step={10}
                     className="field mt-1"
-                    value={comfort.maxFireRate}
-                    onChange={(e) => setComfort({ ...comfort, maxFireRate: Number(e.target.value) })}
+                    value={Math.round(comfort.maxFireRateBonus * 100)}
+                    onChange={(e) => setComfort({ ...comfort, maxFireRateBonus: Number(e.target.value) / 100 })}
                   />
                 </label>
               )}

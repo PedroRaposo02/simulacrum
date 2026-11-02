@@ -2,7 +2,35 @@
 
 Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the version lives in `Cargo.toml` (workspace) and the `package.json` files, and each release is tagged `v<version>`.
 
-## Unreleased
+## 0.5.0-beta.1 — 2026-11-02
+
+- **Heavy attack builds** aim for a comfortable heavy: about +100% speed over the unmodded heavy (wind-up and attack speed together). The Balanced objective requires it when reachable and values nothing past it.
+
+- **Melee attack speed** is valued like gun fire rate in the Balanced objective: past +60% over the weapon's base it counts for nothing, so builds take one attack speed mod and spend the rest on damage. New **Arcane Strike** buff (+60% melee attack speed) fills that on its own.
+- **Fury, Primed Fury and Berserker Fury** are mutually exclusive (as in game); best builds used to pair Berserker Fury with Primed Fury.
+- **Optimizer**: fixed a hang on explosive weapons with a riven (the forced explosion-radius mod could be dropped to make room, and the search never ended); riven roll ranking keeps the best build's progenitor element; changing the scenario re-runs the last search.
+
+- **Settings persist**: the scenario (enemy, buffs, conditions, triggers), the open build and tab, optimizer options, comfort settings, weapon list category/sort/favorites filter and the card view's capacity toggles are remembered in the browser.
+- **Settings page**: save the current scenario as your default (Scenario › Reset goes back to it), reset optimizer options / list filters / view preferences / everything, and export or import one backup file with all settings, saved builds and favorites.
+
+- **Melee arcanes**: Melee Duplicate (yellow crits strike again: x(1 + share of tier-1 crits), so the best crit chance is near (3·CD−4)/(2·CD−2)), Doughty (crit multiplier from Puncture status chance, on the Puncture part), Animosity (+420% crit chance on heavies), Exposure (+240% Corrosive), Retaliation (per 200 shields; new shields slider), Crescendo (combo never below 12x). Zaw arcanes excluded; Influence, Careen and utility arcanes shown as not modelled.
+- **Status-driven arcanes**: Primary Blight, Primary Frostbite, Conjunction Voltage and Cascadia Flare build stacks from the weapon's own procs (shared timer; full stacks once procs outpace it); Secondary Shiver scales with the Cold stacks the weapon keeps on the target.
+- **Shotgun Vendetta** (shotguns) and **Longbow Sharpshot** (bows, x4 on shots after a weak point hit, scaled by the headshot share) in the primary arcane slot.
+- **Class-restricted melee mods** (Boreal's, Nira's and Amar's Contempt, Covert Lethality…) now fit their weapon class; they fitted nothing before.
+- **Incarnon evolutions: all modelled** (0 left as "not modelled", was 21): Flensing Spikes (armor strip per Puncture stack), King's Gambit (no bodyshot crits, +150% on weak points), Critical Parallel and Survivor's Edge (per-variant values were not filled in), Reaver's Rapture, Mounting Momentum, Devastation Cascade (charged blast only), Steadfast Grit, Stalker's Resentment; Sawblade Storm and Renewed Horror have no single-target effect.
+- **Incarnon sustained DPS** includes refilling the gauge: weak point hits in normal form (any direct hit for Angstrum and Torid) at the wiki's charge per hit, with the normal form's damage counted meanwhile. New "Incarnon charging: weak point hit share" condition (50% default).
+- **Situational triggers** ("with overshields", "with channeled ability active", "on shield break", energy/armor/sprint thresholds…) are off by default and toggled per trigger in the Scenario panel; they used to count as always active. Cascadia Overcharge uses "with overshields".
+- **Enemy damage modifiers** (Update 36): Grineer take x1.5 Impact and Corrosive, Corpus x1.5 Puncture and Magnetic, Infested x1.5 Slash and Heat, DoT ticks included. Steel Path Grineer numbers rise for Corrosive builds.
+- **Kuva / Tenet progenitor element**: 60% of base damage as an innate element (combines after mod elements); the optimizer picks the best of the 7, the editor has a picker.
+- **Stance capacity**: melee capacity includes the best stance's bonus (doubled with a matching polarity), toggleable in the card view; the optimizer's exilus rule uses it too.
+- **Riven grade**: A+ to F per stat and for the whole riven, from the roll's distance to the centre of its range.
+- **Card view**: drawn polarity icons instead of text glyphs; drag a mod onto another slot to swap them (slot order sets element combination).
+- **Card percentages** are measured on the weapon's raw damage by default (no armor, Viral or other status); "% vs enemy" switches to the scenario enemy.
+
+- **Optimizer rules**: explosive weapons always carry an explosion-radius mod (toggle) and ignore headshot effects; the exilus gets a fitting utility mod (beam range, projectile speed, recoil) and is dropped if the build can't fit 60 capacity even with forma; Adhesive Blast is never used and Heavy Caliber only when nothing else comes within 5%; Balanced caps fire rate at +150% over the weapon's base (comfort option sets your own cap); changing an optimizer option re-runs the last search.
+- **One-round magazines** (Lenz, bows with reload per shot): burst DPS includes the reload after every shot; the weapon list sorts by sustained DPS by default.
+- **Editor**: live stats next to the mod cards (toggle); each card shows how much DPS it adds on top of the rest ("needed" when the build can't work without it); "Most DPS Build" naming.
+- **Weapons**: Sirocco (an amp-style Drifter weapon) excluded; Rumblejack kept as melee.
 
 - **Data fixes**: attacks use their own multishot from the wiki (81 attacks were using the weapon's; Ballistica Prime Incarnon was 4x too high, Coda Bubonico and Boar Incarnon too); unreleased datamined mods (Soaring Truth and 4 others) dropped.
 - **Raw target** is now an unarmored target that still takes Viral, so armor can only reduce damage.
