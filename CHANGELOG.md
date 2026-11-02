@@ -4,6 +4,7 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 
 ## Unreleased
 
+- **Keep my evolutions / Keep my arcane**: optimizer options that keep the Incarnon evolutions and arcane you picked (e.g. the best Devouring Attrition build); tiers left at none are still searched. CLI `--evolutions` works the same way now (other tiers searched).
 - **Crit chance shown as in the arsenal**: stat sheets and Compare show the arsenal crit chance, with the in-fight average (Enervate's average bonus and Puncture on the target, which damage uses) on its own row when it differs. Tenacious Bond's 50% threshold now checks the arsenal value, as in the game.
 - **Search progress**: while the optimizer searches, the build is locked and a progress panel shows the elapsed time with a Cancel button (it appears after a quarter second, so quick searches don't flicker). Changes to options or the scenario re-run the search 0.7 s after the last change, and a new search replaces a running one.
 - **Best build for my riven**: new button next to "Grade my riven" that keeps your riven's rolls and finds the best mods, arcane and evolutions around it.

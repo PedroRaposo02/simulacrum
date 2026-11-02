@@ -107,7 +107,7 @@ enum Cmd {
         /// harmless negative, e.g. SDMG,CC.
         #[arg(long, value_delimiter = ',')]
         fixed_riven: Vec<String>,
-        /// Use exactly these Incarnon evolutions (comma separated) instead of searching them.
+        /// Keep these Incarnon evolutions (comma separated); tiers without one are still searched.
         #[arg(long, value_delimiter = ',')]
         evolutions: Vec<String>,
         /// Every weapon x (raw + every enemy preset) x (with and without riven), written to --out.

@@ -26,17 +26,27 @@ struct Structure<'a> {
 
 /// One option per tier. Options with no damage effect are interchangeable, so each tier keeps
 /// one of them plus every option that does something; the product is capped.
-fn evolution_combos(weapon: &Weapon, enabled: bool, faction: Faction, allow_faction: bool) -> Vec<Vec<&wf_data::Evolution>> {
-    if !enabled || weapon.evolutions.is_empty() {
+/// Evolution combinations to search. A tier with one of `fixed` keeps it; the other tiers are searched.
+fn evolution_combos<'a>(weapon: &'a Weapon, enabled: bool, faction: Faction, allow_faction: bool, fixed: &[String]) -> Vec<Vec<&'a wf_data::Evolution>> {
+    if weapon.evolutions.is_empty() || (!enabled && fixed.is_empty()) {
         return vec![vec![]];
     }
     let effective = |e: &wf_data::Evolution| e.behaviour.is_some() || e.modifiers.iter().any(|m| stat_matters(m.stat, faction, allow_faction));
     let mut combos: Vec<Vec<&wf_data::Evolution>> = vec![vec![]];
     for tier in weapon.evolutions.iter().filter(|t| !t.options.is_empty()) {
-        let mut opts: Vec<&wf_data::Evolution> = tier.options.iter().filter(|e| effective(e)).collect();
-        if let Some(inert) = tier.options.iter().find(|e| !effective(e)) {
-            opts.push(inert);
-        }
+        let pinned: Vec<&wf_data::Evolution> = tier.options.iter().filter(|e| fixed.iter().any(|n| n.eq_ignore_ascii_case(&e.name))).collect();
+        let opts: Vec<&wf_data::Evolution> = if !pinned.is_empty() {
+            pinned
+        } else if !enabled {
+            continue;
+        } else {
+            // Every option with an effect, plus one without (they're interchangeable).
+            let mut o: Vec<&wf_data::Evolution> = tier.options.iter().filter(|e| effective(e)).collect();
+            if let Some(inert) = tier.options.iter().find(|e| !effective(e)) {
+                o.push(inert);
+            }
+            o
+        };
         let mut next = Vec::new();
         for c in &combos {
             for o in &opts {
@@ -110,8 +120,10 @@ pub struct OptimizeOptions {
     pub evolutions: bool,
     /// Kuva / Tenet progenitor element; None = search every element.
     pub progenitor: Option<wf_data::DamageType>,
-    /// Use exactly these Incarnon evolutions (by name) instead of searching them.
+    /// Keep these Incarnon evolutions (by name); tiers without one are still searched.
     pub fixed_evolutions: Vec<String>,
+    /// Keep this arcane (by name) instead of searching arcanes.
+    pub fixed_arcane: Option<String>,
 }
 
 impl Default for OptimizeOptions {
@@ -126,6 +138,7 @@ impl Default for OptimizeOptions {
             capacity: None,
             progenitor: None,
             fixed_evolutions: vec![],
+            fixed_arcane: None,
             spliced_riven: true,
             objective: Objective::Balanced,
             max_fire_rate_bonus: None,
@@ -1016,7 +1029,9 @@ fn optimize_mode<'a>(
     // combination gets its own mod search: a greedy pass for all, full local search for the best few.
     let arcanes: Vec<Option<&Arcane>> = {
         let slot = arcane_slot(weapon);
-        let list: Vec<Option<&Arcane>> = if opts.arcane {
+        let list: Vec<Option<&Arcane>> = if let Some(a) = opts.fixed_arcane.as_deref().and_then(|n| data.find_arcane(n)) {
+            vec![Some(a)]
+        } else if opts.arcane {
             data.arcanes
                 .iter()
                 .filter(|a| a.slot == slot && (a.classes.is_empty() || a.classes.contains(&weapon.class)))
@@ -1032,11 +1047,7 @@ fn optimize_mode<'a>(
         };
         if list.is_empty() { vec![None] } else { list }
     };
-    let evo_combos = if opts.fixed_evolutions.is_empty() {
-        evolution_combos(weapon, opts.evolutions, faction, opts.allow_faction)
-    } else {
-        vec![opts.fixed_evolutions.iter().filter_map(|n| weapon.evolution(n)).collect()]
-    };
+    let evo_combos = evolution_combos(weapon, opts.evolutions, faction, opts.allow_faction, &opts.fixed_evolutions);
 
     let fixed: Vec<RivenStat> = opts
         .fixed_riven

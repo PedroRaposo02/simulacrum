@@ -59,6 +59,9 @@ export default function OptimizerControls({
   const [tenacious, setTenacious] = usePersistent("opt.tenacious", false);
   const [spliced, setSpliced] = usePersistent("opt.spliced", true);
   const [explosionMod, setExplosionMod] = usePersistent("opt.explosionMod", true);
+  const [keepEvolutions, setKeepEvolutions] = usePersistent("opt.keepEvolutions", false);
+  const [keepArcane, setKeepArcane] = usePersistent("opt.keepArcane", false);
+  const hasEvolutions = (weapon.evolutions ?? []).length > 0;
   // The last optimizer action, re-run whenever an option changes.
   const last = useRef<{ label: string; extra: OptimizeOptions; previous: EditorBuild } | null>(null);
 
@@ -76,6 +79,8 @@ export default function OptimizerControls({
     rangeTolerance: comfort.on && isMelee ? comfort.rangeTolerance : null,
     capacity: realistic ? { capacity, polarities, rivenDrain: 9 } : null,
     allowFaction,
+    fixedEvolutions: keepEvolutions && hasEvolutions ? build.evolutions.filter(Boolean) : [],
+    fixedArcane: keepArcane ? build.arcane : null,
     ...extra,
   });
 
@@ -121,7 +126,7 @@ export default function OptimizerControls({
 
   // Options change the build: re-run the last optimizer action (debounced for number inputs).
   // The scenario too: outsourced Viral, buffs or a new enemy change which build and riven win.
-  const optionsKey = JSON.stringify([objective, spliced, explosionMod, mode, comfort, tenacious, realistic, capacity, polarities, allowFaction, scenario]);
+  const optionsKey = JSON.stringify([objective, spliced, explosionMod, mode, comfort, tenacious, realistic, capacity, polarities, allowFaction, scenario, keepEvolutions, keepArcane]);
   const firstKey = useRef(optionsKey);
   useEffect(() => {
     if (optionsKey === firstKey.current || !last.current) return;
@@ -295,6 +300,19 @@ export default function OptimizerControls({
           )}
         </div>
       </details>
+
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
+        {hasEvolutions && (
+          <label className="flex items-center gap-1" title="The optimizer keeps the evolutions picked below; tiers set to none are still searched">
+            <input type="checkbox" className="accent-indigo-600" checked={keepEvolutions} onChange={(e) => setKeepEvolutions(e.target.checked)} />
+            Keep my evolutions
+          </label>
+        )}
+        <label className="flex items-center gap-1" title="The optimizer keeps the arcane you picked (none picked = it chooses one)">
+          <input type="checkbox" className="accent-indigo-600" checked={keepArcane} onChange={(e) => setKeepArcane(e.target.checked)} />
+          Keep my arcane
+        </label>
+      </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <button

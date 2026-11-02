@@ -321,6 +321,10 @@ export interface OptimizeOptions {
   fixedRiven?: Modifier[];
   allowFaction?: boolean;
   evolutions?: boolean;
+  /** Keep these evolutions; tiers without one are searched. */
+  fixedEvolutions?: string[];
+  /** Keep this arcane. */
+  fixedArcane?: string | null;
 }
 
 export interface SavedBuild { name: string; savedAt: number; build: EditorBuild }
