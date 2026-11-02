@@ -151,7 +151,12 @@ pub struct ComponentResult {
     pub per_projectile_raw: f64,
     pub per_projectile_target: f64,
     pub projectiles: f64,
+    /// Average crit chance in the fight: the arsenal value plus Enervate's average bonus and the
+    /// Puncture stacks this weapon keeps on the target. Damage uses this.
     pub crit_chance: f64,
+    /// Crit chance as the arsenal shows it: mods, arcane and evolution stats only.
+    #[serde(default)]
+    pub arsenal_crit_chance: f64,
     pub crit_mult: f64,
     pub status_chance: f64,
     pub explain: Explain,

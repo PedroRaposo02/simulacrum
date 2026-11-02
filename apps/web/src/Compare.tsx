@@ -221,7 +221,8 @@ export default function Compare() {
             {numRow("Raw burst DPS", (m) => m.burstDpsRaw)}
 
             {section("Stats")}
-            {numRow("Critical chance", (m) => m.components[0]?.critChance, (v) => `${(v * 100).toFixed(1)}%`)}
+            {numRow("Critical chance", (m) => m.components[0]?.arsenalCritChance, (v) => `${(v * 100).toFixed(1)}%`)}
+            {numRow("· average in the fight", (m) => m.components[0]?.critChance, (v) => `${(v * 100).toFixed(1)}%`)}
             {numRow("Critical multiplier", (m) => m.components[0]?.critMult, (v) => `${v.toFixed(2)}×`)}
             {numRow("Status chance", (m) => m.components[0]?.statusChance, (v) => `${(v * 100).toFixed(1)}%`)}
             {numRow("Multishot", (m) => m.components[0]?.projectiles, (v) => v.toFixed(2))}

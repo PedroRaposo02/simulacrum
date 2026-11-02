@@ -4,6 +4,7 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 
 ## Unreleased
 
+- **Crit chance shown as in the arsenal**: stat sheets and Compare show the arsenal crit chance, with the in-fight average (Enervate's average bonus and Puncture on the target, which damage uses) on its own row when it differs. Tenacious Bond's 50% threshold now checks the arsenal value, as in the game.
 - **Search progress**: while the optimizer searches, the build is locked and a progress panel shows the elapsed time with a Cancel button (it appears after a quarter second, so quick searches don't flicker). Changes to options or the scenario re-run the search 0.7 s after the last change, and a new search replaces a running one.
 - **Best build for my riven**: new button next to "Grade my riven" that keeps your riven's rolls and finds the best mods, arcane and evolutions around it.
 - **Live DPS strip**: the build's headline numbers (per shot, burst, sustained, per charge or status, group, group sustained) stay pinned at the top while you scroll the mod cards, and show how much your last edit changed each one. The mod cards keep the in-game 4 x 2 layout (elements combine left to right, top to bottom); the detailed stat sheet is a collapsible section below them. The "Stats" checkbox is gone.

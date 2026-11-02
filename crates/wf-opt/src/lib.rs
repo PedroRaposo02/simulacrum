@@ -459,8 +459,9 @@ impl<'a> Ctx<'a> {
                         return -(m.fire_rate - max) - 1.0;
                     }
                 }
+                // Tenacious Bond checks the weapon's own (arsenal) crit chance.
                 if let Some(min) = self.min_crit_chance {
-                    let cc = m.components.iter().map(|c| c.crit_chance).fold(0.0, f64::max);
+                    let cc = m.components.iter().map(|c| c.arsenal_crit_chance).fold(0.0, f64::max);
                     if cc < min - 1e-9 {
                         return -(min - cc) - 1.0;
                     }
@@ -1329,7 +1330,7 @@ fn optimize_mode<'a>(
         _ => false,
     } || matches!((ctx.max_rate, &final_mode), (Some(max), Some(m)) if m.attack_speed.is_none() && m.fire_rate > max + 1e-9)
         || matches!((ctx.min_rate, &final_mode), (Some(min), Some(m)) if m.fire_rate < min - 1e-9)
-        || matches!((opts.min_crit_chance, &final_mode), (Some(min), Some(m)) if m.components.iter().map(|c| c.crit_chance).fold(0.0, f64::max) < min - 1e-9);
+        || matches!((opts.min_crit_chance, &final_mode), (Some(min), Some(m)) if m.components.iter().map(|c| c.arsenal_crit_chance).fold(0.0, f64::max) < min - 1e-9);
     let drain = opts.capacity.as_ref().map(|c| total_drain(&mods, normal_slots, c));
 
     let fm = final_mode.as_ref();
