@@ -293,6 +293,17 @@ export default function OptimizerControls({
         >
           {busy === "grade" ? "Grading…" : "Grade my riven"}
         </button>
+        <button
+          disabled={!!busy || !build.riven.positives.length}
+          onClick={() => {
+            const mine = rivenModifiers(data!, build.riven, weapon.modPool);
+            if (mine.length) apply("Best build for my riven", { fixedRiven: mine });
+          }}
+          title={build.riven.positives.length ? "Keeps your riven's rolls and finds the best mods, arcane and evolutions around it" : "Add your riven's stats in the riven editor first"}
+          className="rounded-md border border-fuchsia-500 px-3 py-1.5 text-sm text-fuchsia-700 hover:bg-fuchsia-50 disabled:opacity-60 dark:text-fuchsia-300 dark:hover:bg-fuchsia-950/40"
+        >
+          {busy === "Best build for my riven" ? "Searching…" : "Best build for my riven"}
+        </button>
         {grade && (
           <span className="text-sm">
             <span className="font-semibold">{pct(grade.ratio, 0)}</span> of a god roll{" "}

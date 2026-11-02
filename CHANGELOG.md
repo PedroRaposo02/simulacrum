@@ -4,6 +4,8 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 
 ## Unreleased
 
+- **Best build for my riven**: new button next to "Grade my riven" that keeps your riven's rolls and finds the best mods, arcane and evolutions around it.
+- **Mod cards stay readable with stats on**: cards wrap to fewer columns instead of shrinking, and the stats panel moves below the cards on screens under 1536 px.
 - **Fix**: the optimizer buttons (Most DPS, + riven, heavy, riven grade and ranking) failed in the built site and desktop app with "expected value at line 1 column 1": the worker looked for the game data next to its own file.
 - **Optimizer about 7x faster, same results**: searches run the engine in a numbers-only mode (no explanations, notes or source names), and the riven search reuses the riven-less search instead of repeating it. A test checks that numbers-only results match the full calculation for every weapon. Full precompute: about 50 minutes on 10 threads (was about 6.5 hours).
 - **Best-builds log**: `wfcalc optimize --all` writes one line per weapon and target (ok, or what failed) to `--log` (default: next to `--out`); releases show failures in the run summary and keep the log.

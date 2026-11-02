@@ -711,7 +711,7 @@ export default function BuildEditor() {
                 ))}
               </div>
             </div>
-            <div className={liveStats && mainMode ? "grid gap-4 lg:grid-cols-[minmax(0,1fr)_300px]" : ""}>
+            <div className={liveStats && mainMode ? "grid gap-4 2xl:grid-cols-[minmax(0,1fr)_280px]" : ""}>
               {view === "cards" ? (
                 <ModGrid
                   weapon={weapon}
