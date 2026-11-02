@@ -45,6 +45,9 @@ pub struct Conditions {
     /// Set by the engine for companion weapons: their AI doesn't aim or reliably headshot.
     #[serde(skip)]
     pub companion: bool,
+    /// Numbers only: skip explanations, notes and source names (the optimizer's hot path).
+    #[serde(skip)]
+    pub calc_only: bool,
 }
 
 impl Default for Conditions {
@@ -68,6 +71,7 @@ impl Default for Conditions {
             target_crit_chance: 0.0,
             target_crit_damage: 0.0,
             companion: false,
+            calc_only: false,
         }
     }
 }
@@ -110,7 +114,7 @@ pub struct Target {
     pub health: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Explain {
     pub label: String,

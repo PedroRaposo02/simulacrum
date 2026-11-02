@@ -1014,3 +1014,43 @@ fn infinite_ammo_on_headshots_removes_reloads() {
     // No headshot effects: no infinite ammo.
     assert_eq!(run(0.0, false).magazine_shots, Some(12.0));
 }
+
+/// Numbers-only mode (the optimizer's) gives exactly the numbers of the full calculation, for every
+/// weapon in the game data, unmodded and with mods, raw and against an armored enemy.
+#[test]
+fn calc_only_matches_full_calculation() {
+    let Ok(text) = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../data/gamedata.json")) else { return };
+    let data: GameData = serde_json::from_str(&text).unwrap();
+    let strip = |r: &BuildResult| -> Vec<serde_json::Value> {
+        r.modes
+            .iter()
+            .map(|m| {
+                let mut v = serde_json::to_value(m).unwrap();
+                let o = v.as_object_mut().unwrap();
+                o.remove("approximations");
+                o.remove("explain");
+                for c in o.get_mut("components").unwrap().as_array_mut().unwrap() {
+                    c.as_object_mut().unwrap().remove("explain");
+                }
+                v
+            })
+            .collect()
+    };
+    let mut checked = 0;
+    for w in &data.weapons {
+        let mods: Vec<String> = data.mods.iter().filter(|m| m.fits(w) && m.exclusive_group.is_none()).take(8).map(|m| m.id.clone()).collect();
+        for mods in [vec![], mods] {
+            for enemy in [None, Some("sp-grineer".to_string())] {
+                let target = Target { enemy, ..Default::default() };
+                let mut build = Build { weapon: w.id.clone(), mods: mods.clone(), ..Default::default() };
+                let Ok(full) = compute(&data, &build, &target) else { continue };
+                build.conditions.calc_only = true;
+                let quick = compute(&data, &build, &target).unwrap();
+                assert_eq!(strip(&full), strip(&quick), "{} {:?}", w.name, mods);
+                assert!(quick.modes.iter().all(|m| m.approximations.is_empty()), "{}: notes in numbers-only mode", w.name);
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 1000, "only {checked} builds checked");
+}

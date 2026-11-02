@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use wf_calc::sweep::{diff, sweep, SweepReport};
 use wf_calc::{compute, Build, Explain, Target};
 use wf_data::GameData;
-use wf_opt::{optimize, OptimizeOptions, OptimizeResult, RivenPick};
+use wf_opt::{optimize, optimize_with_riven, OptimizeOptions, OptimizeResult, RivenPick};
 use rayon::prelude::*;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -119,6 +119,9 @@ enum Cmd {
         shard: Option<String>,
         #[arg(long, default_value = "data/best-builds.json")]
         out: PathBuf,
+        /// With --all: log file, one line per weapon and target (default: --out with .log).
+        #[arg(long)]
+        log: Option<PathBuf>,
     },
     /// Run golden tests in data/golden.
     Golden {
@@ -457,6 +460,7 @@ fn run() -> Result<bool, String> {
             fixed_riven,
             evolutions,
             shard,
+            log,
         } => {
             let data = load(&cli.data)?;
             if !all {
@@ -536,33 +540,48 @@ fn run() -> Result<bool, String> {
                 .filter(|(k, _)| k % shard_n == shard_i)
                 .map(|(_, j)| j)
                 .collect();
+            // Log: one line per weapon and target as it finishes, every failure spelled out.
+            let log_path = log.unwrap_or_else(|| out.with_extension("log"));
+            let log_file = std::sync::Mutex::new(std::io::BufWriter::new(
+                std::fs::File::create(&log_path).map_err(|e| format!("{}: {e}", log_path.display()))?,
+            ));
+            let write_log = |line: String| {
+                use std::io::Write;
+                let mut f = log_file.lock().unwrap();
+                let _ = writeln!(f, "{line}");
+                let _ = f.flush();
+            };
+            write_log(format!("best builds: {} jobs (shard {shard_i}/{shard_n}), data {}", jobs.len(), data.version));
             let done = std::sync::atomic::AtomicUsize::new(0);
             let results: Vec<(usize, String, BestPair)> = jobs
                 .par_iter()
                 .map(|&(ti, wi)| {
                     let w = &data.weapons[wi];
                     let t = &targets[ti].1;
-                    let run = |riven, objective, mode| {
-                        optimize(&data, &w.id, &Build::default(), t, &OptimizeOptions { riven, objective, mode, ..Default::default() }).ok().map(entry)
+                    let started = std::time::Instant::now();
+                    let mut failed: Vec<String> = Vec::new();
+                    // Without and with a riven in one search (the riven search reuses the structures).
+                    let mut run = |label: &str, objective, mode| match optimize_with_riven(
+                        &data,
+                        &w.id,
+                        &Build::default(),
+                        t,
+                        &OptimizeOptions { objective, mode, ..Default::default() },
+                    ) {
+                        Ok((plain, riven)) => (Some(entry(plain)), Some(entry(riven))),
+                        Err(e) => {
+                            failed.push(format!("{label}: {}", e.message));
+                            (None, None)
+                        }
                     };
                     let single = wf_opt::Objective::Balanced;
                     let group = wf_opt::Objective::Group;
                     // Group fights make no sense against a lone boss.
                     let groups = !data.enemies.iter().any(|e| Some(&e.id) == t.enemy.as_ref() && e.is_boss);
                     let heavy = w.modes.iter().position(|m| m.melee_role == Some(wf_data::MeleeRole::Heavy));
-                    let pair = match optimize(&data, &w.id, &Build::default(), t, &OptimizeOptions::default()) {
-                        Ok(p) => BestPair {
-                            plain: Some(entry(p)),
-                            riven: run(true, single, None),
-                            group_plain: if groups { run(false, group, None) } else { None },
-                            group_riven: if groups { run(true, group, None) } else { None },
-                            heavy_plain: heavy.and_then(|h| run(false, single, Some(h))),
-                            heavy_riven: heavy.and_then(|h| run(true, single, Some(h))),
-                            heavy_group_plain: heavy.filter(|_| groups).and_then(|h| run(false, group, Some(h))),
-                            heavy_group_riven: heavy.filter(|_| groups).and_then(|h| run(true, group, Some(h))),
-                            error: None,
-                        },
-                        Err(e) => BestPair {
+                    let (plain, riven) = run("single target", single, None);
+                    let pair = if plain.is_none() {
+                        BestPair {
                             plain: None,
                             riven: None,
                             group_plain: None,
@@ -571,10 +590,35 @@ fn run() -> Result<bool, String> {
                             heavy_riven: None,
                             heavy_group_plain: None,
                             heavy_group_riven: None,
-                            error: Some(e.message),
-                        },
+                            error: failed.first().cloned(),
+                        }
+                    } else {
+                        let (group_plain, group_riven) = if groups { run("group", group, None) } else { (None, None) };
+                        let (heavy_plain, heavy_riven) = heavy.map_or((None, None), |h| run("heavy", single, Some(h)));
+                        let (heavy_group_plain, heavy_group_riven) =
+                            heavy.filter(|_| groups).map_or((None, None), |h| run("heavy group", group, Some(h)));
+                        BestPair {
+                            plain,
+                            riven,
+                            group_plain,
+                            group_riven,
+                            heavy_plain,
+                            heavy_riven,
+                            heavy_group_plain,
+                            heavy_group_riven,
+                            error: None,
+                        }
                     };
                     let n = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    let status = if failed.is_empty() { "ok".to_string() } else { format!("FAILED {}", failed.join("; ")) };
+                    write_log(format!(
+                        "[{n}/{}] {:.0}s {} @ {}: {status} ({:.1}s)",
+                        jobs.len(),
+                        t0.elapsed().as_secs_f64(),
+                        w.name,
+                        targets[ti].0,
+                        started.elapsed().as_secs_f64()
+                    ));
                     if n % 200 == 0 {
                         eprintln!("  {n}/{} ({:.0}s)", jobs.len(), t0.elapsed().as_secs_f64());
                     }
@@ -594,6 +638,12 @@ fn run() -> Result<bool, String> {
                 targets: out_map,
             };
             std::fs::write(&out, serde_json::to_string(&best).unwrap()).map_err(|e| e.to_string())?;
+            write_log(format!(
+                "done: {} jobs in {:.1}s, {errors} weapon/target pairs not computable -> {}",
+                jobs.len(),
+                t0.elapsed().as_secs_f64(),
+                out.display()
+            ));
             println!(
                 "{} weapons x {} targets optimized in {:.1}s ({} weapon/target pairs not computable) -> {}",
                 data.weapons.len(),

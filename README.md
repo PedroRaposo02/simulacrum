@@ -152,7 +152,7 @@ pnpm ingest            # refresh data/gamedata.json from the sources
 pnpm build:wasm        # compile the engine for the website
 pnpm dev               # website on http://localhost:5173
 pnpm test              # Rust tests
-pnpm optimize          # recompute data/best-builds.json for every weapon (hours; see below)
+pnpm optimize          # recompute data/best-builds.json for every weapon (~1 h; log in data/best-builds.log)
 pnpm desktop:dev       # desktop app against the dev server
 pnpm desktop:build     # desktop installer (apps/desktop/src-tauri/target/release/bundle)
 ```

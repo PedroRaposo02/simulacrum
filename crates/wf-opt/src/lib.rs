@@ -2,6 +2,7 @@
 //! order, then arcane choice, then an optional theoretical riven searched jointly with the mods.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use wf_calc::{evaluate, resolve_enemy, Build, CalcError, ErrorCode, Resolved, Target};
 use wf_data::{Arcane, DamageType, EnemyProfile, Faction, GameData, Mod, Modifier, RivenType, Stat, Weapon};
 
@@ -840,8 +841,38 @@ pub fn optimize(
     target: &Target,
     opts: &OptimizeOptions,
 ) -> Result<OptimizeResult, CalcError> {
+    optimize_cached(data, weapon_key, base, target, opts, &mut StructureCache::new())
+}
+
+/// The best build without a riven and the best with one (same options otherwise). The riven search
+/// starts from the structures the riven-less search found, so they are searched once: the results
+/// are the same as two `optimize` calls.
+pub fn optimize_with_riven(
+    data: &GameData,
+    weapon_key: &str,
+    base: &Build,
+    target: &Target,
+    opts: &OptimizeOptions,
+) -> Result<(OptimizeResult, OptimizeResult), CalcError> {
+    let mut cache = StructureCache::new();
+    let plain = optimize_cached(data, weapon_key, base, target, &OptimizeOptions { riven: false, ..opts.clone() }, &mut cache)?;
+    let riven = optimize_cached(data, weapon_key, base, target, &OptimizeOptions { riven: true, ..opts.clone() }, &mut cache)?;
+    Ok((plain, riven))
+}
+
+/// Finalist structures (arcane x evolutions x progenitor with their mods) per attack mode.
+type StructureCache<'a> = BTreeMap<usize, Vec<Structure<'a>>>;
+
+fn optimize_cached<'a>(
+    data: &'a GameData,
+    weapon_key: &str,
+    base: &Build,
+    target: &'a Target,
+    opts: &OptimizeOptions,
+    cache: &mut StructureCache<'a>,
+) -> Result<OptimizeResult, CalcError> {
     if opts.mode.is_some() {
-        return optimize_mode(data, weapon_key, base, target, opts);
+        return optimize_mode(data, weapon_key, base, target, opts, cache);
     }
     let weapon = data
         .weapon(weapon_key)
@@ -863,12 +894,12 @@ pub fn optimize(
         .collect();
     if picks.is_empty() {
         // Nothing computable: let the single-mode path produce the engine's error.
-        return optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(0), ..opts.clone() });
+        return optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(0), ..opts.clone() }, cache);
     }
     let mut best: Option<OptimizeResult> = None;
     let mut evals = 0;
     for m in picks {
-        let r = optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(m), ..opts.clone() })?;
+        let r = optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(m), ..opts.clone() }, cache)?;
         evals += r.evaluations;
         let better = best.as_ref().is_none_or(|b| {
             (b.below_attack_speed_floor && !r.below_attack_speed_floor)
@@ -883,19 +914,22 @@ pub fn optimize(
     Ok(best)
 }
 
-fn optimize_mode(
-    data: &GameData,
+fn optimize_mode<'a>(
+    data: &'a GameData,
     weapon_key: &str,
     base: &Build,
-    target: &Target,
+    target: &'a Target,
     opts: &OptimizeOptions,
+    cache: &mut StructureCache<'a>,
 ) -> Result<OptimizeResult, CalcError> {
     let weapon = data
         .weapon(weapon_key)
         .ok_or_else(|| CalcError::new(ErrorCode::UnknownWeapon, format!("no weapon '{weapon_key}'")))?;
     let enemy = resolve_enemy(data, target)?;
     let faction = enemy.as_ref().map_or(Faction::None, |e| e.faction);
-    let build = Build { weapon: weapon.id.clone(), mods: vec![], arcane: None, riven: vec![], ..base.clone() };
+    let mut build = Build { weapon: weapon.id.clone(), mods: vec![], arcane: None, riven: vec![], ..base.clone() };
+    // The search only needs numbers: no explanations or notes.
+    build.conditions.calc_only = true;
 
     let never = |m: &Mod| data.rules.never.iter().any(|n| n.eq_ignore_ascii_case(&m.name));
     let candidates: Vec<&Mod> = data
@@ -1016,6 +1050,9 @@ fn optimize_mode(
         (true, Some(t)) => vec![Some(t)],
         (true, None) => wf_calc::PROGENITOR_ELEMENTS.iter().map(|t| Some(*t)).collect(),
     };
+    let finals: Vec<Structure<'a>> = if let Some(f) = cache.get(&mode) {
+        f.clone()
+    } else {
     let mut candidates_found: Vec<Structure<'_>> = Vec::new();
     for &pg in &progenitors {
         ctx.build.progenitor = pg;
@@ -1036,6 +1073,9 @@ fn optimize_mode(
         finals.push(Structure { score: v, mods: m, ..c });
     }
     finals.sort_by(|x, y| y.score.total_cmp(&x.score));
+    cache.insert(mode, finals.clone());
+    finals
+    };
 
     let top = finals[0].clone();
     let mut mods = top.mods.clone();

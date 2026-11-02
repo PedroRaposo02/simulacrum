@@ -101,24 +101,36 @@ struct Pools {
     /// (chance per headshot, seconds) of infinite ammo.
     infinite_ammo: Vec<(f64, f64)>,
     sources: Vec<(String, Stat, f64)>,
+    /// Numbers only: no source names (Conditions::calc_only).
+    quiet: bool,
 }
 
 impl Pools {
+    fn new(quiet: bool) -> Self {
+        Pools { quiet, ..Default::default() }
+    }
+
+    fn source(&self, m: &Modifier) -> String {
+        if self.quiet { String::new() } else { m.source.clone() }
+    }
+
     fn add(&mut self, m: &Modifier, scale: f64) {
         let v = m.value * scale;
         if m.condition == Condition::CritChanceBelow {
-            self.below_crit.push((m.threshold.unwrap_or(0.0), m.stat, m.value, m.source.clone()));
+            self.below_crit.push((m.threshold.unwrap_or(0.0), m.stat, m.value, self.source(m)));
             return;
         }
         if m.per == Some(PerCount::StatusType) && m.stat == Stat::BaseDamage {
             self.gunco += v;
-            self.sources.push((m.source.clone(), m.stat, v));
+            if !self.quiet {
+                self.sources.push((m.source.clone(), m.stat, v));
+            }
             return;
         }
         match m.stat {
             Stat::BaseDamage => self.base_damage += v,
             Stat::Physical(t) => *self.physical.entry(t).or_default() += v,
-            Stat::Element(t) => self.elements.push((t, v, m.source.clone())),
+            Stat::Element(t) => self.elements.push((t, v, self.source(m))),
             Stat::Multishot => self.multishot += v,
             Stat::CritChance => self.crit_chance += v,
             Stat::CritChanceFlat => self.crit_chance_flat += v,
@@ -153,10 +165,15 @@ impl Pools {
             Stat::HeadshotCritChance => self.head_crit += v,
             Stat::InfiniteAmmoOnHeadshot => self.infinite_ammo.push((v, m.threshold.unwrap_or(0.0))),
         }
-        self.sources.push((m.source.clone(), m.stat, v));
+        if !self.quiet {
+            self.sources.push((m.source.clone(), m.stat, v));
+        }
     }
 
     fn sources_for(&self, pred: impl Fn(Stat) -> bool) -> Vec<Explain> {
+        if self.quiet {
+            return Vec::new();
+        }
         self.sources
             .iter()
             .filter(|(_, s, _)| pred(*s))
@@ -365,6 +382,27 @@ fn finite(v: f64, what: &str) -> Result<f64, CalcError> {
     }
 }
 
+/// Approximation notes for a mode. With Conditions::calc_only nothing is formatted, but whether any
+/// note applied is still tracked (it decides the coverage label).
+struct Notes {
+    on: bool,
+    any: bool,
+    list: Vec<String>,
+}
+
+impl Notes {
+    fn new(on: bool, initial: &[String]) -> Self {
+        Notes { on, any: false, list: if on { initial.to_vec() } else { Vec::new() } }
+    }
+
+    fn add(&mut self, f: impl FnOnce() -> String) {
+        self.any = true;
+        if self.on {
+            self.list.push(f());
+        }
+    }
+}
+
 struct Partial {
     name: String,
     kind: HitKind,
@@ -446,6 +484,9 @@ fn compute_mode(r: &Resolved, build: &Build, target: &Target, mode: &AttackMode,
     b.conditions.target_crit_damage = cold_cd;
     b.conditions.reload_share = reload_share;
     let mut res = compute_mode_stacked(r, &b, target, mode, index)?;
+    if build.conditions.calc_only {
+        return Ok(res);
+    }
     res.approximations.push(format!(
         "Target status from this weapon: {puncture:.1} Puncture stacks (+{:.0}% crit chance), {cold:.1} Cold stacks (+{cold_cd:.2}x crit damage), direct hits only",
         cc * 100.0
@@ -462,7 +503,11 @@ fn compute_mode_stacked(r: &Resolved, build: &Build, target: &Target, mode: &Att
             modifiers: arcane
                 .modifiers
                 .iter()
-                .map(|m| Modifier { value: m.value * stacks, source: format!("{} ({stacks:.1} stacks)", m.source), ..m.clone() })
+                .map(|m| Modifier {
+                    value: m.value * stacks,
+                    source: if build.conditions.calc_only { String::new() } else { format!("{} ({stacks:.1} stacks)", m.source) },
+                    ..m.clone()
+                })
                 .collect(),
             stacking: None,
             ..arcane.clone()
@@ -496,6 +541,12 @@ fn compute_mode_stacked(r: &Resolved, build: &Build, target: &Target, mode: &Att
         stacks = next;
         res = at(stacks)?;
     }
+    if res.coverage == Coverage::Computed {
+        res.coverage = Coverage::Approximate;
+    }
+    if build.conditions.calc_only {
+        return Ok(res);
+    }
     let pps = res.procs_per_s.get(&st.status).copied().unwrap_or(0.0);
     res.approximations.push(match st.duration_s {
         Some(d) => format!(
@@ -508,9 +559,6 @@ fn compute_mode_stacked(r: &Resolved, build: &Build, target: &Target, mode: &Att
         ),
         None => format!("{}: {stacks:.1} {:?} stacks kept on the target by this weapon", arcane.name, st.status),
     });
-    if res.coverage == Coverage::Computed {
-        res.coverage = Coverage::Approximate;
-    }
     Ok(res)
 }
 
@@ -521,7 +569,8 @@ fn compute_mode_once(
     mode: &AttackMode,
     index: usize,
 ) -> Result<ModeResult, CalcError> {
-    let mut approx: Vec<String> = mode.notes.clone();
+    let quiet = build.conditions.calc_only;
+    let mut approx = Notes::new(!quiet, &mode.notes);
     if mode.coverage == Coverage::Unsupported {
         return Err(CalcError::new(
             ErrorCode::UnknownMechanic,
@@ -543,7 +592,7 @@ fn compute_mode_once(
     };
     if let Some((name, floor)) = r.arcane.and_then(|a| a.combo_floor.map(|f| (&a.name, f))) {
         if base_cond.combo_multiplier < floor || base_cond.heavy_combo_multiplier < floor {
-            approx.push(format!("{name}: combo never below {floor}x (built up from finisher kills over the mission)"));
+            approx.add(|| format!("{name}: combo never below {floor}x (built up from finisher kills over the mission)"));
         }
         base_cond.combo_multiplier = base_cond.combo_multiplier.max(floor);
         base_cond.heavy_combo_multiplier = base_cond.heavy_combo_multiplier.max(floor);
@@ -552,7 +601,7 @@ fn compute_mode_once(
     // scenario's heavy combo or at the Initial Combo floor, whichever is higher.
     let mut heavy_plan = None;
     if mode.melee_role == Some(MeleeRole::Heavy) {
-        let mut pre = Pools::default();
+        let mut pre = Pools::new(base_cond.calc_only);
         for m in all_modifiers(r, build, mode) {
             pre.add(m, condition_scale(m, &base_cond));
         }
@@ -566,7 +615,7 @@ fn compute_mode_once(
     let mut partials = Vec::new();
     let mode_combo = mode.components.first().map_or(base_cond.combo_multiplier, |c| combo_for(&base_cond, &c.rules));
     let mode_cond = with_combo(&base_cond, mode_combo);
-    let mut mode_pools = Pools::default();
+    let mut mode_pools = Pools::new(base_cond.calc_only);
     for m in all_modifiers(r, build, mode) {
         mode_pools.add(m, condition_scale(m, &mode_cond));
     }
@@ -584,7 +633,7 @@ fn compute_mode_once(
     let rate = match mode.charge_time_s {
         Some(ct) if ct > 0.0 => {
             let base_cycle = if mode.fire_rate > 0.0 { ct.max(1.0 / mode.fire_rate) } else { ct };
-            approx.push("Charge timing simplified: cycle = max(charge time, 1/fire rate) ÷ fire-rate bonus".into());
+            approx.add(|| "Charge timing simplified: cycle = max(charge time, 1/fire rate) ÷ fire-rate bonus".into());
             fr_mult / base_cycle
         }
         _ if mode.melee_role == Some(MeleeRole::Heavy) => mode.fire_rate * fr_mult * (1.0 + mode_pools.wind_up).max(0.05),
@@ -604,7 +653,7 @@ fn compute_mode_once(
         let regen = (initial.min(points) - kept).max(0.0) / INITIAL_COMBO_REGEN;
         let hits = (points - kept.max(initial)).max(0.0);
         let rebuild = regen + if light_hits > 0.0 { hits / light_hits } else { 0.0 };
-        approx.push(format!(
+        approx.add(|| format!(
             "Heavy rotation: {:.0}x combo ({points:.0} points); keeps {:.0}% ({kept:.0}), {regen:.1}s of Initial Combo regen + {hits:.0} light hits to rebuild ({rebuild:.1}s), then the wind-up",
             1.0 + (points / COMBO_POINTS_PER_TIER).floor(),
             eff * 100.0
@@ -612,7 +661,7 @@ fn compute_mode_once(
         1.0 / (1.0 / rate + rebuild)
     } else if mode.melee_role == Some(MeleeRole::Tennokai) && light_hits > 0.0 {
         let every = r.mods.iter().filter_map(|m| m.tennokai_every).min().map_or(1.0 / TENNOKAI_CHANCE, |n| n as f64);
-        approx.push(format!("Tennokai rotation: one Tennokai heavy every {every:.1} light hits"));
+        approx.add(|| format!("Tennokai rotation: one Tennokai heavy every {every:.1} light hits"));
         1.0 / (1.0 / rate + every / light_hits)
     } else {
         rate
@@ -628,7 +677,7 @@ fn compute_mode_once(
         .collect();
     for comp in &mode.components {
         let cond = with_combo(&base_cond, combo_for(&base_cond, &comp.rules));
-        let mut p = Pools::default();
+        let mut p = Pools::new(base_cond.calc_only);
         for m in all_modifiers(r, build, mode).filter(|m| filter_ok(m.applies_to, comp)) {
             p.add(m, condition_scale(m, &cond));
         }
@@ -666,7 +715,7 @@ fn compute_mode_once(
             .map(|(chance, secs)| (-(chance * headshot_rate * secs)).exp())
             .product::<f64>();
     if free_ammo > 0.01 {
-        approx.push(format!("Infinite ammo on headshots: active {:.0}% of the time", free_ammo * 100.0));
+        approx.add(|| format!("Infinite ammo on headshots: active {:.0}% of the time", free_ammo * 100.0));
     }
     let ammo_cost = (mode.ammo_cost.max(1.0) + beam_ticks) * (1.0 - ammo_eff) * (1.0 - free_ammo);
     let endless = ammo_cost <= 1e-9;
@@ -708,7 +757,9 @@ fn compute_mode_once(
                     let n = stacks(*status);
                     let s = (per_stack * n).clamp(0.0, 1.0);
                     s_evo = 1.0 - (1.0 - s_evo) * (1.0 - s);
-                    evo_strip.push(Explain::new(name.to_string(), s).detail(format!("{n:.2} {status:?} stacks x {:.0}%", per_stack * 100.0)));
+                    if !quiet {
+                        evo_strip.push(Explain::new(name.to_string(), s).detail(format!("{n:.2} {status:?} stacks x {:.0}%", per_stack * 100.0)));
+                    }
                 }
             }
             let eff_armor = e.armor.min(ARMOR_CAP)
@@ -720,12 +771,12 @@ fn compute_mode_once(
             let dr = MAX_DR * (eff_armor / ARMOR_CAP).sqrt();
             let v = if viral_n >= 1.0 { 2.0 + 0.25 * (viral_n.min(10.0) - 1.0) } else { 1.0 + viral_n };
             if viral_n > 0.0 && viral_n < 1.0 {
-                approx.push("Viral below one steady-state stack: uptime interpolated linearly".into());
+                approx.add(|| "Viral below one steady-state stack: uptime interpolated linearly".into());
             }
             if e.health_modifiers.is_empty() {
-                approx.push(format!("{}: health-class damage modifiers not set; armor and status only", e.name));
+                approx.add(|| format!("{}: health-class damage modifiers not set; armor and status only", e.name));
             }
-            let ex = Explain::new(format!("Enemy: {}", e.name), (1.0 - dr) * v).with(vec![
+            let ex = (!quiet).then(|| Explain::new(format!("Enemy: {}", e.name), (1.0 - dr) * v).with(vec![
                 Explain::new("Armor (capped)", e.armor.min(ARMOR_CAP)),
                 Explain::new("Corrosive strip", s_corr).detail(format!(
                     "{corr_n:.2} stacks ({own_corr:.2} from this weapon{})",
@@ -741,13 +792,13 @@ fn compute_mode_once(
                     "{viral_n:.2} stacks ({own_viral:.2} from this weapon{})",
                     target.viral_stacks.map(|x| format!(", {x:.0} outsourced")).unwrap_or_default()
                 )),
-            ]);
-            (dr, v, Some(ex))
+            ]));
+            (dr, v, ex)
         }
         // No enemy = an unarmored target: status effects still apply (Viral), armor doesn't.
         None => {
             let v = if viral_n >= 1.0 { 2.0 + 0.25 * (viral_n.min(10.0) - 1.0) } else { 1.0 + viral_n };
-            let ex = (viral_n > 0.0).then(|| {
+            let ex = (viral_n > 0.0 && !quiet).then(|| {
                 Explain::new("Target: unarmored (raw)", v)
                     .child(Explain::new("Viral multiplier", v).detail(format!("{viral_n:.2} stacks ({own_viral:.2} from this weapon)")))
             });
@@ -839,8 +890,13 @@ fn compute_mode_once(
         shot_raw += raw_hit * p.projectiles;
         shot_target += target_hit * p.projectiles;
         group_shot += target_hit * p.projectiles * factor;
-        let mut ex = Explain::new(format!("{} per shot", p.name), target_hit * p.projectiles).with(p.explain);
-        ex = ex.child(Explain::new("Projectiles", p.projectiles));
+        let ex = if quiet {
+            Explain::default()
+        } else {
+            Explain::new(format!("{} per shot", p.name), target_hit * p.projectiles)
+                .with(p.explain)
+                .child(Explain::new("Projectiles", p.projectiles))
+        };
         components.push(ComponentResult {
             name: p.name,
             damage: p.damage,
@@ -858,7 +914,7 @@ fn compute_mode_once(
         shot_target += b.per_shot * beam_ticks;
         shot_raw += b.per_shot_raw * beam_ticks;
         group_shot += b.group_dps / rate;
-        approx.push(format!("Charging fires {}: {beam_ticks:.1} beam ticks per charge (damage and rounds counted)", b.mode));
+        approx.add(|| format!("Charging fires {}: {beam_ticks:.1} beam ticks per charge (damage and rounds counted)", b.mode));
     }
 
     // Status damage per second. Slash/Toxin/Electricity stack without limit (each proc ticks once a
@@ -901,18 +957,23 @@ fn compute_mode_once(
         group_status += single * (gpps / pps) + single * (aoe - 1.0);
         per_proc.insert(*t, single / pps);
         tick_alive.insert(*t, (per, alive, *pps));
-        let mut detail = format!("{pps:.2} procs/s, {per:.0} per {}", if *t == DamageType::Blast { "proc" } else { "tick" });
-        if *t == DamageType::Blast && pps * fuse >= BLAST_STACKS {
+        let detonates = *t == DamageType::Blast && pps * fuse >= BLAST_STACKS;
+        if detonates {
             // Detonations every 10 procs: 300% per stack to every other enemy within 5 m.
             let aoe_dps = pps / BLAST_STACKS * BLAST_STACKS * 10.0 * per;
             group_status += aoe_dps * (reach(BLAST_RADIUS_M) - 1.0);
-            detail.push_str("; reaches 10 stacks: detonations hit the group");
-        } else if refreshing {
-            detail.push_str(&format!("; stacks refresh under constant fire, averaged over a {fight:.0} s fight (duration doesn't matter)"));
-        } else if *t == DamageType::Gas && pps * duration > GAS_MAX_STACKS {
-            detail.push_str("; capped at 10 clouds");
         }
-        status_explain.push(Explain::new(format!("{t:?}"), single).detail(detail));
+        if !quiet {
+            let mut detail = format!("{pps:.2} procs/s, {per:.0} per {}", if *t == DamageType::Blast { "proc" } else { "tick" });
+            if detonates {
+                detail.push_str("; reaches 10 stacks: detonations hit the group");
+            } else if refreshing {
+                detail.push_str(&format!("; stacks refresh under constant fire, averaged over a {fight:.0} s fight (duration doesn't matter)"));
+            } else if *t == DamageType::Gas && pps * duration > GAS_MAX_STACKS {
+                detail.push_str("; capped at 10 clouds");
+            }
+            status_explain.push(Explain::new(format!("{t:?}"), single).detail(detail));
+        }
     }
     if let Some(b) = &beam {
         status_dps += b.status_dps;
@@ -931,14 +992,14 @@ fn compute_mode_once(
             .map(|(t, (pps, _, _, _))| pps * per_proc.get(t).copied().unwrap_or(0.0) * faction_f)
             .sum();
         influence = (group_n - 1.0) * uptime * (influence_hit + dots);
-        approx.push(format!(
+        approx.add(|| format!(
             "Melee Influence: {:.0}% uptime from {pe:.2} Electricity procs/s; spreads elemental damage and procs to the other {} enemies",
             uptime * 100.0,
             group_n - 1.0
         ));
     }
     if group_n > 1.0 {
-        approx.push(format!(
+        approx.add(|| format!(
             "Group: {group_n:.0} enemies within {GROUP_SPREAD_M} m{}; radial hits, Gas, Electricity and Blast reach part of them by radius",
             if r.weapon.melee.is_some() { format!(", a swing reaches {:.0} (x{melee_factor:.2} with follow-through)", reach(r.weapon.melee.as_ref().map_or(0.0, |m| m.range_m + mode_pools.range))) } else { String::new() }
         ));
@@ -947,7 +1008,7 @@ fn compute_mode_once(
     // With a one-round magazine every shot is followed by a reload: there is no burst window.
     let single_round = magazine_shots == Some(1.0) && mode.reload_s > 0.0 && !endless;
     if single_round {
-        approx.push("One-round magazine: burst DPS includes the reload after every shot".into());
+        approx.add(|| "One-round magazine: burst DPS includes the reload after every shot".into());
     }
     let cycle = if single_round { 1.0 / rate + reload } else { 1.0 / rate };
     // Raw: hits and status damage on an unarmored target with no Viral or other enemy-side multiplier.
@@ -968,13 +1029,13 @@ fn compute_mode_once(
             match charging {
                 Some((t, normal_dps)) => ((shot_target * n + normal_dps * t) / (n / rate + t), Some(shot_target * n)),
                 None => {
-                    approx.push("Incarnon recharge unknown: sustained DPS shown as burst; see damage per charge".into());
+                    approx.add(|| "Incarnon recharge unknown: sustained DPS shown as burst; see damage per charge".into());
                     (hit_burst, Some(shot_target * n))
                 }
             }
         }
         (AmmoPool::Incarnon { .. }, _) => {
-            approx.push("Incarnon ammo pool unknown: sustained DPS shown as burst".into());
+            approx.add(|| "Incarnon ammo pool unknown: sustained DPS shown as burst".into());
             (hit_burst, None)
         }
         // Magazine weapons (beams included): a magazine's worth of shots, then the reload.
@@ -1011,7 +1072,7 @@ fn compute_mode_once(
                     on_kill += k * stacks * 10.0 * per * (reach(BLAST_RADIUS_M) - 1.0);
                 }
             }
-            approx.push(format!(
+            approx.add(|| format!(
                 "Enemy health {:.0}: {ttk:.1} s to kill one, {k:.2} kills/s in the group (at most one group every {GROUP_RESPAWN_S} s); Gas clouds linger and Blast detonates on kills",
                 health.unwrap_or(0.0)
             ));
@@ -1022,7 +1083,7 @@ fn compute_mode_once(
             let reach_bond = reach(CONTAGIOUS_BOND_RADIUS_M);
             let coverage = kills.map_or(1.0, |k| (k * duration).min(1.0));
             on_kill += bond_per_enemy * (reach_bond - 1.0) * coverage;
-            approx.push(format!(
+            approx.add(|| format!(
                 "Contagious Bond: {:.0} other enemies carry half of the target's status stacks (max 100 each), {:.0}% of the time",
                 reach_bond - 1.0,
                 coverage * 100.0
@@ -1032,7 +1093,10 @@ fn compute_mode_once(
     }
     let group_sustained = group_burst * uptime;
 
-    let mut explain = Explain::new("Burst DPS", burst)
+    let explain = if quiet {
+        Explain::default()
+    } else {
+        let mut explain = Explain::new("Burst DPS", burst)
         .child(Explain::new("Damage per shot", shot_target).with(components.iter().map(|c| c.explain.clone()).collect()))
         .child(Explain::new("Status damage per second", status_dps).with(status_explain))
         .child(
@@ -1043,17 +1107,19 @@ fn compute_mode_once(
                 })
                 .with(mode_pools.sources_for(|s| s == Stat::FireRate)),
         );
-    if let Some(e) = enemy_explain {
-        explain = explain.child(e);
-    }
+        if let Some(e) = enemy_explain {
+            explain = explain.child(e);
+        }
+        explain
+    };
 
     let mut approx_dedup = Vec::new();
-    for a in approx {
+    for a in approx.list {
         if !approx_dedup.contains(&a) {
             approx_dedup.push(a);
         }
     }
-    let coverage = if mode.coverage == Coverage::Computed && !approx_dedup.is_empty() {
+    let coverage = if mode.coverage == Coverage::Computed && (approx.any || !mode.notes.is_empty()) {
         Coverage::Approximate
     } else {
         mode.coverage
@@ -1099,7 +1165,7 @@ fn incarnon_recharge(
     rounds: f64,
     gain: f64,
     any_hit: bool,
-    approx: &mut Vec<String>,
+    approx: &mut Notes,
 ) -> Option<(f64, f64)> {
     let (i, m) = r.weapon.modes.iter().enumerate().find(|(_, m)| {
         !m.incarnon_form && m.headline && m.melee_role.is_none() && !matches!(m.ammo_pool, AmmoPool::Incarnon { .. })
@@ -1113,7 +1179,7 @@ fn incarnon_recharge(
     let share = if any_hit { 1.0 } else { build.conditions.incarnon_charge_share.clamp(0.01, 1.0) };
     let hits_per_s = shots_per_s * projectiles * share;
     let t = rounds / gain / hits_per_s;
-    approx.push(format!(
+    approx.add(|| format!(
         "Sustained: {rounds:.0}-round Incarnon charge, then {t:.1} s of {} refilling the gauge ({:.1} {} hits/s, {gain} charge each)",
         m.name,
         hits_per_s,
@@ -1132,7 +1198,7 @@ fn component(
     rate: f64,
     behaviours: &[(&str, &BehaviourDef)],
     progenitor: Option<DamageType>,
-    approx: &mut Vec<String>,
+    approx: &mut Notes,
 ) -> Result<Partial, CalcError> {
     let listed_total: f64 = comp.damage.values().sum();
     if !(listed_total > 0.0) {
@@ -1165,16 +1231,17 @@ fn component(
     let ms = if comp.rules.receives_multishot { comp.multishot * (1.0 + p.multishot).max(0.0) } else { 1.0 };
     let sc = (status0 * (1.0 + p.status_chance).max(0.0) + p.status_chance_flat).max(0.0);
     let modded_cc = (crit0 * (1.0 + p.crit_chance) + p.crit_chance_flat).max(0.0);
+    let quiet = cond.calc_only;
     let mut crit_children = p.sources_for(|s| matches!(s, Stat::CritChance | Stat::CritChanceFlat));
 
     let enervate = r.arcane.and_then(|a| a.behaviour.as_deref()) == Some("enervate");
     if let Some(beh) = r.arcane.and_then(|a| a.behaviour.as_deref()) {
         if !ARCANE_BEHAVIOURS.contains(&beh) {
-            approx.push(format!("Arcane behaviour '{beh}' not implemented; ignored"));
+            approx.add(|| format!("Arcane behaviour '{beh}' not implemented; ignored"));
         }
     } else if let Some(a) = r.arcane {
         if a.modifiers.is_empty() && a.stacking.is_none() && a.combo_floor.is_none() {
-            approx.push(format!("{} has no modelled effect; ignored", a.name));
+            approx.add(|| format!("{} has no modelled effect; ignored", a.name));
         }
     }
     let overwhelming = behaviours.iter().find_map(|(name, b)| match b {
@@ -1191,7 +1258,7 @@ fn component(
             enervate,
             overwhelming: overwhelming.map(|(_, _, m, d)| (m, d)),
         });
-        if enervate {
+        if enervate && !quiet {
             crit_children.push(
                 Explain::new(r.arcane.map_or("Enervate".into(), |a| a.name.clone()), sim.avg_crit_chance - modded_cc).detail(format!(
                     "Simulated: +10% crit chance per hit, resets after 6 orange-or-better crits; average {:.2}%",
@@ -1201,7 +1268,7 @@ fn component(
         }
         if let Some((name, bonus, max, dur)) = overwhelming {
             oa_bonus = bonus * sim.avg_stacks;
-            oa_explain = Some(Explain::new(name.to_string(), oa_bonus).detail(format!(
+            oa_explain = (!quiet).then(|| Explain::new(name.to_string(), oa_bonus).detail(format!(
                 "Simulated at {:.1} hits/s: average {:.2} of {max} stacks (+{:.0}% each, {dur}s), from hits that neither crit nor proc status",
                 rate * ms,
                 sim.avg_stacks,
@@ -1273,7 +1340,7 @@ fn component(
         _ => 1.0,
     };
     if distance < 1.0 {
-        approx.push(format!("{}: {:.0}% damage at {:.0} m (falloff)", comp.name, distance * 100.0, cond.engagement_m));
+        approx.add(|| format!("{}: {:.0}% damage at {:.0} m (falloff)", comp.name, distance * 100.0, cond.engagement_m));
     }
     let a = (1.0 + p.ability).max(0.0) * combo * ms_bonus * co_mult * (1.0 + p.final_damage).max(0.0) * distance;
 
@@ -1288,14 +1355,16 @@ fn component(
             match stat {
                 Stat::CritMultBase => crit_mult_extra += v,
                 Stat::CritDamage => crit_damage_extra += v,
-                _ => approx.push(format!("{src}: threshold effect on {stat:?} not modelled")),
+                _ => approx.add(|| format!("{src}: threshold effect on {stat:?} not modelled")),
             }
         }
-        threshold_explain.push(Explain::new(src.clone(), if on { *v } else { 0.0 }).detail(format!(
-            "active while crit chance < {:.0}% (now {:.1}%)",
-            thr * 100.0,
-            cc * 100.0
-        )));
+        if !quiet {
+            threshold_explain.push(Explain::new(src.clone(), if on { *v } else { 0.0 }).detail(format!(
+                "active while crit chance < {:.0}% (now {:.1}%)",
+                thr * 100.0,
+                cc * 100.0
+            )));
+        }
     }
     let beh = r.arcane.and_then(|a| a.behaviour.as_deref());
     let mut doughty_explain = None;
@@ -1305,7 +1374,7 @@ fn component(
         // +1.0x per 10% Puncture status chance (rounded to 0.1x, max 50x), on the Puncture portion only:
         // as a multiplier on the whole hit that is the bonus times the Puncture share.
         let bonus = ((10.0 * sc * share * 10.0).round() / 10.0).min(50.0);
-        doughty_explain = Some(Explain::new(r.arcane.map_or(String::new(), |a| a.name.clone()), bonus * share).detail(format!(
+        doughty_explain = (!quiet).then(|| Explain::new(r.arcane.map_or(String::new(), |a| a.name.clone()), bonus * share).detail(format!(
             "+{bonus:.1}x on the Puncture part ({:.0}% of the damage; Puncture status chance {:.1}%)",
             share * 100.0,
             sc * share * 100.0
@@ -1325,11 +1394,11 @@ fn component(
     for (name, b) in behaviours {
         if let BehaviourDef::DevouringAttrition { chance, bonus, ignored_by_bosses } = b {
             if *ignored_by_bosses && r.enemy.as_ref().is_some_and(|e| e.is_boss) {
-                approx.push(format!("{name} doesn't work on bosses; ignored"));
+                approx.add(|| format!("{name} doesn't work on bosses; ignored"));
                 continue;
             }
             non_crit *= 1.0 + chance * bonus;
-            da_explain = Some(Explain::new(name.to_string(), 1.0 + chance * bonus).detail(format!(
+            da_explain = (!quiet).then(|| Explain::new(name.to_string(), 1.0 + chance * bonus).detail(format!(
                 "{:.0}% chance for +{:.0}% on non-critical hits ({:.1}% of hits are non-critical)",
                 chance * 100.0,
                 bonus * 100.0,
@@ -1345,7 +1414,7 @@ fn component(
     if beh == Some("meleeDuplicate") {
         let tier1 = if cc < 1.0 { cc } else { (2.0 - cc).max(0.0) };
         projectiles *= 1.0 + tier1;
-        dup_explain = Some(Explain::new(r.arcane.map_or(String::new(), |a| a.name.clone()), 1.0 + tier1).detail(format!(
+        dup_explain = (!quiet).then(|| Explain::new(r.arcane.map_or(String::new(), |a| a.name.clone()), 1.0 + tier1).detail(format!(
             "{:.0}% of hits are yellow crits and strike again (best near CC = (3·CD−4)/(2·CD−2))",
             tier1 * 100.0
         )));
@@ -1368,13 +1437,16 @@ fn component(
         None => ((p_crit, crit_part), parts(cc + head_bonus)),
     };
     if let Some(bonus) = headshot_only {
-        approx.push(format!("No crits on bodyshots; weak point hits +{:.0}% crit chance", bonus * 100.0));
+        approx.add(|| format!("No crits on bodyshots; weak point hits +{:.0}% crit chance", bonus * 100.0));
     }
     let body = (1.0 - pb) * non_crit + cb;
     let head = (1.0 - ph) * non_crit + 2.0 * ch;
     let crit_hs = (1.0 - h) * body + h * 2.0 * (1.0 + p.headshot) * head;
 
 
+    let explain = if quiet {
+        Vec::new()
+    } else {
     let mut base_children = p.sources_for(|s| s == Stat::BaseDamage);
     base_children.extend(oa_explain);
     if p.gunco != 0.0 {
@@ -1392,7 +1464,7 @@ fn component(
     if let Some(e) = dup_explain {
         crit_factor = crit_factor.child(e);
     }
-    let explain = vec![
+    vec![
         Explain::new("Base damage", base_total).with(p.sources_for(|s| s == Stat::BaseDamageFlat)),
         Explain::new("Base damage multiplier", b).with(base_children),
         Explain::new("Damage per projectile after mods", damage.values().sum())
@@ -1416,7 +1488,8 @@ fn component(
         crit_factor,
         Explain::new("Status chance", sc).with(p.sources_for(|s| matches!(s, Stat::StatusChance | Stat::StatusChanceFlat))),
         Explain::new("Multishot", ms).with(p.sources_for(|s| s == Stat::Multishot)),
-    ];
+    ]
+    };
 
     let mut elem_bonus: BTreeMap<DamageType, f64> = BTreeMap::new();
     for (t, v, _) in &p.elements {

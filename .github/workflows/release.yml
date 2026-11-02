@@ -69,9 +69,12 @@ jobs:
       - name: Optimize this slice
         run: ./target/release/wfcalc optimize --all --shard ${{ matrix.shard }}/16 --out best-${{ matrix.shard }}.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: best-${{ matrix.shard }}
-          path: best-${{ matrix.shard }}.json
+          path: |
+            best-${{ matrix.shard }}.json
+            best-${{ matrix.shard }}.log
           retention-days: 3
 
   # The website without best builds; deployed right away with the previous release's builds,
@@ -189,6 +192,25 @@ jobs:
         run: |
           node tools/merge-best-builds.mjs best-builds.json best-parts/*.json
           cp best-builds.json apps/web/dist/best-builds.json
+      - name: Best builds log
+        run: |
+          cat best-parts/*.log > best-builds.log
+          failed=$(grep -c "FAILED" best-builds.log || true)
+          {
+            echo "### Best builds"
+            grep -h "^done:" best-parts/*.log | sed 's/^/- /'
+            echo
+            echo "Weapon/target jobs with a failure: **${failed}**"
+            if [ "$failed" -gt 0 ]; then
+              echo '```'
+              grep "FAILED" best-builds.log | head -100
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: best-builds-log
+          path: best-builds.log
       - name: Package
         run: cd apps/web/dist && zip -r "../../../simulacrum-web-${TAG}.zip" .
       - uses: actions/upload-artifact@v4
