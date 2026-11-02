@@ -487,7 +487,7 @@ export default function ModGrid({
         {!plan.fits && " Even with forma on every slot this build doesn't fit: remove or swap the exilus mod (or another mod)."}
 
       </p>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {Array.from({ length: SLOT_COUNT }, (_, i) =>
           hasRiven && i === RIVEN_SLOT ? (
             rivenCard()
@@ -498,7 +498,7 @@ export default function ModGrid({
           ),
         )}
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {modCard(SLOT_COUNT)}
         {arcanes.length > 0 &&
           (arcane ? (

@@ -72,7 +72,7 @@ function SearchOverlay() {
   );
 }
 
-/** Compact live stats shown next to the mod cards. */
+/** Compact live stats shown under the mod cards. */
 function LiveStats({ m }: { m: ModeResult }) {
   const tile = (label: string, v: number | null | undefined) => (
     <div className="rounded-md bg-zinc-100 px-2 py-1.5 dark:bg-zinc-800/60">
@@ -81,9 +81,9 @@ function LiveStats({ m }: { m: ModeResult }) {
     </div>
   );
   return (
-    <div className="space-y-2 rounded-lg border border-zinc-200 p-2 dark:border-zinc-800 lg:sticky lg:top-2 lg:self-start">
+    <div className="space-y-2 rounded-lg border border-zinc-200 p-2 dark:border-zinc-800">
       <div className="text-xs font-semibold">{m.mode}</div>
-      <div className="grid grid-cols-2 gap-1.5">
+      <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3 xl:grid-cols-6">
         {tile("Per shot", m.perShot)}
         {tile("Burst DPS", m.burstDps)}
         {tile("Sustained DPS", m.sustainedDps)}
@@ -759,7 +759,7 @@ export default function BuildEditor() {
                 ))}
               </div>
             </div>
-            <div className={liveStats && mainMode ? "grid gap-4 2xl:grid-cols-[minmax(0,1fr)_280px]" : ""}>
+            <div className="space-y-4">
               {view === "cards" ? (
                 <ModGrid
                   weapon={weapon}
