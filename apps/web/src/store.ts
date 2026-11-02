@@ -326,7 +326,8 @@ function runInWorker<T>(kind: "optimize" | "rankRivens", weapon: string, base: E
   const id = nextId++;
   return new Promise((resolve) => {
     pending.set(id, resolve);
-    worker!.postMessage({ id, kind, weapon, base: JSON.stringify(base), target: JSON.stringify(target), options: JSON.stringify(options) });
+    const dataUrl = new URL(`${import.meta.env.BASE_URL}gamedata.json`, location.href).href;
+    worker!.postMessage({ id, kind, dataUrl, weapon, base: JSON.stringify(base), target: JSON.stringify(target), options: JSON.stringify(options) });
   });
 }
 
