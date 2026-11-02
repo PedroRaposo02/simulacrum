@@ -1,0 +1,35 @@
+name: Wrong numbers
+description: A damage, DPS or stat value that doesn't match the game
+labels: ["accuracy"]
+body:
+  - type: input
+    id: weapon
+    attributes:
+      label: Weapon and attack
+      placeholder: "Laetum, Incarnon form"
+    validations:
+      required: true
+  - type: textarea
+    id: build
+    attributes:
+      label: Build
+      description: Paste a share link (Build editor → Copy share link) or list the mods, arcane, riven and evolutions.
+    validations:
+      required: true
+  - type: textarea
+    id: values
+    attributes:
+      label: What the app shows and what the game shows
+      description: Which value, the app's number, the in-game number and how you measured it (arsenal, simulacrum, damage numbers…).
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Scenario
+      description: Enemy, buffs, outsourced status and any setting you changed.
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown next to the title (BETA v…). Website or desktop app?

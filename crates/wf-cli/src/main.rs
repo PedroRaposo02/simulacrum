@@ -88,9 +88,35 @@ enum Cmd {
         /// 9 comma-separated slot polarities (8 normal + exilus), "-" for none.
         #[arg(long, value_delimiter = ',')]
         polarities: Vec<String>,
+        /// Minimum final crit chance (e.g. 0.5 for Tenacious Bond on a companion weapon).
+        #[arg(long)]
+        min_crit_chance: Option<f64>,
+        /// Contagious Bond on the companion (its kills spread statuses; group fights).
+        #[arg(long)]
+        contagious_bond: bool,
+        /// Buffs by id from gamedata (e.g. fired-up, roar), comma separated, at full value.
+        #[arg(long, value_delimiter = ',')]
+        buff: Vec<String>,
+        /// Fight length in seconds (Heat stacks keep growing while refreshed).
+        #[arg(long)]
+        fight_s: Option<f64>,
+        /// Enemies in a group fight.
+        #[arg(long)]
+        group_size: Option<f64>,
+        /// Optimize the mods around a fixed max-roll riven: positive stat keys (riven.json), with a
+        /// harmless negative, e.g. SDMG,CC.
+        #[arg(long, value_delimiter = ',')]
+        fixed_riven: Vec<String>,
+        /// Use exactly these Incarnon evolutions (comma separated) instead of searching them.
+        #[arg(long, value_delimiter = ',')]
+        evolutions: Vec<String>,
         /// Every weapon x (raw + every enemy preset) x (with and without riven), written to --out.
         #[arg(long)]
         all: bool,
+        /// With --all: only this slice of the weapon x target jobs, "i/n" (0-based), for parallel CI
+        /// runs; merge the parts with tools/merge-best-builds.mjs.
+        #[arg(long)]
+        shard: Option<String>,
         #[arg(long, default_value = "data/best-builds.json")]
         out: PathBuf,
     },
@@ -225,6 +251,39 @@ fn entry(r: OptimizeResult) -> BestEntry {
         evolutions: r.evolutions,
         progenitor: r.progenitor,
     }
+}
+
+/// Max-roll riven modifiers for the given positive stat keys (2-3, with a harmless negative).
+fn fixed_riven_modifiers(data: &wf_data::GameData, weapon: &str, keys: &[String]) -> Result<Vec<wf_data::Modifier>, String> {
+    if keys.is_empty() {
+        return Ok(vec![]);
+    }
+    let w = data.weapon(weapon).ok_or(format!("no weapon '{weapon}'"))?;
+    let table = data.riven.as_ref().ok_or("no riven table")?;
+    let ty = wf_data::RivenType::for_pool(w.mod_pool);
+    let layout = table.layout(keys.len(), true).ok_or("riven needs 2 or 3 positives")?;
+    keys.iter()
+        .map(|k| {
+            let s = table.stats.iter().find(|s| s.key.eq_ignore_ascii_case(k)).ok_or(format!("no riven stat '{k}'"))?;
+            let stat = s.stat.ok_or(format!("riven stat '{k}' has no modelled effect"))?;
+            let base = s.base.get(&ty).ok_or(format!("'{k}' can't roll on this weapon type"))?;
+            Ok(wf_data::Modifier {
+                source: format!("Riven {}", s.label),
+                stat,
+                value: base * table.disposition * layout.positive_mult * table.roll_max,
+                max_stacks: 1,
+                applies_to: s.applies_to.unwrap_or(wf_data::ComponentFilter::All),
+                condition: wf_data::Condition::Always,
+                per: None,
+                threshold: None,
+                aiming: false,
+                only_slots: vec![],
+                not_slots: vec![],
+                trigger: None,
+                mode_contains: None,
+            })
+        })
+        .collect()
 }
 
 fn print_optimized(r: &OptimizeResult) {
@@ -374,7 +433,31 @@ fn run() -> Result<bool, String> {
             }
             Ok(regressions == 0)
         }
-        Cmd::Optimize { weapon, enemy, riven, all, out, mode, heavy, heavy_combo, objective, max_fire_rate_bonus, no_explosion_mod, min_attack_speed, range_tolerance, capacity, polarities } => {
+        Cmd::Optimize {
+            weapon,
+            enemy,
+            riven,
+            all,
+            out,
+            mode,
+            heavy,
+            heavy_combo,
+            objective,
+            max_fire_rate_bonus,
+            no_explosion_mod,
+            min_attack_speed,
+            range_tolerance,
+            capacity,
+            polarities,
+            min_crit_chance,
+            contagious_bond,
+            buff,
+            fight_s,
+            group_size,
+            fixed_riven,
+            evolutions,
+            shard,
+        } => {
             let data = load(&cli.data)?;
             if !all {
                 let w = weapon.ok_or("give a weapon name or --all")?;
@@ -387,6 +470,17 @@ fn run() -> Result<bool, String> {
                 };
                 let mut base = Build::default();
                 base.conditions.heavy_combo_multiplier = heavy_combo;
+                base.conditions.contagious_bond = contagious_bond;
+                if let Some(f) = fight_s {
+                    base.conditions.fight_s = f;
+                }
+                if let Some(n) = group_size {
+                    base.conditions.group_size = n;
+                }
+                for id in &buff {
+                    let b = data.buffs.iter().find(|b| b.id == *id).ok_or(format!("no buff '{id}'"))?;
+                    base.buffs.extend(b.modifiers.iter().cloned());
+                }
                 let cap = capacity.map(|c| wf_opt::CapacityOptions {
                     capacity: c,
                     polarities: (0..9)
@@ -411,6 +505,9 @@ fn run() -> Result<bool, String> {
                     min_attack_speed,
                     range_tolerance,
                     capacity: cap,
+                    min_crit_chance,
+                    fixed_riven: fixed_riven_modifiers(&data, &w, &fixed_riven)?,
+                    fixed_evolutions: evolutions.iter().map(|e| e.trim().to_string()).collect(),
                     ..Default::default()
                 };
                 let t0 = std::time::Instant::now();
@@ -422,7 +519,23 @@ fn run() -> Result<bool, String> {
             let mut targets: Vec<(String, Target)> = vec![("raw".into(), Target::default())];
             targets.extend(data.enemies.iter().map(|e| (e.id.clone(), Target { enemy: Some(e.id.clone()), ..Default::default() })));
             let t0 = std::time::Instant::now();
-            let jobs: Vec<(usize, usize)> = (0..targets.len()).flat_map(|t| (0..data.weapons.len()).map(move |w| (t, w))).collect();
+            let (shard_i, shard_n) = match &shard {
+                Some(s) => {
+                    let (i, n) = s.split_once('/').ok_or("--shard is i/n")?;
+                    let (i, n): (usize, usize) = (i.parse().map_err(|_| "--shard i")?, n.parse().map_err(|_| "--shard n")?);
+                    if n == 0 || i >= n {
+                        return Err("--shard needs 0 <= i < n".into());
+                    }
+                    (i, n)
+                }
+                None => (0, 1),
+            };
+            let jobs: Vec<(usize, usize)> = (0..targets.len())
+                .flat_map(|t| (0..data.weapons.len()).map(move |w| (t, w)))
+                .enumerate()
+                .filter(|(k, _)| k % shard_n == shard_i)
+                .map(|(_, j)| j)
+                .collect();
             let done = std::sync::atomic::AtomicUsize::new(0);
             let results: Vec<(usize, String, BestPair)> = jobs
                 .par_iter()

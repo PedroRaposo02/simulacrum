@@ -12,6 +12,8 @@ export interface Modifier {
   maxStacks?: number;
   condition?: string;
   per?: "statusType" | "comboMultiplier" | "shields200";
+  /** Threshold (crit chance limits) or duration in seconds (infinite ammo on headshot). */
+  threshold?: number;
   trigger?: string;
   modeContains?: string;
   appliesTo?: string;
@@ -106,7 +108,7 @@ export interface Arcane {
   stacking?: { status: string; maxStacks: number; durationS?: number };
   comboFloor?: number;
 }
-export interface EnemyProfile { id: string; name: string; faction: string; armor: number; note?: string }
+export interface EnemyProfile { id: string; name: string; faction: string; armor: number; note?: string; health?: number }
 
 export interface RivenStatDef {
   key: string;
@@ -159,6 +161,10 @@ export interface Conditions {
   groupSize?: number;
   /** Fight length in seconds (Heat stacks keep growing while refreshed). */
   fightS?: number;
+  /** Distance to the target (weapons with damage falloff). */
+  engagementM?: number;
+  /** Contagious Bond on the companion (its kills spread statuses; group fights). */
+  contagiousBond?: boolean;
 }
 
 /** What the engine receives. */
@@ -181,6 +187,8 @@ export interface Target {
   viralStacks: number | null;
   corrosiveStacks: number | null;
   heatActive: boolean;
+  /** Health of one enemy (overrides the preset), for kill rates in group fights. */
+  health?: number | null;
 }
 
 /** A riven stat as the editor holds it: roll position 0..1 within the stat's range. */

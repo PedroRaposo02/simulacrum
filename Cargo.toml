@@ -1,11 +1,13 @@
 [workspace]
 resolver = "2"
 members = ["crates/wf-data", "crates/wf-calc", "crates/wf-opt", "crates/wf-cli", "crates/wf-wasm"]
+# The desktop app (Tauri) builds on its own: apps/desktop/src-tauri.
+exclude = ["apps/desktop/src-tauri"]
 
 [workspace.package]
 edition = "2021"
 version = "0.6.0-beta.1"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

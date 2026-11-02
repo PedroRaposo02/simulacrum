@@ -27,6 +27,21 @@ pub struct Conditions {
     pub group_size: f64,
     /// Fight length in seconds: Heat stacks keep growing while procs refresh them.
     pub fight_s: f64,
+    /// Distance to the target in meters, for weapons whose damage falls off with distance.
+    pub engagement_m: f64,
+    /// Contagious Bond on the companion: its kills spread half of each status to enemies within 9 m.
+    pub contagious_bond: bool,
+    /// Set by the engine: the attack never reloads (Incarnon forms, melee), so on-reload effects are off.
+    #[serde(skip)]
+    pub no_reload: bool,
+    /// Set by the engine: share of reloads left once infinite ammo on headshots is counted (1 = all).
+    #[serde(skip)]
+    pub reload_share: Option<f64>,
+    /// Set by the engine: crit chance and crit damage the target's Puncture and Cold stacks add.
+    #[serde(skip)]
+    pub target_crit_chance: f64,
+    #[serde(skip)]
+    pub target_crit_damage: f64,
     /// Set by the engine for companion weapons: their AI doesn't aim or reliably headshot.
     #[serde(skip)]
     pub companion: bool,
@@ -46,6 +61,12 @@ impl Default for Conditions {
             incarnon_charge_share: 0.5,
             group_size: 5.0,
             fight_s: 15.0,
+            engagement_m: 10.0,
+            contagious_bond: false,
+            no_reload: false,
+            reload_share: None,
+            target_crit_chance: 0.0,
+            target_crit_damage: 0.0,
             companion: false,
         }
     }
@@ -85,6 +106,8 @@ pub struct Target {
     pub corrosive_stacks: Option<f64>,
     /// Heat proc kept on the target externally (halves armor).
     pub heat_active: Option<bool>,
+    /// Health of one enemy, overriding the preset (on-kill effects in group fights).
+    pub health: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -139,6 +162,9 @@ pub struct ModeResult {
     pub approximations: Vec<String>,
     pub fire_rate: f64,
     pub magazine: Option<u32>,
+    /// Attacks per magazine (magazine / ammo cost).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub magazine_shots: Option<f64>,
     pub reload_s: f64,
     pub per_shot_raw: f64,
     pub per_shot: f64,
@@ -155,6 +181,9 @@ pub struct ModeResult {
     /// Modded status duration in seconds (status-stack arcanes use it).
     #[serde(skip)]
     pub status_duration_s: f64,
+    /// Share of the time infinite ammo on headshots is active.
+    #[serde(skip)]
+    pub free_ammo: f64,
     pub viral_stacks: f64,
     pub corrosive_stacks: f64,
     /// Melee: modded attack speed (weapon base x (1 + bonus)) and range in meters.

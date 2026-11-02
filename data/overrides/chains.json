@@ -1,0 +1,9 @@
+{
+  "_note": "Beams that chain to nearby enemies (wiki, read 2026-11-02): damage = each chained enemy's share of the main beam. Multishot on continuous weapons is a damage multiplier (not extra beams), so it scales every chain. Punch through makes the beam chain again from each pierced enemy (counted against the group size). Add weapons here; family names (without Prime/Kuva/Tenet) match their variants.",
+  "weapons": {
+    "Nukor": { "damage": [0.5, 0.5], "rangeM": 9 },
+    "Kuva Nukor": { "damage": [0.5, 0.5], "rangeM": 9 },
+    "Atomos": { "damage": [0.75, 0.5625, 0.421875], "rangeM": 7 },
+    "Amprex": { "damage": [0.5, 0.25, 0.125], "rangeM": 10 }
+  }
+}

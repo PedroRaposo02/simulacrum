@@ -6,5 +6,5 @@ export const SITE = {
   authorUrl: "https://github.com/PedroRaposo02",
   repoUrl: "https://github.com/PedroRaposo02/simulacrum",
   /** Leave empty to hide the donate button. */
-  donateUrl: "",
+  donateUrl: "https://paypal.me/pedrooraposo",
 };

@@ -72,7 +72,8 @@ fn unmodded_expected_shot() {
     let m = &r.modes[0];
     assert!(close(m.per_shot, 160.0 * (1.0 + 0.22 * 1.2)));
     // Bleed: 2.5 shots/s x 22% x 62.5% Slash share (96 quantizes to 100 of 160), 6 ticks of 35% x 160 x crit 1.264.
-    let bleed = 2.5 * 0.22 * 0.625 * 6.0 * 0.35 * 160.0 * (1.0 + 0.22 * 1.2);
+    // Averaged over the default 15 s fight, stacks ramp up over the first 6 s: x(1 - 6/30).
+    let bleed = 2.5 * 0.22 * 0.625 * 6.0 * 0.35 * 160.0 * (1.0 + 0.22 * 1.2) * (1.0 - 6.0 / 30.0);
     assert!(close(m.status_dps, bleed), "status {} vs {bleed}", m.status_dps);
     assert!(close(m.burst_dps, m.per_shot * 2.5 + bleed));
     // 12 rounds over 12/2.5 s + 2 s reload; status keeps the same uptime.
@@ -794,16 +795,27 @@ fn status_run(d: &GameData, cond: Conditions, enemy: Option<&str>) -> ModeResult
 fn heat_stacks_grow_over_the_fight() {
     // Pure Heat, 100% status: 2.5 procs/s, ticks of 50% x 100.
     let d = status_weapon(json!({"heat": 100.0}), 1.0);
-    let short = status_run(&d, Conditions { fight_s: 0.0, ..Default::default() }, None);
-    assert!(close(short.status_dps, 2.5 * 6.0 * 50.0), "independent stacks: {}", short.status_dps);
+    let steady = status_run(&d, Conditions { fight_s: 0.0, ..Default::default() }, None);
+    assert!(close(steady.status_dps, 2.5 * 6.0 * 50.0), "steady state: {}", steady.status_dps);
     let long = status_run(&d, Conditions { fight_s: 30.0, ..Default::default() }, None);
     assert!(close(long.status_dps, 2.5 * 15.0 * 50.0), "refreshed stacks average over the fight: {}", long.status_dps);
+    // Status duration changes nothing for refreshed Heat.
+    let mut d2 = d.clone();
+    d2.weapons[0].modes[0].components[0].status_chance = 1.0;
+    let b = Build {
+        weapon: "Laetum".into(),
+        buffs: vec![serde_json::from_value(json!({"source": "Duration", "stat": {"kind": "statusDuration"}, "value": 1.0})).unwrap()],
+        conditions: Conditions { fight_s: 30.0, ..Default::default() },
+        ..Default::default()
+    };
+    let with_duration = compute(&d2, &b, &Target::default()).unwrap().modes.remove(0);
+    assert!(close(with_duration.status_dps, long.status_dps));
 }
 
 #[test]
 fn gas_caps_at_ten_clouds() {
     let d = status_weapon(json!({"gas": 100.0}), 1.0);
-    let m = status_run(&d, Conditions::default(), None);
+    let m = status_run(&d, Conditions { fight_s: 0.0, ..Default::default() }, None);
     // 2.5 procs/s x 6 s = 15 clouds, capped at 10.
     assert!(close(m.status_dps, 10.0 * 50.0));
 }
@@ -830,4 +842,175 @@ fn elemental_mods_scale_their_own_ticks() {
     let modded = compute(&d, &b, &Target::default()).unwrap().modes.remove(0);
     // Ticks: 50% of modded base (unchanged) x (1 + 100% Toxin mods).
     assert!(close(modded.status_dps, plain.status_dps * 2.0));
+}
+
+fn add_mod(d: &mut GameData, v: serde_json::Value) {
+    d.mods.push(serde_json::from_value(v).unwrap());
+}
+
+#[test]
+fn status_damage_scales_status_only() {
+    let mut d = status_weapon(json!({"toxin": 100.0}), 1.0);
+    add_mod(&mut d, json!({"id": "el", "name": "Elementalist", "pool": "secondary", "compat": null, "polarity": "naramon",
+        "baseDrain": 4, "maxRank": 5, "isExilus": false,
+        "modifiers": [{"source": "Elementalist", "stat": {"kind": "statusDamage"}, "value": 0.9}]}));
+    let plain = status_run(&d, Conditions::default(), None);
+    let b = Build { weapon: "Laetum".into(), mods: vec!["Elementalist".into()], ..Default::default() };
+    let m = compute(&d, &b, &Target::default()).unwrap().modes.remove(0);
+    assert!(close(m.status_dps, plain.status_dps * 1.9));
+    assert!(close(m.per_shot, plain.per_shot));
+}
+
+#[test]
+fn punch_through_reaches_two_more_enemies_at_most() {
+    let mut d = status_weapon(json!({"impact": 100.0}), 0.0);
+    d.weapons[0].modes[0].components[0].punch_through = 99999.0;
+    let m = status_run(&d, Conditions::default(), None);
+    assert!(close(m.group_dps, m.burst_dps * 3.0));
+    d.weapons[0].modes[0].components[0].punch_through = 0.5;
+    let m = status_run(&d, Conditions::default(), None);
+    assert!(close(m.group_dps, m.burst_dps), "under a meter pierces nobody");
+}
+
+#[test]
+fn distance_falloff_applies_at_the_engagement_distance() {
+    let mut d = status_weapon(json!({"impact": 100.0}), 0.0);
+    d.weapons[0].modes[0].components[0].falloff = Some(wf_data::Falloff { start_m: 10.0, end_m: 20.0, reduction: 0.6 });
+    let near = status_run(&d, Conditions { engagement_m: 5.0, ..Default::default() }, None);
+    let mid = status_run(&d, Conditions { engagement_m: 15.0, ..Default::default() }, None);
+    assert!(close(mid.per_shot, near.per_shot * 0.7));
+}
+
+#[test]
+fn puncture_stacks_raise_crit_chance_of_direct_hits() {
+    // 2.5 procs/s of Puncture keep 5 stacks: +25% crit chance.
+    let d = status_weapon(json!({"puncture": 100.0}), 1.0);
+    let m = status_run(&d, Conditions::default(), None);
+    assert!(close(m.components[0].crit_chance, 0.25), "{}", m.components[0].crit_chance);
+}
+
+#[test]
+fn heavy_rotation_waits_for_initial_combo_regen() {
+    let mut d = melee_fixture();
+    // Galvanized Reflex-like: 50% heavy efficiency and 80 Initial Combo (5x).
+    add_mod(&mut d, json!({"id": "gr", "name": "Reflex", "pool": "melee", "compat": null, "polarity": "naramon",
+        "baseDrain": 4, "maxRank": 5, "isExilus": false,
+        "modifiers": [{"source": "Reflex", "stat": {"kind": "heavyEfficiency"}, "value": 0.5},
+                      {"source": "Reflex", "stat": {"kind": "initialCombo"}, "value": 80.0}]}));
+    let b = Build { weapon: "Test Sword".into(), mods: vec!["Reflex".into()], conditions: Conditions { heavy_combo_multiplier: 1.0, ..Default::default() }, ..Default::default() };
+    let r = compute(&d, &b, &Target::default()).unwrap();
+    let heavy = &r.modes[1];
+    assert_eq!(heavy.combo_multiplier, Some(5.0));
+    // Wind-up 0.5 s, then 40 combo points come back at 40/s: one heavy every 1.5 s.
+    assert!(close(heavy.fire_rate, 1.0 / 1.5), "{}", heavy.fire_rate);
+}
+
+#[test]
+fn disciplines_merit_sets_tennokai_every_four_hits() {
+    let mut d = melee_fixture();
+    add_mod(&mut d, json!({"id": "dm", "name": "Discipline's Merit", "pool": "melee", "compat": null, "polarity": "naramon",
+        "baseDrain": 4, "maxRank": 3, "isExilus": false, "tennokaiEvery": 4, "modifiers": []}));
+    let run = |mods: Vec<String>| compute(&d, &Build { weapon: "Test Sword".into(), mods, ..Default::default() }, &Target::default()).unwrap();
+    let random = run(vec![]);
+    let merit = run(vec!["Discipline's Merit".into()]);
+    // Light combo: 0.5 combos/s of 1 hit. Tennokai heavy wind-up 0.5 s plus 4 (or 1/0.15) light hits.
+    assert!(close(merit.modes[2].fire_rate, 1.0 / (0.5 + 4.0 / 0.5)));
+    assert!(close(random.modes[2].fire_rate, 1.0 / (0.5 + (1.0 / 0.15) / 0.5)));
+}
+
+#[test]
+fn ammo_cost_sets_attacks_per_magazine_and_gauge() {
+    let mut d = fixture();
+    d.weapons[0].modes[0].ammo_cost = 4.0;
+    let r = compute(&d, &Build { weapon: "Laetum".into(), ..Default::default() }, &Target::default()).unwrap();
+    let m = &r.modes[0];
+    // 12 rounds at 4 per attack: 3 attacks, then the 2 s reload.
+    assert_eq!(m.magazine_shots, Some(3.0));
+    let hits = m.per_shot * 3.0 / (3.0 / 2.5 + 2.0);
+    assert!(close(m.sustained_dps - m.status_dps * hits / (m.per_shot * 2.5), hits));
+    // Incarnon gauge of 40 rounds at 10 per attack: 4 attacks per charge.
+    d.weapons[0].modes[1].ammo_cost = 10.0;
+    let r = compute(&d, &Build { weapon: "Laetum".into(), ..Default::default() }, &Target::default()).unwrap();
+    let inc = &r.modes[1];
+    assert!(close(inc.per_charge.unwrap() - inc.status_dps * 4.0 / inc.fire_rate, inc.per_shot * 4.0));
+}
+
+#[test]
+fn ammo_efficiency_is_capped_at_75_percent() {
+    let d = fixture();
+    let b = Build {
+        weapon: "Laetum".into(),
+        buffs: vec![serde_json::from_value(json!({"source": "AE", "stat": {"kind": "ammoEfficiency"}, "value": 1.0})).unwrap()],
+        ..Default::default()
+    };
+    let m = compute(&d, &b, &Target::default()).unwrap().modes.remove(0);
+    // 12 rounds at a quarter of a round per shot: 48 shots per magazine, still reloading.
+    assert_eq!(m.magazine_shots, Some(48.0));
+    assert!(m.sustained_dps < m.burst_dps);
+}
+
+#[test]
+fn gas_clouds_linger_after_kills() {
+    let d = status_weapon(json!({"gas": 100.0}), 1.0);
+    let t = |h: Option<f64>| Target { health: h, ..Default::default() };
+    let b = Build { weapon: "Laetum".into(), ..Default::default() };
+    let no_deaths = compute(&d, &b, &t(None)).unwrap().modes.remove(0);
+    let deaths = compute(&d, &b, &t(Some(1000.0))).unwrap().modes.remove(0);
+    assert!(deaths.group_dps > no_deaths.group_dps * 1.01, "{} vs {}", deaths.group_dps, no_deaths.group_dps);
+}
+
+#[test]
+fn charge_beam_adds_its_damage_and_rounds() {
+    let mut d = fixture();
+    // Mode 1 charges by firing mode 0 (2.5 ticks/s) for its 1/6.67 s cycle.
+    d.weapons[0].modes[1].charge_beam = Some(0);
+    let plain = compute(&fixture(), &Build { weapon: "Laetum".into(), ..Default::default() }, &Target::default()).unwrap();
+    let r = compute(&d, &Build { weapon: "Laetum".into(), ..Default::default() }, &Target::default()).unwrap();
+    let ticks = r.modes[0].fire_rate / r.modes[1].fire_rate;
+    assert!(close(r.modes[1].per_shot, plain.modes[1].per_shot + r.modes[0].per_shot * ticks));
+}
+
+#[test]
+fn weak_point_crit_chance_only_on_headshots() {
+    let d = fixture();
+    let run = |hs: f64| {
+        let b = Build {
+            weapon: "Laetum".into(),
+            riven: vec![serde_json::from_value(json!({"source": "WPCC", "stat": {"kind": "headshotCritChance"}, "value": 1.0})).unwrap()],
+            conditions: Conditions { headshot_share: hs, ..Default::default() },
+            ..Default::default()
+        };
+        compute(&d, &b, &Target::default()).unwrap().modes.remove(0).per_shot
+    };
+    let plain = |hs: f64| {
+        let b = Build { weapon: "Laetum".into(), conditions: Conditions { headshot_share: hs, ..Default::default() }, ..Default::default() };
+        compute(&d, &b, &Target::default()).unwrap().modes.remove(0).per_shot
+    };
+    assert!(close(run(0.0), plain(0.0)));
+    // Weak points: 22% + 22% x 100% = 44% crit chance at 2.2x, headshot x2.
+    let cc = 0.44;
+    assert!(close(run(1.0), 160.0 * 2.0 * ((1.0 - cc) + 2.0 * cc * 2.2)));
+}
+
+#[test]
+fn infinite_ammo_on_headshots_removes_reloads() {
+    let mut d = fixture();
+    add_mod(&mut d, json!({"id": "ss", "name": "Skull Shots", "pool": "secondary", "compat": null, "polarity": "naramon",
+        "baseDrain": 4, "maxRank": 3, "isExilus": false,
+        "modifiers": [{"source": "Skull Shots", "stat": {"kind": "infiniteAmmoOnHeadshot"}, "value": 0.4, "threshold": 2.0}]}));
+    let run = |hs: f64, effects: bool| {
+        let b = Build {
+            weapon: "Laetum".into(),
+            mods: vec!["Skull Shots".into()],
+            conditions: Conditions { headshot_share: hs, headshot_effects: effects, ..Default::default() },
+            ..Default::default()
+        };
+        compute(&d, &b, &Target::default()).unwrap().modes.remove(0)
+    };
+    // Every shot a headshot: 2.5 x 40% = 1 trigger/s, buff up 1 - e^-2 = 86% of the time.
+    let m = run(1.0, true);
+    let up = 1.0 - (-2.0f64).exp();
+    assert_eq!(m.magazine_shots, Some((12.0 / (1.0 - up)).floor()));
+    // No headshot effects: no infinite ammo.
+    assert_eq!(run(0.0, false).magazine_shots, Some(12.0));
 }

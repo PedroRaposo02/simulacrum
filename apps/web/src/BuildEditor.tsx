@@ -162,7 +162,7 @@ function ModSlot({ value, options, used, onChange, label }: {
   );
 }
 
-const TYPE_LABEL: Record<string, string> = {
+export const TYPE_LABEL: Record<string, string> = {
   impact: "Impact", puncture: "Puncture", slash: "Slash", heat: "Heat", cold: "Cold", electricity: "Electricity", toxin: "Toxin",
   blast: "Blast", radiation: "Radiation", gas: "Gas", magnetic: "Magnetic", viral: "Viral", corrosive: "Corrosive", void: "Void", tau: "Tau", true: "True",
 };
@@ -422,7 +422,7 @@ function FavStar({ id, name }: { id: string; name: string }) {
 }
 
 export default function BuildEditor() {
-  const { data, engine, build, setBuild, scenario, best } = useStore();
+  const { data, engine, build, setBuild, scenario, best, compare, addToCompare, setTab } = useStore();
   const [copied, setCopied] = useState(false);
   const [opt, setOpt] = useState<OptimizerState | null>(null);
   const [comfort, setComfort] = usePersistent<ComfortSettings>("opt.comfort", { on: false, minAttackSpeed: 1.5, rangeTolerance: 0.05, maxFireRateBonus: 1.5 });
@@ -641,6 +641,16 @@ export default function BuildEditor() {
             >
               {copied ? "Link copied" : "Copy share link"}
             </button>
+            <button
+              className="rounded-md border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              title="Add this build to the Compare page (up to 3 builds of one weapon)"
+              onClick={() => {
+                addToCompare({ label: `Build ${compare.length && compare[0].build.weapon === weapon.id ? compare.length + 1 : 1}`, build });
+                setTab("compare");
+              }}
+            >
+              Compare
+            </button>
             <select
               className="field w-auto py-1.5 text-sm"
               value=""
@@ -683,7 +693,7 @@ export default function BuildEditor() {
               </label>
               <label
                 className="flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-300"
-                title="Card percentages: off = the weapon's raw damage (no armor, Viral or other status); on = against the scenario enemy, including the Viral/Corrosive/Heat the build applies itself"
+                title="Card percentages: off = the weapon's raw damage, status damage included (no armor, Viral or other enemy-side multipliers); on = against the scenario enemy, including the Viral/Corrosive/Heat the build applies itself"
               >
                 <input type="checkbox" className="accent-indigo-600" checked={shareVsEnemy} onChange={(e) => setShareVsEnemy(e.target.checked)} />
                 % vs enemy

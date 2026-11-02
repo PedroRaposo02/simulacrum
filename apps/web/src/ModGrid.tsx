@@ -24,12 +24,19 @@ const STAT_LABEL: Record<string, string> = {
   windUpSpeed: "Heavy Wind Up Speed",
   finalDamage: "Damage (separate multiplier)",
   critMultMultiplier: "Critical Damage (multiplier)",
+  statusDamage: "Status Damage",
+  ammoEfficiency: "Ammo Efficiency",
+  headshotCritChance: "Weak Point Critical Chance",
+  heavyEfficiency: "Heavy Attack Efficiency",
 };
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 export function statLine(m: Modifier, melee = false): string {
   const k = m.stat.kind;
   if (k === "range") return `${m.value > 0 ? "+" : ""}${m.value.toFixed(1)} Range`;
+  if (k === "infiniteAmmoOnHeadshot") return `${Math.round(m.value * 100)}% chance on headshot: infinite ammo for ${m.threshold ?? 0}s`;
+  if (k === "punchThrough") return `${m.value > 0 ? "+" : ""}${m.value.toFixed(1)} Punch Through`;
+  if (k === "initialCombo") return `${m.value > 0 ? "+" : ""}${Math.round(m.value)} Initial Combo${m.condition === "onKill" ? ` on kill x${m.maxStacks ?? 1}` : ""}`;
   const pct = `${m.value > 0 ? "+" : ""}${Math.round(m.value * 1000) / 10}%`;
   let what = STAT_LABEL[k] ?? cap(m.stat.of ?? k);
   if (k === "fireRate" && melee) what = "Attack Speed";
@@ -333,7 +340,7 @@ export default function ModGrid({
   const [capacity, setCapacity] = usePersistent("cards.catalyst", 60);
   const shareTitle = vsEnemy
     ? "DPS this adds on top of the rest of the build, against the scenario enemy (armor and the build's own Viral/Corrosive/Heat included)"
-    : "DPS this adds on top of the rest of the build, on raw weapon damage (no armor, no Viral or other status)";
+    : "DPS this adds on top of the rest of the build, on raw weapon damage, status damage included (no armor, Viral or other enemy-side multipliers)";
   const [withStance, setWithStance] = usePersistent("cards.stance", true);
   const stanceBonus = withStance ? weapon.stanceCapacity ?? 0 : 0;
   const plan = useMemo(() => planCapacity(data!, weapon, build, capacity + stanceBonus), [data, weapon, build, capacity, stanceBonus]);

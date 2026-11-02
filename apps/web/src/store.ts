@@ -63,6 +63,8 @@ export const defaultConditions = (): Conditions => ({
   incarnonChargeShare: 0.5,
   groupSize: 5,
   fightS: 15,
+  engagementM: 10,
+  contagiousBond: false,
 });
 
 export interface BuffState {
@@ -112,6 +114,13 @@ export const userDefaultScenario = (): Scenario => mergeScenario(readSetting<Par
 
 export type BrowserBuild = "unmodded" | "best" | "bestRiven";
 
+/** A build in the Compare page. */
+export interface CompareColumn {
+  label: string;
+  build: EditorBuild;
+}
+export const COMPARE_MAX = 3;
+
 interface State {
   status: "loading" | "ready" | "error";
   error?: string;
@@ -119,8 +128,13 @@ interface State {
   engine?: Engine;
   best?: BestBuilds;
   bestStale: boolean;
-  tab: "home" | "browser" | "build" | "settings";
+  tab: "home" | "browser" | "build" | "compare" | "settings";
   build: EditorBuild;
+  /** Builds of one weapon side by side. */
+  compare: CompareColumn[];
+  setCompare: (c: CompareColumn[]) => void;
+  /** Add a build to the comparison; a build of another weapon starts a new comparison. */
+  addToCompare: (c: CompareColumn) => void;
   scenario: Scenario;
   browserBuild: BrowserBuild;
   setTab: (t: State["tab"]) => void;
@@ -212,6 +226,16 @@ export const useStore = create<State>((set, get) => ({
   build: emptyBuild(),
   scenario: mergeScenario(readSetting<Partial<Scenario> | null>("scenario", null) ?? userDefaultScenario()),
   browserBuild: readSetting<BrowserBuild>("browserBuild", "unmodded"),
+  compare: readSetting<CompareColumn[]>("compare", []),
+  setCompare: (compare) => {
+    set({ compare });
+    writeSetting("compare", compare);
+  },
+  addToCompare: (c) => {
+    const cur = get().compare;
+    const same = cur.length && cur[0].build.weapon === c.build.weapon ? cur : [];
+    get().setCompare([...same, c].slice(-COMPARE_MAX));
+  },
   setTab: (tab) => {
     set({ tab });
     writeSetting("tab", tab);
@@ -268,6 +292,7 @@ export const useStore = create<State>((set, get) => ({
         data,
         best,
         bestStale: !!best && best.dataVersion !== data.version,
+        compare: get().compare.filter((c) => data.weapons.some((w) => w.id === c.build.weapon)),
         ...(shared ? { build: shared, tab: "build" } : {}),
       });
     } catch (e) {

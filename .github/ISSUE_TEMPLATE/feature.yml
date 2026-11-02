@@ -1,0 +1,11 @@
+name: Idea
+description: A feature, mechanic or weapon the app should handle
+labels: ["idea"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Idea
+      description: What you'd like and why. For game mechanics, a wiki link or in-game test helps.
+    validations:
+      required: true

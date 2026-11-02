@@ -197,6 +197,9 @@ pub struct HitComponent {
     /// Status procs this hit always applies (stance combos: Bleed = Slash, Tesla Chain = Electricity).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forced_procs: Vec<DamageType>,
+    /// Punch through in meters (wiki attack data).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub punch_through: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +230,13 @@ pub struct AttackMode {
     pub reload_s: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub charge_time_s: Option<f64>,
+    /// A beam fired while this attack charges (Onos: the Heat beam while charging the blast), by mode index:
+    /// it deals its damage during the charge and uses a round per tick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charge_beam: Option<usize>,
+    /// Rounds one attack uses from the magazine or Incarnon gauge (wiki AmmoCost; Onos charged blast: 50).
+    #[serde(default = "one_f64", skip_serializing_if = "is_one")]
+    pub ammo_cost: f64,
     pub ammo_pool: AmmoPool,
     pub components: Vec<HitComponent>,
     pub coverage: Coverage,
@@ -365,6 +375,9 @@ pub struct Weapon {
     pub exilus_polarity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stance_polarity: Option<String>,
+    /// Beam that chains to nearby enemies (Nukor, Atomos, Amprex): damage share of each chained enemy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain: Option<Chain>,
     /// Kuva / Tenet weapon: carries a progenitor bonus element (60% of base damage at max).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub progenitor: bool,
@@ -425,6 +438,21 @@ pub enum Stat {
     FinalDamage,
     /// Multiplies the final crit multiplier ("x3 Critical Damage": value 2.0).
     CritMultMultiplier,
+    /// Status damage (Elementalist mods): multiplies status ticks and Blast procs.
+    StatusDamage,
+    /// Punch through in meters (flat).
+    PunchThrough,
+    /// Melee combo points kept as a floor (flat; 20 points per +1x combo).
+    InitialCombo,
+    /// Share of combo a heavy attack keeps (capped at 90%).
+    HeavyEfficiency,
+    /// Ammo efficiency: fraction of rounds not consumed (100% = never reload).
+    AmmoEfficiency,
+    /// Crit chance on weak point hits only, additive with crit chance mods (spliced riven).
+    HeadshotCritChance,
+    /// Chance per headshot for a few seconds of infinite ammo (Skull Shots, Brain Storm); the duration in
+    /// seconds is the modifier's `threshold`.
+    InfiniteAmmoOnHeadshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -504,6 +532,12 @@ pub struct Modifier {
 }
 
 fn one() -> u8 { 1 }
+fn one_f64() -> f64 {
+    1.0
+}
+fn is_one(v: &f64) -> bool {
+    *v == 1.0
+}
 fn all_components() -> ComponentFilter { ComponentFilter::All }
 fn always() -> Condition { Condition::Always }
 
@@ -542,6 +576,9 @@ pub struct Mod {
     /// Tennokai mods: Tennokai attacks are only possible with one equipped.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub enables_tennokai: bool,
+    /// A guaranteed Tennokai every N melee hits (Discipline's Merit) instead of a 15% chance per hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tennokai_every: Option<u32>,
     /// Stat lines the ingest parser could not turn into modifiers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unparsed: Vec<String>,
@@ -577,6 +614,18 @@ pub struct Arcane {
     pub image: Option<String>,
 }
 
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
+/// A beam's chain to nearby enemies (wiki): each entry is one chained enemy's share of the main beam.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Chain {
+    pub damage: Vec<f64>,
+    pub range_m: f64,
+}
+
 /// How a status-driven arcane builds its stacks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -602,6 +651,9 @@ pub struct EnemyProfile {
     pub shields: bool,
     #[serde(default)]
     pub is_boss: bool,
+    /// Health of one enemy (0 = unknown): sets how often enemies die, for on-kill effects.
+    #[serde(default)]
+    pub health: f64,
     /// Multipliers by damage type against this health class, e.g. {"slash": 1.25}.
     #[serde(default)]
     pub health_modifiers: BTreeMap<DamageType, f64>,

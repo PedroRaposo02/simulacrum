@@ -2,6 +2,38 @@
 
 Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the version lives in `Cargo.toml` (workspace) and the `package.json` files, and each release is tagged `v<version>`.
 
+## Unreleased
+
+- **License**: GNU AGPL v3.0 or later (data derived from the wiki stays CC BY-NC-SA 3.0). Fan-project notice in the footer and README.
+- **Branches**: `dev` for work, `production` for releases; pushing `production` releases the version in `package.json`. CI runs on both with read-only permissions.
+- **Security policy** (private vulnerability reports) and issue forms for wrong numbers, bugs and ideas; Wrangler pinned to an exact version in deploys.
+- **Compare builds**: new Compare page with two or three builds of one weapon side by side (the editor's build, saved builds, precomputed best builds or unmodded): DPS single and group, stats and damage types with the change against the first build, mods (the ones not every build uses highlighted), arcane, riven, evolutions. "Compare" in the build editor adds the current build.
+- **Donate**: PayPal button in the footer.
+- **Desktop app** (Windows, macOS, Linux): the site in its own window, built with Tauri and published with each release (installer, dmg, AppImage). It checks GitHub for a newer release on launch and offers to update and restart (signed updates); links open in the browser.
+- **Source code** link in the footer, and a "Desktop app" link to the releases.
+- **Installable app**: the site can be installed (Chrome/Edge/Android "Install app" button) to run in its own window and offline; it updates itself with the site.
+- **Status Damage** (Elementalist mods) multiplies status ticks and Blast; Elementalist's other stat (reload, wind-up, punch through) now parses too.
+- **Punch through**: weapon values from the wiki and mods (Primed Shred, Seeker…); in group fights about one more enemy per meter, at most 2 (infinite punch through included).
+- **Chaining beams** (Nukor, Kuva Nukor, Atomos, Amprex; data/overrides/chains.json): chained enemies take their wiki share of the beam in group fights.
+- **Falloff**: explosions hit the target at full damage and the rest of the group at the average falloff over the radius; weapons with distance falloff use the new "distance to target" setting (10 m).
+- **Puncture and Cold on the target**: +5% crit chance per Puncture stack (max 25%) and +0.1x to +0.5x crit damage from Cold (+1.0x while frozen), from the weapon's own procs, direct hits only.
+- **Heavy attacks**: combo has to come back between heavies (Heavy Attack Efficiency keeps up to 90%, Initial Combo regenerates at 40/s, the rest from light hits); Galvanized Reflex's +80 Initial Combo is a 5x floor. **Tennokai**: one every 4 light hits with Discipline's Merit, else every 1/15% hits.
+- **Companions**: Contagious Bond toggle (group fights: the companion's kills spread half of each status); CLI optimize gets --min-crit-chance (Tenacious Bond threshold), --contagious-bond and --buff.
+- Riven Initial Combo, Heavy Attack Efficiency and Punch Through stats now count.
+- **Riven search** starts from the best single stats and every primary element, so element plans like Viral + standalone Heat are found (Verglas Prime Heat nuke: 5.6M group vs 0.6M with the old search).
+- **Contagious Bond** spreads half of each status's stacks, at most 100 (Heat stacks carry over); new CLI --fight-s and --group-size.
+- **Spliced Status Damage** riven stat (90%).
+- **Optimizer local search** also tries swapping in two element mods at once, so element plans that need both (Cold + Toxin into Viral to keep a Heat source pure) are found without a riven too; new CLI --fixed-riven KEY,KEY to optimize around a given max-roll riven.
+- **Enemy deaths in group fights**: each preset has a Steel Path health (~level 150; override in Scenario › Enemy). Kills per second = group damage / health, at most one group every 3 s. Gas clouds keep ticking on the others after their host dies; a kill detonates the victim's Blast stacks even below 10; Contagious Bond's spread holds while the companion kills at least once per status duration. A dying enemy only carries the statuses built up in the time it took to kill it.
+- **Charging beams**: Onos's charged blast includes the Heat beam it fires while charging (its damage, and a round per tick: ~58 rounds per blast, 6 per gauge).
+- **Splice stats**: Ammo Efficiency (fewer rounds per attack, capped at 75%) and Weakpoint Critical Chance (crit chance on weak point hits, additive with crit mods) added; all 18 wiki splice stats are now covered except Scaldra/Techrot damage (no such enemy preset), Parry Angle, Slam Damage and Reload While Holstered.
+- **Release workflow**: best builds are computed on 16 parallel runners (`wfcalc optimize --all --shard i/n`) and merged (`tools/merge-best-builds.mjs`) before the website is built; one runner would exceed GitHub's 6-hour job limit. The website is published to Cloudflare with Wrangler (`apps/web/wrangler.toml`, `pnpm deploy` for manual deploys) twice: right away with the previous release's best builds, so the new version is live within minutes, then again with the new builds once they are done. Each release attaches its `best-builds.json` for the next one. New CLI `--evolutions` to optimize with fixed Incarnon evolutions.
+- **Infinite ammo on headshots** (Skull Shots on Viper, Brain Storm on Grakata: 40% per headshot for 2 s): the buff's uptime removes that share of reloads (beyond the 75% Ammo Efficiency cap), and on-reload effects (Pressurized Magazine) only count the reloads left.
+- **Ammo cost per attack** (wiki AmmoCost, 42 attacks): attacks per magazine and per Incarnon gauge use it. Onos's charged blast costs 50 of its 350-round gauge (7 blasts, then the refill), Ballistica Prime's 4-bolt shots use 4 rounds (2 per magazine).
+- **Damage over time over the fight**: stacks ramp up over the fight length (0 = steady state). Heat stacks refreshed by constant fire never expire, so their count is procs/s x time firing and Status Duration doesn't change it (it used to count). Slash/Toxin/Electricity scale with duration; Gas and Viral/Corrosive only up to their caps.
+- **Card percentages (raw)** include status damage again, still without armor, Viral or other enemy-side multipliers: Status Duration and Elementalist mods no longer show ~0%.
+- **Fixes**: exploding rounds don't punch through; on-reload effects (Pressurized Magazine) don't apply to attacks that never reload.
+
 ## 0.6.0-beta.1 — 2026-11-02
 
 - **Status damage counts in DPS**: burst and sustained DPS now include status damage (it used to be a separate tile the optimizer ignored), with the wiki's rules: Slash 35% and Heat/Toxin/Electricity/Gas 50% of modded base per tick for the status duration, Heat/Toxin/Electricity/Gas ticks scaled by their own elemental mods, faction counted twice; Heat stacks refresh and keep growing over the fight (new fight length setting, 15 s); Gas keeps at most 10 clouds; Blast deals 30% per proc and detonates at 10 stacks.

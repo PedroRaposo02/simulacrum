@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Simulacrum",
+  "version": "../package.json",
+  "identifier": "io.github.pedroraposo02.simulacrum",
+  "build": {
+    "frontendDist": "../../web/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "pnpm --filter @wf/web dev",
+    "beforeBuildCommand": "pnpm --filter @wf/web build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Warframe Simulacrum",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 600,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "app", "dmg", "appimage"],
+    "createUpdaterArtifacts": true,
+    "publisher": "PedroRaposo02",
+    "shortDescription": "Warframe weapon build calculator",
+    "longDescription": "Calculate, optimize and compare Warframe weapon builds.",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "macOS": {
+      "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY2MkFGQzE3MDEwNTI3NjkKUldScEp3VUJGL3dxOXNlY2JMTDJJTUtrZlZQR1dGTkdJbVZrT0VSRHlSc3lpM2JnTFpzUG1UaU0K",
+      "endpoints": [],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use wf_calc::{evaluate, resolve_enemy, Build, CalcError, ErrorCode, Resolved, Target};
-use wf_data::{Arcane, EnemyProfile, Faction, GameData, Mod, Modifier, RivenType, Stat, Weapon};
+use wf_data::{Arcane, DamageType, EnemyProfile, Faction, GameData, Mod, Modifier, RivenType, Stat, Weapon};
 
 const NORMAL_SLOTS: usize = 8;
 const MAX_PASSES: usize = 40;
@@ -109,6 +109,8 @@ pub struct OptimizeOptions {
     pub evolutions: bool,
     /// Kuva / Tenet progenitor element; None = search every element.
     pub progenitor: Option<wf_data::DamageType>,
+    /// Use exactly these Incarnon evolutions (by name) instead of searching them.
+    pub fixed_evolutions: Vec<String>,
 }
 
 impl Default for OptimizeOptions {
@@ -122,6 +124,7 @@ impl Default for OptimizeOptions {
             range_tolerance: None,
             capacity: None,
             progenitor: None,
+            fixed_evolutions: vec![],
             spliced_riven: true,
             objective: Objective::Balanced,
             max_fire_rate_bonus: None,
@@ -392,9 +395,8 @@ fn balanced(m: &wf_calc::ModeResult, cap: f64, burst: f64, sustained: f64) -> f6
     }
     // Same shots, but only `cap` of them per second count; reloads still apply.
     let per_shot = burst / m.fire_rate;
-    match m.magazine {
+    match m.magazine_shots.or(m.magazine.map(|x| x as f64)) {
         Some(mag) if sustained < burst * (1.0 - 1e-9) => {
-            let mag = mag as f64;
             let reload = mag / m.fire_rate * (burst / sustained - 1.0);
             per_shot * mag / (mag / cap + reload)
         }
@@ -409,7 +411,7 @@ fn objective_value(objective: Objective, m: &wf_calc::ModeResult, cap: f64) -> f
         Objective::Burst => m.burst_dps,
         Objective::Sustained => m.sustained_dps,
         Objective::PerShot => m.per_shot,
-        Objective::PerCharge => m.per_charge.unwrap_or_else(|| m.per_shot * m.magazine.unwrap_or(1) as f64),
+        Objective::PerCharge => m.per_charge.unwrap_or_else(|| m.per_shot * m.magazine_shots.unwrap_or(1.0)),
     }
 }
 
@@ -546,6 +548,18 @@ impl<'a> Ctx<'a> {
             }
         }
 
+        // Element pairs: the two strongest mods of each primary element. Element plans (Cold + Toxin into
+        // Viral so a Heat source stays pure) need two mods to change together; one at a time never helps.
+        let mut elem_cands: Vec<(&'a Mod, DamageType)> = Vec::new();
+        for t in [DamageType::Heat, DamageType::Cold, DamageType::Electricity, DamageType::Toxin] {
+            let value = |m: &Mod| {
+                m.modifiers.iter().filter(|x| x.stat == Stat::Element(t)).map(|x| x.value).sum::<f64>()
+            };
+            let mut of_t: Vec<&'a Mod> = cands.iter().copied().filter(|m| value(m) > 0.0).collect();
+            of_t.sort_by(|a, b| value(b).total_cmp(&value(a)));
+            elem_cands.extend(of_t.into_iter().take(2).map(|m| (m, t)));
+        }
+
         // Local search.
         let passes = if local { MAX_PASSES } else { 0 };
         for _ in 0..passes {
@@ -583,6 +597,21 @@ impl<'a> Ctx<'a> {
             }
             for order in element_orders(&set) {
                 consider(self, order, &mut best_move);
+            }
+            for (x, (ma, ta)) in elem_cands.iter().enumerate() {
+                for (mb, tb) in elem_cands.iter().skip(x + 1) {
+                    if ta == tb || set.iter().any(|m| m.id == ma.id || m.id == mb.id) {
+                        continue;
+                    }
+                    for i in 0..set.len() {
+                        for j in (i + 1)..set.len() {
+                            let mut next = set.clone();
+                            next[i] = ma;
+                            next[j] = mb;
+                            consider(self, next, &mut best_move);
+                        }
+                    }
+                }
             }
             match best_move {
                 Some((next, v)) => {
@@ -636,8 +665,52 @@ impl<'a> Ctx<'a> {
             }
         }
 
-        // Greedy riven stats.
-        let mut riven: Vec<RivenStat> = Vec::new();
+        // Riven stats: greedy from several first stats (the best few alone, plus each primary element:
+        // element combos like Viral + standalone Heat only pay off once the mods change around them),
+        // each followed by alternating mod re-optimization and riven swaps. The best start wins.
+        let base_mods = mods.clone();
+        let mut firsts: Vec<(usize, f64)> = pool
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| riven_ok(std::slice::from_ref(s)))
+            .map(|(i, s)| (i, self.eval(&base_mods, arcane, std::slice::from_ref(s))))
+            .collect();
+        firsts.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let mut seeds: Vec<usize> = firsts.iter().take(RIVEN_SEEDS).map(|f| f.0).collect();
+        for (i, s) in pool.iter().enumerate() {
+            if matches!(s.modifier.stat, Stat::Element(t) if t.is_primary_element()) && !seeds.contains(&i) {
+                seeds.push(i);
+            }
+        }
+        let mut best_overall: Option<(Vec<&'a Mod>, Vec<RivenStat>, f64)> = None;
+        for seed in seeds {
+            let (m, r, v) = self.riven_from(base_mods.clone(), arcane, pool, positives, normal_slots, seed, &riven_ok);
+            if best_overall.as_ref().is_none_or(|b| v > b.2) {
+                best_overall = Some((m, r, v));
+            }
+        }
+        match best_overall {
+            Some(b) => b,
+            None => {
+                let v = self.eval(&base_mods, arcane, &[]);
+                (base_mods, vec![], v)
+            }
+        }
+    }
+
+    /// One riven search from a given first stat.
+    #[allow(clippy::too_many_arguments)]
+    fn riven_from(
+        &mut self,
+        mut mods: Vec<&'a Mod>,
+        arcane: Option<&'a Arcane>,
+        pool: &[RivenStat],
+        positives: usize,
+        normal_slots: usize,
+        seed: usize,
+        riven_ok: &dyn Fn(&[RivenStat]) -> bool,
+    ) -> (Vec<&'a Mod>, Vec<RivenStat>, f64) {
+        let mut riven: Vec<RivenStat> = vec![pool[seed].clone()];
         let mut best = self.eval(&mods, arcane, &riven);
         while riven.len() < positives {
             let mut pick: Option<(usize, f64)> = None;
@@ -752,6 +825,9 @@ fn arcane_slot(w: &Weapon) -> &'static str {
     }
 }
 
+/// Riven searches start from this many best single stats (plus every primary element).
+const RIVEN_SEEDS: usize = 3;
+
 /// How many of the best unmodded headline modes get a full search when no mode is given.
 const MODE_CANDIDATES: usize = 3;
 
@@ -825,7 +901,11 @@ fn optimize_mode(
     let candidates: Vec<&Mod> = data
         .mods
         .iter()
-        .filter(|m| m.fits(weapon) && !never(m) && m.modifiers.iter().any(|x| stat_matters(x.stat, faction, opts.allow_faction)))
+        .filter(|m| {
+            m.fits(weapon)
+                && !never(m)
+                && (m.tennokai_every.is_some() || m.modifiers.iter().any(|x| stat_matters(x.stat, faction, opts.allow_faction)))
+        })
         .collect();
 
     let mut ctx = Ctx {
@@ -917,7 +997,11 @@ fn optimize_mode(
         };
         if list.is_empty() { vec![None] } else { list }
     };
-    let evo_combos = evolution_combos(weapon, opts.evolutions, faction, opts.allow_faction);
+    let evo_combos = if opts.fixed_evolutions.is_empty() {
+        evolution_combos(weapon, opts.evolutions, faction, opts.allow_faction)
+    } else {
+        vec![opts.fixed_evolutions.iter().filter_map(|n| weapon.evolution(n)).collect()]
+    };
 
     let fixed: Vec<RivenStat> = opts
         .fixed_riven

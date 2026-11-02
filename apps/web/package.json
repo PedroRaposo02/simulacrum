@@ -2,14 +2,18 @@
   "name": "@wf/web",
   "version": "0.6.0-beta.1",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "build:wasm": "wasm-pack build ../../crates/wf-wasm --target web --release --out-dir ../../apps/web/src/wasm --no-pack",
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy": "npx --yes wrangler@4.156.2 deploy"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-opener": "^2.7.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "zustand": "^5.0.0"

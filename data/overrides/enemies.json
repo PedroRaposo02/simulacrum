@@ -1,9 +1,48 @@
 {
-  "_note": "Faction damage modifiers from Update 36 (wiki Damage/Grineer, Damage/Corpus, Damage/Infested, read 2026-11-02): vulnerable x1.5, no resistances. Shields and Overguard are not modelled.",
+  "_note": "Faction damage modifiers from Update 36 (wiki Damage/Grineer, Damage/Corpus, Damage/Infested, read 2026-11-02): vulnerable x1.5, no resistances. Shields and Overguard are not modelled. Health: one enemy at Steel Path levels (~level 150: wiki health scaling ~395x base; e.g. a 300-health Heavy Gunner is ~120k), used for kill rates in group fights; adjustable in the scenario.",
   "enemies": [
-    { "id": "sp-grineer", "name": "Steel Path Grineer (armor cap)", "faction": "grineer", "armor": 2700, "healthModifiers": { "impact": 1.5, "corrosive": 1.5 } },
-    { "id": "sp-corpus", "name": "Steel Path Corpus (unarmored)", "faction": "corpus", "armor": 0, "shields": true, "note": "Shields not modelled yet", "healthModifiers": { "puncture": 1.5, "magnetic": 1.5 } },
-    { "id": "sp-infested", "name": "Steel Path Infested (light armor)", "faction": "infested", "armor": 300, "healthModifiers": { "slash": 1.5, "heat": 1.5 } },
-    { "id": "boss-armored", "name": "Armored boss (armor cap)", "faction": "none", "armor": 2700, "isBoss": true }
+    {
+      "id": "sp-grineer",
+      "name": "Steel Path Grineer (armor cap)",
+      "faction": "grineer",
+      "armor": 2700,
+      "healthModifiers": {
+        "impact": 1.5,
+        "corrosive": 1.5
+      },
+      "health": 120000
+    },
+    {
+      "id": "sp-corpus",
+      "name": "Steel Path Corpus (unarmored)",
+      "faction": "corpus",
+      "armor": 0,
+      "shields": true,
+      "note": "Shields not modelled yet",
+      "healthModifiers": {
+        "puncture": 1.5,
+        "magnetic": 1.5
+      },
+      "health": 90000
+    },
+    {
+      "id": "sp-infested",
+      "name": "Steel Path Infested (light armor)",
+      "faction": "infested",
+      "armor": 300,
+      "healthModifiers": {
+        "slash": 1.5,
+        "heat": 1.5
+      },
+      "health": 120000
+    },
+    {
+      "id": "boss-armored",
+      "name": "Armored boss (armor cap)",
+      "faction": "none",
+      "armor": 2700,
+      "isBoss": true,
+      "health": 2000000
+    }
   ]
 }

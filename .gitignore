@@ -9,4 +9,7 @@ data/best-builds.json
 apps/web/public/best-builds.json
 tools/ingest/.cache/
 attachments/
+
+# Planning notes (kept locally, not published)
 TODO*.md
+*Development*Plan*.md

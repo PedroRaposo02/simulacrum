@@ -1,0 +1,6 @@
+{
+  "_note": "Per-attack details the data sources don't link. chargeBeam: the attack charges by firing this other attack (its damage and ammo count during the charge).",
+  "weapons": {
+    "Onos": { "Incarnon Form Charge Attack": { "chargeBeam": "Incarnon Form Held Damage" } }
+  }
+}

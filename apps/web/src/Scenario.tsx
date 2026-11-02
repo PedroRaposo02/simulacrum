@@ -68,6 +68,18 @@ export default function ScenarioPanel() {
           disabled={!target.enemy}
         />
         <Slider label="Other armor strip (abilities…)" value={target.armorStrip} onChange={(v) => setT({ armorStrip: v })} disabled={!target.enemy} />
+        <label className="block text-xs text-zinc-500">
+          Enemy health (one enemy; sets kill rate in group fights)
+          <input
+            type="number"
+            min={0}
+            step={10000}
+            className="field mt-1"
+            placeholder={String(data!.enemies.find((e) => e.id === target.enemy)?.health ?? "unknown: no kills")}
+            value={target.health ?? ""}
+            onChange={(e) => setT({ health: e.target.value === "" ? null : Math.max(0, Number(e.target.value)) })}
+          />
+        </label>
       </Section>
 
       <Section title="Outsourced status">
@@ -181,6 +193,20 @@ export default function ScenarioPanel() {
           step={5}
           display={`${conditions.fightS ?? 15} s`}
           onChange={(v) => setC({ fightS: v })}
+        />
+        <Slider
+          label="Distance to target (damage falloff)"
+          value={conditions.engagementM ?? 10}
+          min={0}
+          max={50}
+          step={1}
+          display={`${conditions.engagementM ?? 10} m`}
+          onChange={(v) => setC({ engagementM: v })}
+        />
+        <Toggle
+          label="Contagious Bond (companion kills spread half of each status within 9 m)"
+          checked={conditions.contagiousBond ?? false}
+          onChange={(v) => setC({ contagiousBond: v })}
         />
         <Slider
           label="Incarnon charging: weak point hit share"

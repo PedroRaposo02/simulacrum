@@ -178,7 +178,7 @@ export default function WeaponBrowser() {
         <p className="text-xs text-zinc-500">
           Most DPS builds (any polarity, no capacity limit{browserBuild === "bestRiven" ? ", max-roll riven" : ""}), optimized for this enemy with
           full conditional uptime, then re-evaluated with your scenario. Buffs and outsourced status weren't part of the search.
-          {bestStale && " Game data changed since these were generated; rerun pnpm optimize."}
+          {bestStale && " These were computed for an earlier game data version; updated builds are being generated and replace them shortly."}
         </p>
       )}
       {usingBest && best && <BestBuildDisclaimer compact />}

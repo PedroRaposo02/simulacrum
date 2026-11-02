@@ -1,29 +1,92 @@
 name: Release
 
+# A push to the production branch releases the version in package.json (tag v<version>, created
+# by the release); pushing a v* tag or a manual run releases that tag.
 on:
   push:
+    branches: [production]
     tags: ["v*"]
-  # Manual run for an existing tag (e.g. when the tag push didn't trigger a run).
   workflow_dispatch:
     inputs:
       tag:
         description: "Tag to build and release, e.g. v0.4.0-beta.1"
         required: true
 
-env:
-  TAG: ${{ inputs.tag || github.ref_name }}
-
 permissions:
   contents: write
 
 jobs:
-  web:
-    name: Website bundle
+  version:
+    name: Version
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      ref: ${{ steps.v.outputs.ref }}
+      release: ${{ steps.v.outputs.release }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ inputs.tag || github.sha }}
+      - id: v
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"; ref="$tag"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${{ github.ref_name }}"; ref="$tag"
+          else
+            tag="v$(node -p "require('./package.json').version")"; ref="${{ github.sha }}"
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+              echo "::notice::$tag is already released; bump the version to release this push."
+              echo "release=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          grep -q '^release=' "$GITHUB_OUTPUT" || echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag from $ref"
+
+  # Best builds: every weapon x enemy preset x (single/group, riven/rivenless, melee heavies) is too
+  # much for one runner (6 h limit), so 16 runners each take a slice and the publish job merges them.
+  builds:
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    name: Best builds (slice ${{ matrix.shard }}/16)
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: true
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p wf-cli
+      - name: Optimize this slice
+        run: ./target/release/wfcalc optimize --all --shard ${{ matrix.shard }}/16 --out best-${{ matrix.shard }}.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: best-${{ matrix.shard }}
+          path: best-${{ matrix.shard }}.json
+          retention-days: 3
+
+  # The website without best builds; deployed right away with the previous release's builds,
+  # then again once this release's builds are done.
+  web:
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    name: Website
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -39,19 +102,173 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build:wasm
-      - run: mkdir -p apps/web/public
-      - name: Precompute best builds
-        run: pnpm optimize
-      - run: cp data/gamedata.json apps/web/public/gamedata.json
+      - run: mkdir -p apps/web/public && cp data/gamedata.json apps/web/public/gamedata.json
       - run: pnpm build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: apps/web/dist
+          retention-days: 3
+
+  # Cloudflare deploys (Worker with static assets, apps/web/wrangler.toml) are skipped until the
+  # CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repo secrets exist.
+  deploy-early:
+    name: Deploy (previous best builds)
+    needs: [version, web]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+      - uses: actions/download-artifact@v4
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        with:
+          name: site
+          path: apps/web/dist
+      - name: Best builds from the latest release that has them
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        run: |
+          for t in $(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 20 --json tagName --jq '.[].tagName'); do
+            if gh release download "$t" --repo "$GITHUB_REPOSITORY" --pattern best-builds.json --dir prev 2>/dev/null; then
+              echo "using best builds from $t"
+              cp prev/best-builds.json apps/web/dist/best-builds.json
+              break
+            fi
+          done
+          [ -f apps/web/dist/best-builds.json ] || echo "no earlier best builds; rankings appear with the final deploy"
+      - uses: actions/setup-node@v4
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        with:
+          node-version: 22
+      - name: wrangler deploy
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        working-directory: apps/web
+        run: npx --yes wrangler@4.156.2 deploy --message="Release ${TAG} (previous best builds)"
+
+  publish:
+    name: Best builds into the website
+    needs: [version, builds, web]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: apps/web/dist
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: best-*
+          path: best-parts
+          merge-multiple: true
+      - name: Merge best builds
+        run: |
+          node tools/merge-best-builds.mjs best-builds.json best-parts/*.json
+          cp best-builds.json apps/web/dist/best-builds.json
       - name: Package
         run: cd apps/web/dist && zip -r "../../../simulacrum-web-${TAG}.zip" .
       - uses: actions/upload-artifact@v4
         with:
           name: web
-          path: simulacrum-web-*.zip
+          path: |
+            simulacrum-web-*.zip
+            best-builds.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-final
+          path: apps/web/dist
+          retention-days: 3
+      - name: wrangler deploy
+        if: env.CLOUDFLARE_API_TOKEN != ''
+        working-directory: apps/web
+        run: npx --yes wrangler@4.156.2 deploy --message="Release ${TAG}"
+
+  # Desktop app (Tauri): the final website in a native window, with signed updates.
+  desktop:
+    name: Desktop app (${{ matrix.target }})
+    needs: [version, publish]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x64
+            bundles: nsis
+          - os: macos-latest
+            target: macos-arm64
+            bundles: app,dmg
+          - os: ubuntu-22.04
+            target: linux-x64
+            bundles: appimage
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev libssl-dev
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-final
+          path: apps/web/dist
+      - name: Build
+        shell: bash
+        working-directory: apps/desktop
+        run: pnpm tauri build --bundles ${{ matrix.bundles }} --config '{"build":{"beforeBuildCommand":""}}'
+      - name: Collect installers
+        shell: bash
+        run: |
+          b=apps/desktop/src-tauri/target/release/bundle
+          v="${TAG#v}"
+          mkdir out
+          case "${{ runner.os }}" in
+            Windows) cp "$b"/nsis/*-setup.exe "$b"/nsis/*-setup.exe.sig out/ ;;
+            macOS)
+              cp "$b"/dmg/*.dmg out/
+              cp "$b/macos/Simulacrum.app.tar.gz" "out/Simulacrum_${v}_aarch64.app.tar.gz"
+              cp "$b/macos/Simulacrum.app.tar.gz.sig" "out/Simulacrum_${v}_aarch64.app.tar.gz.sig" ;;
+            Linux) cp "$b"/appimage/*.AppImage "$b"/appimage/*.AppImage.sig out/ ;;
+          esac
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: out/*
 
   cli:
+    needs: version
+    if: needs.version.outputs.release == 'true'
     name: wfcalc (${{ matrix.target }})
     strategy:
       matrix:
@@ -66,10 +283,12 @@ jobs:
             target: macos-arm64
             bin: wfcalc
     runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.version.outputs.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release -p wf-cli
@@ -91,16 +310,30 @@ jobs:
 
   release:
     name: GitHub Release
-    needs: [web, cli]
+    needs: [version, publish, cli, desktop]
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          ref: ${{ needs.version.outputs.ref }}
       - uses: actions/download-artifact@v4
         with:
+          name: web
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: desktop
+          merge-multiple: true
+      - name: Desktop update manifest
+        run: node tools/updater-manifest.mjs "$TAG" "$GITHUB_REPOSITORY" desktop dist/latest.json
       - name: Release notes from CHANGELOG.md
         run: |
           version="${TAG#v}"
@@ -113,7 +346,15 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
           name: Warframe Simulacrum ${{ env.TAG }}
           body_path: notes.md
           prerelease: ${{ contains(env.TAG, '-') }}
-          files: dist/*.zip
+          files: |
+            dist/*.zip
+            dist/best-builds.json
+            dist/latest.json
+            desktop/*-setup.exe
+            desktop/*.dmg
+            desktop/*.app.tar.gz
+            desktop/*.AppImage

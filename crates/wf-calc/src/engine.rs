@@ -39,6 +39,20 @@ const ELECTRICITY_RADIUS_M: f64 = 3.0;
 const BLAST_RADIUS_M: f64 = 5.0;
 const INFLUENCE_CHANCE: f64 = 0.2;
 const INFLUENCE_DURATION_S: f64 = 18.0;
+/// Punch through: about one enemy per meter, and at most 2 more enemies lined up behind the target.
+const PIERCE_MAX_EXTRA: f64 = 2.0;
+const CONTAGIOUS_BOND_RADIUS_M: f64 = 9.0;
+const CONTAGIOUS_BOND_MAX_STACKS: f64 = 100.0;
+/// Melee combo: 20 points per +1x; Initial Combo comes back at 40 points per second.
+const COMBO_POINTS_PER_TIER: f64 = 20.0;
+const INITIAL_COMBO_REGEN: f64 = 40.0;
+const HEAVY_EFFICIENCY_CAP: f64 = 0.9;
+/// Tennokai: 15% chance per melee hit to open a window (wiki).
+const TENNOKAI_CHANCE: f64 = 0.15;
+/// Enemies don't arrive faster than one group every this many seconds, whatever the damage.
+const GROUP_RESPAWN_S: f64 = 3.0;
+/// Ammo efficiency is capped at 75%; infinite ammo only comes from specific effects (Arcane Pistoleer…).
+const AMMO_EFFICIENCY_CAP: f64 = 0.75;
 
 /// Additive pools collected from every modifier source.
 #[derive(Default, Debug)]
@@ -78,6 +92,14 @@ struct Pools {
     wind_up: f64,
     final_damage: f64,
     crit_mult_mult: f64,
+    status_damage: f64,
+    punch_through: f64,
+    initial_combo: f64,
+    heavy_eff: f64,
+    ammo_eff: f64,
+    head_crit: f64,
+    /// (chance per headshot, seconds) of infinite ammo.
+    infinite_ammo: Vec<(f64, f64)>,
     sources: Vec<(String, Stat, f64)>,
 }
 
@@ -123,6 +145,13 @@ impl Pools {
             Stat::WindUpSpeed => self.wind_up += v,
             Stat::FinalDamage => self.final_damage += v,
             Stat::CritMultMultiplier => self.crit_mult_mult += v,
+            Stat::StatusDamage => self.status_damage += v,
+            Stat::PunchThrough => self.punch_through += v,
+            Stat::InitialCombo => self.initial_combo += v,
+            Stat::HeavyEfficiency => self.heavy_eff += v,
+            Stat::AmmoEfficiency => self.ammo_eff += v,
+            Stat::HeadshotCritChance => self.head_crit += v,
+            Stat::InfiniteAmmoOnHeadshot => self.infinite_ammo.push((v, m.threshold.unwrap_or(0.0))),
         }
         self.sources.push((m.source.clone(), m.stat, v));
     }
@@ -232,6 +261,8 @@ fn condition_scale(m: &Modifier, c: &Conditions) -> f64 {
         }
         Condition::OnHeadshot | Condition::OnHeadshotKill | Condition::HeadshotShare if !c.headshot_effects || c.companion => 0.0,
         Condition::HeadshotShare => c.headshot_share.clamp(0.0, 1.0),
+        Condition::OnReload if c.no_reload => 0.0,
+        Condition::OnReload => c.conditional_uptime.clamp(0.0, 1.0) * stacks * c.reload_share.unwrap_or(1.0),
         _ => c.conditional_uptime.clamp(0.0, 1.0) * stacks,
     };
     let per = match m.per {
@@ -342,6 +373,9 @@ struct Partial {
     /// Sum of elemental mod bonuses per type (Heat, Toxin, Electricity and Gas ticks scale with it).
     elem_bonus: BTreeMap<DamageType, f64>,
     forced: Vec<DamageType>,
+    falloff: Option<Falloff>,
+    punch_through: f64,
+    status_damage: f64,
     damage: DamageMap,
     projectiles: f64,
     crit_chance: f64,
@@ -360,7 +394,66 @@ const ARCANE_BEHAVIOURS: [&str; 4] = ["enervate", "meleeDuplicate", "meleeDought
 /// A status-stack arcane (Primary Blight, Cascadia Flare, Secondary Shiver...) needs the weapon's own
 /// procs, which the arcane can raise (Blight adds multishot): evaluate, derive the stacks, repeat.
 /// Stacks only grow with each pass, so this settles in a few passes.
+/// Damage multiplier at distance `d` for a falloff profile.
+fn falloff_at(f: &Falloff, d: f64) -> f64 {
+    if d <= f.start_m || f.end_m <= f.start_m {
+        return 1.0;
+    }
+    let t = ((d - f.start_m) / (f.end_m - f.start_m)).min(1.0);
+    1.0 - f.reduction.clamp(0.0, 1.0) * t
+}
+
+/// Average falloff over enemies spread evenly across the explosion's area.
+fn average_falloff(f: &Falloff) -> f64 {
+    let r = f.end_m.max(0.1);
+    let n = 24;
+    (0..n)
+        .map(|i| {
+            let d = r * (i as f64 + 0.5) / n as f64;
+            falloff_at(f, d) * 2.0 * d / (r * r) * (r / n as f64)
+        })
+        .sum()
+}
+
+/// Puncture and Cold on the target raise crit chance / crit damage of direct hits; their stacks come
+/// from the weapon's own procs, so evaluate once, derive the stacks, evaluate again.
 fn compute_mode(r: &Resolved, build: &Build, target: &Target, mode: &AttackMode, index: usize) -> Result<ModeResult, CalcError> {
+    let first = compute_mode_stacked(r, build, target, mode, index)?;
+    let sd = first.status_duration_s / STATUS_DURATION_S;
+    let pps = |t: DamageType| first.procs_per_s.get(&t).copied().unwrap_or(0.0);
+    // Puncture: +5% crit chance per stack, 5 stacks of 10 s.
+    let puncture = (pps(DamageType::Puncture) * 10.0 * sd).min(5.0);
+    // Cold: +0.1x crit damage at 1 stack, +0.05x per stack to +0.5x at 9; frozen at 10 (+1.0x for 3 s,
+    // then 3 stacks remain).
+    let pc = pps(DamageType::Cold);
+    let cold = (pc * STATUS_DURATION_S * sd).min(10.0);
+    let below = |n: f64| if n >= 1.0 { (0.1 + 0.05 * (n.min(9.0) - 1.0)).min(0.5) } else { 0.1 * n };
+    let cold_cd = if cold >= 10.0 && pc > 0.0 {
+        let freeze = 3.0 * sd;
+        let rebuild = 7.0 / pc;
+        (1.0 * freeze + 0.5 * rebuild) / (freeze + rebuild)
+    } else {
+        below(cold)
+    };
+    let cc = 0.05 * puncture;
+    // Infinite ammo on headshots: on-reload effects only get the reloads that are left.
+    let reload_share = (first.free_ammo > 0.01).then(|| 1.0 - first.free_ammo);
+    if cc < 1e-6 && cold_cd < 1e-6 && reload_share.is_none() {
+        return Ok(first);
+    }
+    let mut b = build.clone();
+    b.conditions.target_crit_chance = cc;
+    b.conditions.target_crit_damage = cold_cd;
+    b.conditions.reload_share = reload_share;
+    let mut res = compute_mode_stacked(r, &b, target, mode, index)?;
+    res.approximations.push(format!(
+        "Target status from this weapon: {puncture:.1} Puncture stacks (+{:.0}% crit chance), {cold:.1} Cold stacks (+{cold_cd:.2}x crit damage), direct hits only",
+        cc * 100.0
+    ));
+    Ok(res)
+}
+
+fn compute_mode_stacked(r: &Resolved, build: &Build, target: &Target, mode: &AttackMode, index: usize) -> Result<ModeResult, CalcError> {
     let Some((arcane, st)) = r.arcane.and_then(|a| a.stacking.as_ref().map(|s| (a, s))) else {
         return compute_mode_once(r, build, target, mode, index);
     };
@@ -445,6 +538,7 @@ fn compute_mode_once(
     let mut base_cond = Conditions {
         companion,
         headshot_share: if companion { 0.0 } else { build.conditions.headshot_share },
+        no_reload: mode.magazine.is_none() || mode.reload_s <= 0.0 || matches!(mode.ammo_pool, AmmoPool::Incarnon { .. }),
         ..build.conditions.clone()
     };
     if let Some((name, floor)) = r.arcane.and_then(|a| a.combo_floor.map(|f| (&a.name, f))) {
@@ -453,6 +547,21 @@ fn compute_mode_once(
         }
         base_cond.combo_multiplier = base_cond.combo_multiplier.max(floor);
         base_cond.heavy_combo_multiplier = base_cond.heavy_combo_multiplier.max(floor);
+    }
+    // Heavy attacks spend the combo; it has to come back before the next one. The heavy is thrown at the
+    // scenario's heavy combo or at the Initial Combo floor, whichever is higher.
+    let mut heavy_plan = None;
+    if mode.melee_role == Some(MeleeRole::Heavy) {
+        let mut pre = Pools::default();
+        for m in all_modifiers(r, build, mode) {
+            pre.add(m, condition_scale(m, &base_cond));
+        }
+        let floor = r.arcane.and_then(|a| a.combo_floor).map_or(0.0, |f| COMBO_POINTS_PER_TIER * (f - 1.0));
+        let initial = (pre.initial_combo.max(0.0) + floor).min(COMBO_POINTS_PER_TIER * 11.0);
+        let target = COMBO_POINTS_PER_TIER * (build.conditions.heavy_combo_multiplier - 1.0).max(0.0);
+        let points = target.max(initial).min(COMBO_POINTS_PER_TIER * 11.0);
+        base_cond.heavy_combo_multiplier = 1.0 + (points / COMBO_POINTS_PER_TIER).floor();
+        heavy_plan = Some((points, initial, pre.heavy_eff.clamp(0.0, HEAVY_EFFICIENCY_CAP)));
     }
     let mut partials = Vec::new();
     let mode_combo = mode.components.first().map_or(base_cond.combo_multiplier, |c| combo_for(&base_cond, &c.rules));
@@ -481,6 +590,33 @@ fn compute_mode_once(
         _ if mode.melee_role == Some(MeleeRole::Heavy) => mode.fire_rate * fr_mult * (1.0 + mode_pools.wind_up).max(0.05),
         _ => mode.fire_rate * fr_mult,
     };
+    // Light hits per second of the weapon's fastest stance combo, for rebuilding combo.
+    let light_hits = r
+        .weapon
+        .modes
+        .iter()
+        .filter(|m| m.melee_role == Some(MeleeRole::Light))
+        .map(|m| m.fire_rate * fr_mult * m.components.iter().map(|c| c.multishot).sum::<f64>())
+        .fold(0.0, f64::max);
+    let rate = if let Some((points, initial, eff)) = heavy_plan {
+        let kept = eff * points;
+        // Initial Combo regenerates at 40/s; combo above it comes from light hits.
+        let regen = (initial.min(points) - kept).max(0.0) / INITIAL_COMBO_REGEN;
+        let hits = (points - kept.max(initial)).max(0.0);
+        let rebuild = regen + if light_hits > 0.0 { hits / light_hits } else { 0.0 };
+        approx.push(format!(
+            "Heavy rotation: {:.0}x combo ({points:.0} points); keeps {:.0}% ({kept:.0}), {regen:.1}s of Initial Combo regen + {hits:.0} light hits to rebuild ({rebuild:.1}s), then the wind-up",
+            1.0 + (points / COMBO_POINTS_PER_TIER).floor(),
+            eff * 100.0
+        ));
+        1.0 / (1.0 / rate + rebuild)
+    } else if mode.melee_role == Some(MeleeRole::Tennokai) && light_hits > 0.0 {
+        let every = r.mods.iter().filter_map(|m| m.tennokai_every).min().map_or(1.0 / TENNOKAI_CHANCE, |n| n as f64);
+        approx.push(format!("Tennokai rotation: one Tennokai heavy every {every:.1} light hits"));
+        1.0 / (1.0 / rate + every / light_hits)
+    } else {
+        rate
+    };
     if !(rate > 0.0) {
         return Err(CalcError::new(ErrorCode::InvalidValue, format!("{} has no fire rate", mode.name)));
     }
@@ -501,6 +637,40 @@ fn compute_mode_once(
     }
 
     let magazine = mode.magazine.map(|m| ((m as f64) * (1.0 + mode_pools.magazine)).round().max(1.0) as u32);
+    // Attacks per magazine: an attack may use several rounds (Ballistica Prime's 4 bolts, 4 rounds).
+    // A beam fired while charging (Onos): its ticks use rounds and deal damage during each charge.
+    let beam = mode
+        .charge_beam
+        .filter(|i| *i != index)
+        .and_then(|i| r.weapon.modes.get(i).map(|m| (i, m)))
+        .and_then(|(i, m)| compute_mode(r, build, target, m, i).ok());
+    let beam_ticks = beam.as_ref().map_or(0.0, |b| b.fire_rate / rate);
+    // Ammo efficiency: the share of rounds not used, capped at 75%.
+    let ammo_eff = mode_pools.ammo_eff.clamp(0.0, AMMO_EFFICIENCY_CAP);
+    // Infinite ammo on headshots (Skull Shots): the buff is up 1 - e^(-triggers/s x duration) of the
+    // time. Headshots use the scenario's share, or the on-headshot assumption when it is 0.
+    let headshot_rate = {
+        let share = if base_cond.companion || !base_cond.headshot_effects {
+            0.0
+        } else if base_cond.headshot_share > 0.0 {
+            base_cond.headshot_share
+        } else {
+            base_cond.conditional_uptime
+        };
+        rate * partials.first().map_or(1.0, |p| p.projectiles) * share.clamp(0.0, 1.0)
+    };
+    let free_ammo = 1.0
+        - mode_pools
+            .infinite_ammo
+            .iter()
+            .map(|(chance, secs)| (-(chance * headshot_rate * secs)).exp())
+            .product::<f64>();
+    if free_ammo > 0.01 {
+        approx.push(format!("Infinite ammo on headshots: active {:.0}% of the time", free_ammo * 100.0));
+    }
+    let ammo_cost = (mode.ammo_cost.max(1.0) + beam_ticks) * (1.0 - ammo_eff) * (1.0 - free_ammo);
+    let endless = ammo_cost <= 1e-9;
+    let magazine_shots = if endless { None } else { magazine.map(|m| (m as f64 / ammo_cost).floor().max(1.0)) };
     let reload = mode.reload_s / (1.0 + mode_pools.reload).max(0.05);
 
     // Status procs per second, per type, summed over components.
@@ -599,34 +769,50 @@ fn compute_mode_once(
         let armor = if t == DamageType::Slash || t == DamageType::True { 1.0 } else { 1.0 - dr };
         hm * armor * viral_mult
     };
-    // Per damaging status: (procs/s on the main target, procs/s x damage per tick or proc, procs/s on the group).
-    let mut st: BTreeMap<DamageType, (f64, f64, f64)> = BTreeMap::new();
+    // Per damaging status: (procs/s on the main target, procs/s x damage per tick or proc, procs/s on the
+    // group, procs/s x raw damage per tick: no armor, health class or Viral).
+    let mut st: BTreeMap<DamageType, (f64, f64, f64, f64)> = BTreeMap::new();
     let (mut group_shot, mut influence_hit, mut faction_f) = (0.0, 0.0, 1.0);
+    let explosive = mode.components.iter().any(|c| c.kind == HitKind::Radial);
     for p in partials {
         faction_f = p.faction;
         let factor = match p.kind {
             HitKind::Melee => melee_factor,
-            HitKind::Radial => reach(p.radius.unwrap_or(GROUP_SPREAD_M)),
-            _ => 1.0,
+            // The other enemies in the blast stand spread over it: average falloff.
+            HitKind::Radial => {
+                let k = reach(p.radius.unwrap_or(GROUP_SPREAD_M));
+                1.0 + (k - 1.0) * p.falloff.as_ref().map_or(1.0, average_falloff)
+            }
+            _ => {
+                // Punch through passes about one enemy per meter (at most 2 more); chaining beams reach more.
+                // Rounds that explode on impact (a radial component) stop at the first enemy.
+                let budget = group_n - 1.0;
+                let pierced = if explosive { 0.0 } else { p.punch_through.floor().min(PIERCE_MAX_EXTRA).min(budget).max(0.0) };
+                let chained: f64 = r.weapon.chain.as_ref().map_or(0.0, |c| {
+                    c.damage.iter().take((budget - pierced).max(0.0) as usize).sum()
+                });
+                1.0 + pierced + chained
+            }
         };
         let total: f64 = p.damage.values().sum::<f64>().max(f64::MIN_POSITIVE);
         let hits = p.projectiles * rate;
-        let base = p.modded_base * p.faction * p.faction * (1.0 + p.crit_chance * (p.crit_mult - 1.0)) * p.ability;
+        let base = p.modded_base * p.faction * p.faction * (1.0 + p.crit_chance * (p.crit_mult - 1.0)) * p.ability * (1.0 + p.status_damage).max(0.0);
         for t in DAMAGING_STATUS {
             let forced = p.forced.iter().filter(|x| **x == t).count() as f64;
             let pps = hits * (p.status_chance * p.damage.get(&t).copied().unwrap_or(0.0) / total + forced);
             if !(pps > 0.0) {
                 continue;
             }
-            let per = match t {
+            let raw = match t {
                 DamageType::Slash => 0.35 * base,
                 DamageType::Blast => 0.3 * base,
                 _ => 0.5 * base * (1.0 + p.elem_bonus.get(&t).copied().unwrap_or(0.0)).max(0.0),
-            } * vs(t);
+            };
             let e = st.entry(t).or_default();
             e.0 += pps;
-            e.1 += pps * per;
+            e.1 += pps * raw * vs(t);
             e.2 += pps * factor;
+            e.3 += pps * raw;
         }
         // Melee Influence copies each elemental proc's element damage (faction once more) to the group.
         for (t, d) in &p.damage {
@@ -668,40 +854,69 @@ fn compute_mode_once(
         });
     }
 
+    if let Some(b) = &beam {
+        shot_target += b.per_shot * beam_ticks;
+        shot_raw += b.per_shot_raw * beam_ticks;
+        group_shot += b.group_dps / rate;
+        approx.push(format!("Charging fires {}: {beam_ticks:.1} beam ticks per charge (damage and rounds counted)", b.mode));
+    }
+
     // Status damage per second. Slash/Toxin/Electricity stack without limit (each proc ticks once a
     // second for the status duration); Heat procs refresh every stack, so they keep growing for the
     // fight; Gas keeps at most 10 clouds; Blast deals 30% per proc and, at 10 stacks within its fuse,
     // detonates for 300% per stack on the enemies around.
     let fight = build.conditions.fight_s.max(0.0);
     let fuse = BLAST_FUSE_S * duration / STATUS_DURATION_S;
-    let (mut status_dps, mut group_status) = (0.0, 0.0);
+    let (mut status_dps, mut group_status, mut status_raw) = (0.0, 0.0, 0.0);
     let mut per_proc: BTreeMap<DamageType, f64> = BTreeMap::new();
+    // Contagious Bond spreads half of each status's stacks (at most 100) from the companion's kills.
+    let mut bond_per_enemy = 0.0;
+    // Per status: (damage per tick or proc, stacks alive, procs/s), for on-kill effects.
+    let mut tick_alive: BTreeMap<DamageType, (f64, f64, f64)> = BTreeMap::new();
     let mut status_explain = Vec::new();
-    for (t, (pps, sum, gpps)) in &st {
+    for (t, (pps, sum, gpps, sum_raw)) in &st {
         let per = sum / pps;
+        // Stacks alive on average over the fight (0 = steady state). Timed stacks ramp up to
+        // procs/s x duration over the first `duration` seconds. Heat stacks are all refreshed by each new
+        // proc, so under constant fire none expire: procs/s x time firing, whatever the duration.
+        let timed = |d: f64| match fight {
+            f if f <= 0.0 => pps * d,
+            f if f <= d => pps * f / 2.0,
+            f => pps * d * (1.0 - d / (2.0 * f)),
+        };
+        let refreshing = *t == DamageType::Heat && pps * duration >= 1.0 && fight > 0.0;
         let (alive, aoe) = match t {
-            DamageType::Heat if pps * duration >= 1.0 => (pps * duration.max(fight / 2.0), 1.0),
-            DamageType::Gas => ((pps * duration).min(GAS_MAX_STACKS), reach(GAS_RADIUS_M)),
-            DamageType::Electricity => (pps * duration, reach(ELECTRICITY_RADIUS_M)),
+            DamageType::Heat if refreshing => (pps * fight / 2.0, 1.0),
+            DamageType::Gas => (timed(duration).min(GAS_MAX_STACKS), reach(GAS_RADIUS_M)),
+            DamageType::Electricity => (timed(duration), reach(ELECTRICITY_RADIUS_M)),
             DamageType::Blast => (*pps, 1.0),
-            _ => (pps * duration, 1.0),
+            _ => (timed(duration), 1.0),
         };
         let single = alive * per;
         status_dps += single;
+        status_raw += alive * sum_raw / pps;
+        if *t != DamageType::Blast {
+            bond_per_enemy += (0.5 * alive).min(CONTAGIOUS_BOND_MAX_STACKS) * per;
+        }
         group_status += single * (gpps / pps) + single * (aoe - 1.0);
         per_proc.insert(*t, single / pps);
+        tick_alive.insert(*t, (per, alive, *pps));
         let mut detail = format!("{pps:.2} procs/s, {per:.0} per {}", if *t == DamageType::Blast { "proc" } else { "tick" });
         if *t == DamageType::Blast && pps * fuse >= BLAST_STACKS {
             // Detonations every 10 procs: 300% per stack to every other enemy within 5 m.
             let aoe_dps = pps / BLAST_STACKS * BLAST_STACKS * 10.0 * per;
             group_status += aoe_dps * (reach(BLAST_RADIUS_M) - 1.0);
             detail.push_str("; reaches 10 stacks: detonations hit the group");
-        } else if *t == DamageType::Heat && pps * duration >= 1.0 && fight / 2.0 > duration {
-            detail.push_str(&format!("; stacks refresh, averaged over a {fight:.0} s fight"));
+        } else if refreshing {
+            detail.push_str(&format!("; stacks refresh under constant fire, averaged over a {fight:.0} s fight (duration doesn't matter)"));
         } else if *t == DamageType::Gas && pps * duration > GAS_MAX_STACKS {
             detail.push_str("; capped at 10 clouds");
         }
         status_explain.push(Explain::new(format!("{t:?}"), single).detail(detail));
+    }
+    if let Some(b) = &beam {
+        status_dps += b.status_dps;
+        status_raw += b.status_dps;
     }
     // Melee Influence: while active (20% per Electricity proc, 18 s, re-triggers after it ends), every
     // elemental proc on the target spreads its element damage and the proc to the group, faction counted
@@ -713,7 +928,7 @@ fn compute_mode_once(
         let dots: f64 = st
             .iter()
             .filter(|(t, _)| **t != DamageType::Slash)
-            .map(|(t, (pps, _, _))| pps * per_proc.get(t).copied().unwrap_or(0.0) * faction_f)
+            .map(|(t, (pps, _, _, _))| pps * per_proc.get(t).copied().unwrap_or(0.0) * faction_f)
             .sum();
         influence = (group_n - 1.0) * uptime * (influence_hit + dots);
         approx.push(format!(
@@ -730,21 +945,24 @@ fn compute_mode_once(
     }
 
     // With a one-round magazine every shot is followed by a reload: there is no burst window.
-    let single_round = mode.magazine == Some(1) && mode.reload_s > 0.0;
+    let single_round = magazine_shots == Some(1.0) && mode.reload_s > 0.0 && !endless;
     if single_round {
         approx.push("One-round magazine: burst DPS includes the reload after every shot".into());
     }
     let cycle = if single_round { 1.0 / rate + reload } else { 1.0 / rate };
-    let burst_raw = shot_raw / cycle;
+    // Raw: hits and status damage on an unarmored target with no Viral or other enemy-side multiplier.
+    let burst_raw = shot_raw / cycle + status_raw;
     let hit_burst = shot_target / cycle;
     let burst = hit_burst + status_dps;
     let (sustained, per_charge) = match (&mode.ammo_pool, magazine) {
         (AmmoPool::Incarnon { rounds: Some(n), recharge_s, charge_gain, charge_on_any_hit }, _) => {
-            let n = *n as f64;
+            // Attacks per full gauge; the gauge refill still counts every round.
+            let gauge = *n as f64;
+            let n = if endless { 1e12 } else { (gauge / ammo_cost).max(1.0) };
             // Normal-form time refilling the gauge, and the normal form's DPS meanwhile.
             let charging = match (recharge_s, charge_gain) {
                 (Some(t), _) => Some((*t, 0.0)),
-                (None, Some(g)) if *g > 0.0 => incarnon_recharge(r, build, target, n, *g, *charge_on_any_hit, &mut approx),
+                (None, Some(g)) if *g > 0.0 => incarnon_recharge(r, build, target, gauge, *g, *charge_on_any_hit, &mut approx),
                 _ => None,
             };
             match charging {
@@ -760,8 +978,8 @@ fn compute_mode_once(
             (hit_burst, None)
         }
         // Magazine weapons (beams included): a magazine's worth of shots, then the reload.
-        (_, Some(m)) if !single_round => {
-            let m = m as f64;
+        (_, Some(_)) if !single_round && !endless => {
+            let m = magazine_shots.unwrap_or(1.0);
             (shot_target * m / (m / rate + reload), None)
         }
         _ => (hit_burst, None),
@@ -769,8 +987,49 @@ fn compute_mode_once(
     // Status damage keeps the same uptime as the hits.
     let uptime = if hit_burst > 0.0 { (sustained / hit_burst).min(1.0) } else { 1.0 };
     let sustained = sustained + status_dps * uptime;
-    let per_charge = per_charge.map(|c| c + status_dps * mode_rounds(mode) / rate);
-    let group_burst = group_shot / cycle + group_status + influence;
+    let per_charge = per_charge.filter(|_| !endless).map(|c| c + status_dps * mode_rounds(mode) / ammo_cost / rate);
+    let mut group_burst = group_shot / cycle + group_status + influence;
+
+    // Enemy deaths (group fights): one enemy's health sets how often they die.
+    let health = target.health.filter(|h| *h > 0.0).or(r.enemy.as_ref().map(|e| e.health).filter(|h| *h > 0.0));
+    // Kills per second: the group's damage over one enemy's health, but no faster than enemies arrive.
+    // An enemy only carries the statuses built up in the time it took to kill it.
+    let kills = health.map(|h| (group_burst / h).min(group_n / GROUP_RESPAWN_S));
+    let time_to_kill = health.map(|h| if burst > 0.0 { h / (hit_burst + status_dps) } else { f64::INFINITY });
+    if group_n > 1.0 {
+        let mut on_kill = 0.0;
+        if let (Some(k), Some(ttk)) = (kills, time_to_kill) {
+            // Gas clouds keep ticking on the others after their host dies (half the duration left on average).
+            if let Some((per, alive, pps)) = tick_alive.get(&DamageType::Gas) {
+                let clouds = alive.min(pps * ttk);
+                on_kill += k * clouds * per * duration / 2.0 * (reach(GAS_RADIUS_M) - 1.0);
+            }
+            // A kill detonates the victim's Blast stacks for the group, even below 10 stacks.
+            if let Some((per, _, pps)) = tick_alive.get(&DamageType::Blast) {
+                if pps * fuse < BLAST_STACKS {
+                    let stacks = (pps * fuse).min(pps * ttk);
+                    on_kill += k * stacks * 10.0 * per * (reach(BLAST_RADIUS_M) - 1.0);
+                }
+            }
+            approx.push(format!(
+                "Enemy health {:.0}: {ttk:.1} s to kill one, {k:.2} kills/s in the group (at most one group every {GROUP_RESPAWN_S} s); Gas clouds linger and Blast detonates on kills",
+                health.unwrap_or(0.0)
+            ));
+        }
+        // Contagious Bond: each of the companion's kills spreads half of each status's stacks (max 100)
+        // within 9 m; the group keeps them while kills come at least once per status duration.
+        if r.weapon.slot == Slot::Companion && build.conditions.contagious_bond {
+            let reach_bond = reach(CONTAGIOUS_BOND_RADIUS_M);
+            let coverage = kills.map_or(1.0, |k| (k * duration).min(1.0));
+            on_kill += bond_per_enemy * (reach_bond - 1.0) * coverage;
+            approx.push(format!(
+                "Contagious Bond: {:.0} other enemies carry half of the target's status stacks (max 100 each), {:.0}% of the time",
+                reach_bond - 1.0,
+                coverage * 100.0
+            ));
+        }
+        group_burst += on_kill;
+    }
     let group_sustained = group_burst * uptime;
 
     let mut explain = Explain::new("Burst DPS", burst)
@@ -807,6 +1066,7 @@ fn compute_mode_once(
         approximations: approx_dedup,
         fire_rate: rate,
         magazine,
+        magazine_shots,
         reload_s: reload,
         per_shot_raw: finite(shot_raw, "per shot")?,
         per_shot: finite(shot_target, "per shot vs target")?,
@@ -819,6 +1079,7 @@ fn compute_mode_once(
         group_sustained_dps: finite(group_sustained, "group sustained DPS")?,
         procs_per_s: procs,
         status_duration_s: duration,
+        free_ammo,
         viral_stacks: viral_n,
         corrosive_stacks: corr_n,
         attack_speed: r.weapon.melee.as_ref().map(|m| m.attack_speed * fr_mult),
@@ -952,6 +1213,10 @@ fn component(
         modded_cc
     };
 
+    // Puncture and Cold on the target: flat crit chance and crit damage for direct hits (not AoE).
+    let direct = comp.kind != HitKind::Radial;
+    let cc = cc + if direct { cond.target_crit_chance } else { 0.0 };
+
     // GunCO: per-status damage adds to the base damage pool, or multiplies on its own, per attack.
     let (co_factor, co_multiplies) = comp
         .rules
@@ -1001,7 +1266,16 @@ fn component(
     let combo = if comp.rules.combo_scaling { cond.combo_multiplier.max(1.0) } else { 1.0 };
     // Multishot-only damage bonus applies to the extra projectiles: averaged over all of them.
     let ms_bonus = if ms > 1.0 && p.multishot_damage != 0.0 { (1.0 + (ms - 1.0) * (1.0 + p.multishot_damage)) / ms } else { 1.0 };
-    let a = (1.0 + p.ability).max(0.0) * combo * ms_bonus * co_mult * (1.0 + p.final_damage).max(0.0);
+    // Distance falloff (shotgun pellets, some hitscan) at the engagement distance; explosions hit the
+    // target at their centre.
+    let distance = match (&comp.falloff, comp.kind) {
+        (Some(f), k) if k != HitKind::Radial => falloff_at(f, cond.engagement_m),
+        _ => 1.0,
+    };
+    if distance < 1.0 {
+        approx.push(format!("{}: {:.0}% damage at {:.0} m (falloff)", comp.name, distance * 100.0, cond.engagement_m));
+    }
+    let a = (1.0 + p.ability).max(0.0) * combo * ms_bonus * co_mult * (1.0 + p.final_damage).max(0.0) * distance;
 
     // 7. Crit. Expected multiplier split into its non-crit and crit parts so behaviours that act
     // on non-critical hits (Devouring Attrition) and critical headshots can be applied.
@@ -1040,7 +1314,7 @@ fn component(
     } else {
         0.0
     };
-    let cd = ((comp.crit_mult + p.crit_mult_base + crit_mult_extra) * (1.0 + p.crit_damage + crit_damage_extra) + p.crit_damage_flat + doughty).max(1.0)
+    let cd = ((comp.crit_mult + p.crit_mult_base + crit_mult_extra) * (1.0 + p.crit_damage + crit_damage_extra + if direct { cond.target_crit_damage } else { 0.0 }) + p.crit_damage_flat + doughty).max(1.0)
         * (1.0 + p.crit_mult_mult).max(0.0);
     let cd = cd.max(1.0);
     let m_crit = 1.0 + cc * (cd - 1.0);
@@ -1087,9 +1361,11 @@ fn component(
         let p = c.min(1.0);
         (p, 1.0 + c * (cd - 1.0) - (1.0 - p))
     };
+    // Weak point crit chance (spliced riven) adds to the crit chance mods on weak point hits only.
+    let head_bonus = crit0 * p.head_crit;
     let ((pb, cb), (ph, ch)) = match headshot_only {
-        Some(bonus) => (parts(0.0), parts(cc + crit0 * bonus)),
-        None => ((p_crit, crit_part), (p_crit, crit_part)),
+        Some(bonus) => (parts(0.0), parts(cc + crit0 * bonus + head_bonus)),
+        None => ((p_crit, crit_part), parts(cc + head_bonus)),
     };
     if let Some(bonus) = headshot_only {
         approx.push(format!("No crits on bodyshots; weak point hits +{:.0}% crit chance", bonus * 100.0));
@@ -1152,6 +1428,9 @@ fn component(
         radius: comp.falloff.as_ref().map(|f| f.end_m),
         elem_bonus,
         forced: comp.forced_procs.clone(),
+        falloff: comp.falloff.clone(),
+        punch_through: comp.punch_through + p.punch_through,
+        status_damage: p.status_damage,
         damage,
         projectiles,
         crit_chance: cc,

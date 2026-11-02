@@ -2,8 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [dev, production]
   pull_request:
+
+# Pull requests (including from forks) only read the repository.
+permissions:
+  contents: read
 
 jobs:
   engine:

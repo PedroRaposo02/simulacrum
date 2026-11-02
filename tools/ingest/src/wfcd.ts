@@ -74,6 +74,8 @@ function statOf(rawName: string): Stat | null {
   if (name === "Magazine Capacity") return { kind: "magazine" };
   if (name === "Reload Speed") return { kind: "reloadSpeed" };
   if (name === "Status Duration") return { kind: "statusDuration" };
+  if (/^Status Damage$/i.test(name)) return { kind: "statusDamage" };
+  if (/^Heavy Attack Efficiency$/i.test(name)) return { kind: "heavyEfficiency" };
   if (name === "to Headshot Multiplier" || name === "Weak Point Damage" || name === "Headshot Damage") return { kind: "headshotDamage" };
   if (PHYSICAL[name]) return { kind: "physical", of: PHYSICAL[name] };
   if (ELEMENTS[name]) return { kind: "element", of: ELEMENTS[name] };
@@ -90,6 +92,16 @@ const CONDITIONS: Record<string, string> = {
 function parseMeleeLine(source: string, line: string): Modifier[] | null {
   const flat = line.match(/^([+-][\d.]+) Range$/);
   if (flat) return [{ source, stat: { kind: "range" }, value: +flat[1] }];
+  // "On Headshot: 40% chance for Infinite Ammo for 2s" (Skull Shots, Brain Storm).
+  const inf = line.match(/^On Headshot: ?([\d.]+)% chance for Infinite Ammo for ([\d.]+)s$/i);
+  if (inf) return [{ source: `${source} (on headshot)`, stat: { kind: "infiniteAmmoOnHeadshot" }, value: +inf[1] / 100, threshold: +inf[2] }];
+  const pt = line.match(/^([+-][\d.]+) Punch Through$/);
+  if (pt) return [{ source, stat: { kind: "punchThrough" }, value: +pt[1] }];
+  const ic = line.match(/^([+-][\d.]+) Initial Combo$/);
+  if (ic) return [{ source, stat: { kind: "initialCombo" }, value: +ic[1] }];
+  // "On Melee Kill: +20 Initial Combo for 20s. Stacks up to 4x." (Galvanized Reflex)
+  const icKill = line.match(/^On Melee Kill: ?\+?([\d.]+) Initial Combo for [\d.]+s\.? Stacks up to (\d+)x\.?$/i);
+  if (icKill) return [{ source: `${source} (on melee kill)`, stat: { kind: "initialCombo" }, value: +icKill[1], maxStacks: +icKill[2], condition: "onKill" }];
   const heavy = line.match(/^([+-][\d.]+)% Melee Damage on Heavy Attack$/);
   if (heavy) return [{ source, stat: { kind: "baseDamage" }, value: +heavy[1] / 100, appliesTo: "heavyOnly" }];
   const wind = line.match(/^([+-][\d.]+)% Heavy Attack Wind Up Speed$/);
@@ -392,10 +404,13 @@ function buildMods() {
     const requiresTrigger = /Only compatible with Semi-Auto/i.test(desc) ? "semi" : undefined;
     const locksFireRate = /Fire Rate cannot be modified/i.test(desc) || undefined;
     const enablesTennokai = /Enables Tennokai/i.test(desc + lines.join(" ")) || undefined;
+    // Discipline's Merit: a Tennokai every N melee hits instead of a 15% chance per hit.
+    const every = (desc + " " + lines.join(" ")).match(/every (?:<[^>]+>)?(\d+) melee hits/i);
+    const tennokaiEvery = every ? +every[1] : undefined;
     return {
       id: m.uniqueName, name: m.name, pool, compat, polarity: m.polarity ?? "", baseDrain: m.baseDrain ?? 0,
       maxRank: m.fusionLimit ?? 0, isExilus: !!(m.isUtility || m.isExilus), exclusiveGroup: exclusiveGroup(m.name, pool),
-      modifiers, ...(requiresTrigger ? { requiresTrigger } : {}), ...(locksFireRate ? { locksFireRate } : {}), ...(enablesTennokai ? { enablesTennokai } : {}), unparsed,
+      modifiers, ...(requiresTrigger ? { requiresTrigger } : {}), ...(locksFireRate ? { locksFireRate } : {}), ...(enablesTennokai ? { enablesTennokai } : {}), ...(tennokaiEvery ? { tennokaiEvery } : {}), unparsed,
       ...(m.rarity ? { rarity: m.rarity } : {}),
       ...(m.imageName ? { image: `https://cdn.warframestat.us/img/${m.imageName}` } : {}),
     };
@@ -488,6 +503,12 @@ for (const file of ["primary.json", "secondary.json"]) {
     if (w?.InternalName && w.IncarnonChargeGain) wikiChargeGain.set(w.InternalName, w.IncarnonChargeGain);
   }
 }
+const attackDefs: Record<string, unknown> = override("attacks.json").weapons;
+
+// Beams that chain to nearby enemies (data/overrides/chains.json), by weapon name or family.
+const chains: Record<string, { damage: number[]; rangeM: number }> = override("chains.json").weapons;
+const chainFor = (name: string) => chains[name] ?? chains[name.replace(FAMILY_AFFIXES, "").trim()];
+
 // Charged by any direct hit instead of weak point hits (Incarnon page).
 const CHARGE_ON_ANY_HIT = /^(Angstrum|Torid)\b/;
 
@@ -522,6 +543,14 @@ function buildWeapon(w: any, slotFile: string) {
     const a = wikiAttacks.find((x) => normName(x.AttackName ?? "") === normName(name));
     return a ? a.Multishot ?? 1 : weaponMultishot;
   };
+  const attackAmmoCost = (name: string): number => {
+    const a = wikiAttacks.find((x) => normName(x.AttackName ?? "") === normName(name));
+    return a?.AmmoCost ?? 1;
+  };
+  const attackPunch = (name: string): number => {
+    const a = wikiAttacks.find((x) => normName(x.AttackName ?? "") === normName(name)) ?? wikiAttacks[0];
+    return a?.PunchThrough ?? 0;
+  };
   const modes: any[] = [];
   const tags = new Set<string>();
   for (const a of w.attacks ?? []) {
@@ -529,7 +558,8 @@ function buildWeapon(w: any, slotFile: string) {
     const comp = {
       name: a.name, kind: kindOf(a), damage: damageMap(a.damage),
       critChance: (a.crit_chance ?? 0) / 100, critMult: a.crit_mult ?? 1, statusChance: (a.status_chance ?? 0) / 100,
-      multishot: attackMultishot(a.name), ...(a.falloff ? { falloff: { startM: a.falloff.start, endM: a.falloff.end, reduction: a.falloff.reduction ?? 0 } } : {}),
+      multishot: attackMultishot(a.name), ...(attackPunch(a.name) > 0 && !isMelee ? { punchThrough: attackPunch(a.name) } : {}),
+      ...(a.falloff ? { falloff: { startM: a.falloff.start, endM: a.falloff.end, reduction: a.falloff.reduction ?? 0 } } : {}),
       rules: { canHeadshot: kindOf(a) !== "radial", receivesMultishot: true, comboScaling: isMelee && /Heavy/i.test(a.name) },
     };
     const prev = modes.at(-1);
@@ -541,9 +571,9 @@ function buildWeapon(w: any, slotFile: string) {
       continue;
     }
     const notes: string[] = [];
-    if (a.falloff) notes.push(`Damage falloff ignored (assumes ${comp.kind === "radial" ? "blast centre" : "point blank"})`);
+    if (a.falloff && comp.kind === "radial") notes.push("Explosion: the target takes full damage; in group fights the others take the average falloff over the radius");
     if (w.trigger?.includes("Burst")) notes.push("Burst delay not modelled; listed fire rate used");
-    if (/Kuva|Tenet/.test(w.name)) { notes.push("Progenitor bonus element not included"); tags.add("progenitor"); }
+    if (/Kuva|Tenet/.test(w.name)) tags.add("progenitor");
     if (isMelee) {
       notes.push("Melee: attack speed used as hits per second; stance and combo multipliers not modelled");
       if (/Heavy/i.test(a.name)) notes.push("Heavy attack at full combo every hit: an upper bound (combo is consumed, wind-up not modelled)");
@@ -560,6 +590,7 @@ function buildWeapon(w: any, slotFile: string) {
       trigger: isMelee ? "other" : a.charge_time ? "charge" : TRIGGER[w.trigger] ?? "other",
       fireRate: a.speed ?? 0, magazine: isIncarnon || isMelee ? null : w.magazineSize ?? null, reloadS: isMelee ? 0 : w.reloadTime ?? 0,
       ...(a.charge_time ? { chargeTimeS: a.charge_time } : {}),
+      ...(!isMelee && attackAmmoCost(a.name) > 1 ? { ammoCost: attackAmmoCost(a.name) } : {}),
       ammoPool: isIncarnon
         ? {
           kind: "incarnon", rounds: inc?.rounds ?? wikiIncarnonRounds.get(w.uniqueName) ?? null, recharge_s: inc?.rechargeS ?? null,
@@ -611,6 +642,12 @@ function buildWeapon(w: any, slotFile: string) {
       };
     }
   }
+  // Attacks that charge by firing another attack (data/overrides/attacks.json).
+  for (const [name, def] of Object.entries((attackDefs[w.name] ?? {}) as Record<string, { chargeBeam?: string }>)) {
+    const m = modes.find((x) => x.name === name);
+    const beam = modes.findIndex((x) => x.name === def.chargeBeam);
+    if (m && beam >= 0) m.chargeBeam = beam;
+  }
   const slot = SLOT[slotFile];
   const cls = isMelee ? "melee" : CLASS[w.type] ?? "rifle";
   // A max-rank stance adds its drain as capacity, doubled in a matching stance slot: best of the weapon's stances.
@@ -630,6 +667,7 @@ function buildWeapon(w: any, slotFile: string) {
     ...(w.exilusPolarity ? { exilusPolarity: w.exilusPolarity } : {}),
     ...(w.stancePolarity ? { stancePolarity: w.stancePolarity } : {}),
     ...(stanceCapacity > 0 ? { stanceCapacity } : {}),
+    ...(chainFor(w.name) ? { chain: chainFor(w.name) } : {}),
     // Kuva Lich / Sister of Parvos weapons carry a progenitor bonus element.
     ...(/^(Kuva|Tenet) /.test(w.name) ? { progenitor: true } : {}),
     ...(incarnon[w.name]?.evolutions ? { evolutions: incarnon[w.name].evolutions } : {}),
