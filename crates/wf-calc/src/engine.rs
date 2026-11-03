@@ -101,6 +101,8 @@ struct Pools {
     /// (chance per headshot, seconds) of infinite ammo.
     infinite_ammo: Vec<(f64, f64)>,
     sources: Vec<(String, Stat, f64)>,
+    /// Per-status-type damage sources (Galvanized Shot...), shown with the GunCO line.
+    gunco_sources: Vec<(String, f64)>,
     /// Numbers only: no source names (Conditions::calc_only).
     quiet: bool,
 }
@@ -123,7 +125,7 @@ impl Pools {
         if m.per == Some(PerCount::StatusType) && m.stat == Stat::BaseDamage {
             self.gunco += v;
             if !self.quiet {
-                self.sources.push((m.source.clone(), m.stat, v));
+                self.gunco_sources.push((m.source.clone(), v));
             }
             return;
         }
@@ -1469,13 +1471,23 @@ fn component(
     } else {
     let mut base_children = p.sources_for(|s| s == Stat::BaseDamage);
     base_children.extend(oa_explain);
-    if p.gunco != 0.0 {
-        base_children.push(Explain::new("Per-status damage (GunCO)", co_bonus).detail(format!(
-            "{} (factor {co_factor}); {}",
-            if co_multiplies { "multiplies separately" } else { "adds to base damage" },
-            if comp.rules.gun_co.is_some() { "per GunCO sheet" } else { "default (not in the sheet)" }
-        )));
-    }
+    // Per-status damage (Galvanized Shot, Condition Overload...): part of the base damage pool, or
+    // its own multiplier on attacks where the GunCO sheet says so.
+    let gunco_explain = (p.gunco != 0.0).then(|| {
+        let sources: Vec<Explain> = p.gunco_sources.iter().map(|(src, v)| Explain::new(src.clone(), *v)).collect();
+        let where_from = if comp.rules.gun_co.is_some() { "per GunCO sheet" } else { "default (not in the sheet)" };
+        if co_multiplies {
+            Explain::new("Per-status damage multiplier (GunCO)", co_mult)
+                .detail(format!("1 + {co_bonus:.3}: multiplies separately on this attack (factor {co_factor}; {where_from})"))
+                .with(sources)
+        } else {
+            Explain::new("Per-status damage (GunCO)", co_bonus)
+                .detail(format!("adds to base damage (factor {co_factor}; {where_from})"))
+                .with(sources)
+        }
+    });
+    let (gunco_separate, gunco_in_base) = if co_multiplies { (gunco_explain, None) } else { (None, gunco_explain) };
+    base_children.extend(gunco_in_base);
     let mut crit_factor = Explain::new("Expected crit × headshot factor", crit_hs)
         .detail(format!("1 + CC·(CD−1) = {m_crit:.3}; headshot share {h:.2}"));
     if let Some(e) = da_explain {
@@ -1487,6 +1499,10 @@ fn component(
     vec![
         Explain::new("Base damage", base_total).with(p.sources_for(|s| s == Stat::BaseDamageFlat)),
         Explain::new("Base damage multiplier", b).with(base_children),
+    ]
+    .into_iter()
+    .chain(gunco_separate)
+    .chain([
         Explain::new("Damage per projectile after mods", damage.values().sum())
             .detail(
                 damage
@@ -1508,7 +1524,8 @@ fn component(
         crit_factor,
         Explain::new("Status chance", sc).with(p.sources_for(|s| matches!(s, Stat::StatusChance | Stat::StatusChanceFlat))),
         Explain::new("Multishot", ms).with(p.sources_for(|s| s == Stat::Multishot)),
-    ]
+    ])
+    .collect()
     };
 
     let mut elem_bonus: BTreeMap<DamageType, f64> = BTreeMap::new();
