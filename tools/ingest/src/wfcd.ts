@@ -563,9 +563,16 @@ function buildWeapon(w: any, slotFile: string) {
   const tags = new Set<string>();
   for (const a of w.attacks ?? []) {
     const isIncarnon = /Incarnon/i.test(a.name);
+    // WFCD leaves out some damage types (Haalvu's Tau): the wiki has them.
+    let damage = damageMap(a.damage);
+    if (!Object.keys(damage).length) {
+      const wikiAttack = wikiGuns.get(w.uniqueName)?.Attacks?.find((x: any) => x.AttackName === a.name);
+      if (wikiAttack?.Damage) damage = damageMap(wikiAttack.Damage);
+    }
     const comp = {
-      name: a.name, kind: kindOf(a), damage: damageMap(a.damage),
-      critChance: (a.crit_chance ?? 0) / 100, critMult: a.crit_mult ?? 1, statusChance: (a.status_chance ?? 0) / 100,
+      name: a.name, kind: kindOf(a), damage,
+      // A crit multiplier of 0 means the attack can't crit (Synoid Simulor's singularity).
+      critChance: (a.crit_chance ?? 0) / 100, critMult: Math.max(1, a.crit_mult ?? 1), statusChance: (a.status_chance ?? 0) / 100,
       multishot: attackMultishot(a.name), ...(attackPunch(a.name) > 0 && !isMelee ? { punchThrough: attackPunch(a.name) } : {}),
       ...(a.falloff ? { falloff: { startM: a.falloff.start, endM: a.falloff.end, reduction: a.falloff.reduction ?? 0 } } : {}),
       rules: { canHeadshot: kindOf(a) !== "radial", receivesMultishot: true, comboScaling: isMelee && /Heavy/i.test(a.name) },
@@ -617,6 +624,18 @@ function buildWeapon(w: any, slotFile: string) {
     });
   }
   for (const m of modes) delete m.shotType;
+  // A part without damage (Simulor's orb launch: the orb's merging and explosion deal it) is dropped when
+  // the attack's other parts deal damage; the attack is then judged on those.
+  for (const m of modes) {
+    const dealing = m.components.filter((c: any) => Object.keys(c.damage).length);
+    if (dealing.length && dealing.length < m.components.length) {
+      m.components = dealing;
+      if (m.coverage === "unsupported" && m.notes?.[0] === "No damage in source data" && m.fireRate > 0) {
+        m.coverage = "computed";
+        m.notes = ["Damage comes from the attack's other parts (the launch itself deals none); each is counted once per shot"];
+      }
+    }
+  }
   let melee: any;
   if (isMelee) {
     const entry = wikiMeleeEntry(w.uniqueName, w.name);

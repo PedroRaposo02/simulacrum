@@ -4,6 +4,7 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 
 ## Unreleased
 
+- **Simulor, Synoid Simulor and Haalvu calculate now**: damage WFCD leaves out (Haalvu's Tau) is taken from the wiki; an attack part that deals no damage (Simulor's orb launch: its merging and explosion deal it) no longer makes the whole attack unsupported; a crit multiplier of 0 means no crits. Unsupported attacks: 10 -> 6 (reload-triggered and damage-over-time-only attacks left).
 - **On-hit stacks build up**: effects that stack per hit (Devastation Cascade, Reaver's Rapture, Stalker's Resentment) start from zero and build up from the weapon's hit rate over the time it fires (an Incarnon form's gauge, else the fight), instead of counting as full from the first shot.
 - **Arsenal values**: crit chance and crit multiplier are shown as the arsenal shows them (always-on effects only), with the in-fight average (conditional bonuses, built-up stacks, Enervate, target status) on its own line. Tenacious Bond's threshold checks the arsenal value.
 - **Status types counted from the build**: per-status bonuses (Galvanized Shot, Condition Overload...) use the statuses actually on the target: each outsourced status (Viral, Corrosive, Heat) counts 1 and each status the weapon procs itself counts by its uptime, instead of an assumed 4. The manual count stays available (Scenario > Conditions). Onos's best build goes from 55M to 33M per shot (2 status types, Galvanized Shot x3.4 instead of x5.8).
