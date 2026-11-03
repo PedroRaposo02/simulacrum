@@ -26,6 +26,9 @@ pub const PROGENITOR_ELEMENTS: [DamageType; 7] = [
 /// Approximate values from the wiki's status table; kept here until moved to overrides.
 /// Status types that deal damage (wiki, Update 36+): Slash 35% of modded base per tick, Heat/Toxin/
 /// Electricity/Gas 50% (times their own elemental mod bonus), Blast 30% per proc.
+/// Tau status: Status Chance Vulnerability stacks last 8 s each, up to 10.
+const TAU_DURATION_S: f64 = 8.0;
+const TAU_MAX_STACKS: f64 = 10.0;
 const DAMAGING_STATUS: [DamageType; 6] =
     [DamageType::Slash, DamageType::Heat, DamageType::Toxin, DamageType::Gas, DamageType::Electricity, DamageType::Blast];
 /// Group fights: enemies stand within this radius of the main target; an effect of radius r reaches
@@ -553,12 +556,16 @@ fn compute_mode(r: &Resolved, build: &Build, target: &Target, mode: &AttackMode,
     let stacking = all_modifiers(r, build, mode).any(|m| m.condition == Condition::OnHit && m.max_stacks > 1);
     let window = first.gauge_s.map_or(build.conditions.fight_s, |g| if build.conditions.fight_s > 0.0 { g.min(build.conditions.fight_s) } else { g });
     let stack_basis = (stacking && window > 0.0 && first.hit_rate > 0.0).then_some((first.hit_rate, window));
-    if stack_basis.is_none() && cc < 1e-6 && cold_cd < 1e-6 && reload_share.is_none() && status_types.is_none_or(|n| n - (outsourced.len() as f64) < 1e-6) {
+    // Tau: Status Chance Vulnerability, +10% status chance taken per stack (8 s each, up to 10).
+    let tau = (pps(DamageType::Tau) * TAU_DURATION_S * sd).min(TAU_MAX_STACKS);
+    let status_vuln = 0.1 * tau;
+    if status_vuln < 1e-6 && stack_basis.is_none() && cc < 1e-6 && cold_cd < 1e-6 && reload_share.is_none() && status_types.is_none_or(|n| n - (outsourced.len() as f64) < 1e-6) {
         return Ok(first);
     }
     let mut b = build.clone();
     b.conditions.target_crit_chance = cc;
     b.conditions.target_crit_damage = cold_cd;
+    b.conditions.target_status_vuln = status_vuln;
     b.conditions.reload_share = reload_share;
     if let Some(n) = status_types {
         b.conditions.status_types = n;
@@ -570,6 +577,9 @@ fn compute_mode(r: &Resolved, build: &Build, target: &Target, mode: &AttackMode,
     let mut res = compute_mode_stacked(r, &b, target, mode, index)?;
     if build.conditions.calc_only {
         return Ok(res);
+    }
+    if status_vuln > 0.0 {
+        res.approximations.push(format!("Tau on the target: {tau:.1} stacks from this weapon, +{:.0}% status chance taken", status_vuln * 100.0));
     }
     if let Some((h, w)) = stack_basis {
         res.approximations.push(format!("On-hit stacks build up from {h:.1} hits/s over {w:.1} s (average, not full stacks)"));
@@ -1338,7 +1348,8 @@ fn component(
 
     // Multishot, crit and status first: Enervate and Overwhelming Attrition depend on them.
     let ms = if comp.rules.receives_multishot { comp.multishot * (1.0 + p.multishot).max(0.0) } else { 1.0 };
-    let sc = (status0 * (1.0 + p.status_chance).max(0.0) + p.status_chance_flat).max(0.0);
+    // Tau on the target raises the status chance of every hit it takes (forced procs excepted).
+    let sc = (status0 * (1.0 + p.status_chance).max(0.0) + p.status_chance_flat).max(0.0) * (1.0 + cond.target_status_vuln.max(0.0));
     let modded_cc = (crit0 * (1.0 + p.crit_chance) + p.crit_chance_flat).max(0.0);
     let quiet = cond.calc_only;
     let mut crit_children = p.sources_for(|s| matches!(s, Stat::CritChance | Stat::CritChanceFlat));

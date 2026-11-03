@@ -46,6 +46,10 @@ pub struct Conditions {
     pub target_crit_chance: f64,
     #[serde(skip)]
     pub target_crit_damage: f64,
+    /// Set by the engine: status chance vulnerability from the Tau stacks this weapon keeps on the
+    /// target (+10% status chance per stack, up to 10).
+    #[serde(skip)]
+    pub target_status_vuln: f64,
     /// Set by the engine for companion weapons: their AI doesn't aim or reliably headshot.
     #[serde(skip)]
     pub companion: bool,
@@ -81,6 +85,7 @@ impl Default for Conditions {
             reload_share: None,
             target_crit_chance: 0.0,
             target_crit_damage: 0.0,
+            target_status_vuln: 0.0,
             companion: false,
             calc_only: false,
             hits_per_s: None,

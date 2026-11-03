@@ -1101,3 +1101,16 @@ fn arsenal_crit_leaves_out_conditional_bonuses() {
     assert!(close(c.crit_chance, 0.44), "in the fight: +100% on headshot at full uptime, {}", c.crit_chance);
     assert!(close(c.arsenal_crit_mult, 2.2));
 }
+
+/// Tau procs on the target raise the weapon's status chance (+10% per stack, 8 s each, up to 10).
+#[test]
+fn tau_raises_status_chance_taken() {
+    let mut d = fixture();
+    let c = &mut d.weapons[0].modes[0].components[0];
+    c.damage = [(wf_data::DamageType::Tau, 100.0)].into_iter().collect();
+    c.status_chance = 0.5;
+    let b = Build { weapon: "/Test/Laetum".into(), ..Default::default() };
+    let m = &compute(&d, &b, &Target::default()).unwrap().modes[0];
+    // 2.5 shots/s x 50% = 1.25 Tau procs/s x 8 s = 10 stacks (capped): status chance x 2.
+    assert!(close(m.components[0].status_chance, 1.0), "{}", m.components[0].status_chance);
+}
