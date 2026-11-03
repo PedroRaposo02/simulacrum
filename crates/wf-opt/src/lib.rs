@@ -1112,9 +1112,11 @@ fn damage_share(mode: &wf_data::AttackMode, t: DamageType) -> f64 {
 /// Whether a riven stat can roll on this weapon, as a positive or as the negative: physical damage
 /// types need more than 25% of the attack's damage; elements and Punch Through (and spliced stats) are
 /// positive-only; Zoom, Recoil and Ammo Maximum no longer roll on companion weapons.
-fn riven_stat_allowed(s: &wf_data::RivenStatDef, weapon: &Weapon, mode: &wf_data::AttackMode, negative: bool) -> bool {
+fn riven_stat_allowed(s: &wf_data::RivenStatDef, weapon: &Weapon, negative: bool) -> bool {
     if let Some(Stat::Physical(t)) = s.stat {
-        if damage_share(mode, t) <= 0.25 {
+        // The weapon's own stats decide (its main normal attack, not an Incarnon form).
+        let main = weapon.modes.iter().find(|m| m.is_headline() && !m.incarnon_form).or(weapon.modes.first());
+        if main.is_none_or(|m| damage_share(m, t) <= 0.25) {
             return false;
         }
     }
@@ -1122,6 +1124,35 @@ fn riven_stat_allowed(s: &wf_data::RivenStatDef, weapon: &Weapon, mode: &wf_data
         return false;
     }
     !(s.vintage_on_companion && weapon.slot == wf_data::Slot::Companion)
+}
+
+/// A faction damage negative goes on a faction you rarely fight: Infested (whose content is the
+/// easiest), unless the target is Infested, then Grineer or Corpus.
+fn faction_negative_ok(s: &wf_data::RivenStatDef, target_faction: Faction) -> bool {
+    match s.stat {
+        Some(Stat::FactionDamage(f)) => (f == Faction::Infested) != (target_faction == Faction::Infested),
+        _ => true,
+    }
+}
+
+/// The modifier of a riven negative at `roll` (None for stats with no modelled effect).
+fn negative_modifier(table: &wf_data::RivenTable, ty: RivenType, layout: &wf_data::RivenLayout, s: &wf_data::RivenStatDef, roll: f64) -> Option<Modifier> {
+    let stat = s.stat?;
+    Some(Modifier {
+        source: format!("Riven {} (negative)", s.label),
+        stat,
+        value: -s.base.get(&ty)? * table.disposition * layout.negative_mult * roll,
+        max_stacks: 1,
+        applies_to: s.applies_to.unwrap_or(wf_data::ComponentFilter::All),
+        condition: wf_data::Condition::Always,
+        per: None,
+        threshold: None,
+        aiming: false,
+        only_slots: vec![],
+        not_slots: vec![],
+        trigger: None,
+        mode_contains: None,
+    })
 }
 
 /// Finalist structures (arcane x evolutions x progenitor with their mods) per attack mode, and whether
@@ -1390,30 +1421,15 @@ fn optimize_mode<'a>(
                 // otherwise (companion weapons) the one that costs this build least.
                 let neg_roll = table.roll_min + table.roll_max - roll;
                 let neg_value = |s: &wf_data::RivenStatDef| -s.base[&ty] * table.disposition * layout.negative_mult * neg_roll;
-                let neg_modifier = |s: &wf_data::RivenStatDef| {
-                    s.stat.map(|stat| Modifier {
-                        source: format!("Riven {} (negative)", s.label),
-                        stat,
-                        value: neg_value(s),
-                        max_stacks: 1,
-                        applies_to: s.applies_to.unwrap_or(wf_data::ComponentFilter::All),
-                        condition: wf_data::Condition::Always,
-                        per: None,
-                        threshold: None,
-                        aiming: false,
-                        only_slots: vec![],
-                        not_slots: vec![],
-                        trigger: None,
-                        mode_contains: None,
-                    })
-                };
+                let neg_modifier = |s: &wf_data::RivenStatDef| negative_modifier(table, ty, layout, s, neg_roll);
                 // -Projectile Speed is only free on hitscan and beam attacks (it isn't modelled).
                 let hitscan = matches!(weapon.modes[mode].shot.as_deref(), Some("hitscan") | Some("beam"));
                 let harmless = |s: &wf_data::RivenStatDef| s.stat.is_none() && (s.key != "PFS" || hitscan);
                 let negatives: Vec<&wf_data::RivenStatDef> = table
                     .stats
                     .iter()
-                    .filter(|s| s.base.contains_key(&ty) && riven_stat_allowed(s, weapon, &weapon.modes[mode], true))
+                    .filter(|s| s.base.contains_key(&ty) && riven_stat_allowed(s, weapon, true))
+                    .filter(|s| faction_negative_ok(s, faction))
                     .collect();
                 let neg_def = match negatives.iter().find(|s| harmless(s)) {
                     Some(s) => *s,
@@ -1445,7 +1461,7 @@ fn optimize_mode<'a>(
                     .stats
                     .iter()
                     .filter(|s| opts.spliced_riven || !s.spliced)
-                    .filter(|s| riven_stat_allowed(s, weapon, &weapon.modes[mode], false))
+                    .filter(|s| riven_stat_allowed(s, weapon, false))
                     .filter_map(|s| {
                         let stat = s.stat?;
                         let base = *s.base.get(&ty)?;
@@ -1780,15 +1796,21 @@ pub fn rank_rivens(data: &GameData, weapon_key: &str, base: &Build, target: &Tar
         ctx.max_rate = opts.max_fire_rate_bonus.map(|b| base * (1.0 + b));
     }
     let roll = table.roll_max;
+    // The negative the best riven got (a real one on companion weapons) counts in every roll's score.
+    let negative_def = best.riven_negative.as_ref().and_then(|n| table.stats.iter().find(|s| s.key == n.key));
+    let base_buffs = ctx.build.buffs.clone();
     let pool: Vec<&wf_data::RivenStatDef> = table
         .stats
         .iter()
         .filter(|s| (opts.spliced_riven || !s.spliced) && s.base.contains_key(&ty))
+        .filter(|s| riven_stat_allowed(s, weapon, false))
         .filter(|s| s.stat.is_some_and(|st| stat_matters(st, faction, opts.allow_faction)))
         .collect();
     let mut rolls = Vec::new();
     for positives in [3usize, 2] {
         let Some(layout) = table.layout(positives, true) else { continue };
+        ctx.build.buffs = base_buffs.iter().cloned().chain(negative_def.and_then(|s| negative_modifier(table, ty, layout, s, table.roll_min))).collect();
+        ctx.context = ctx.context_id();
         let mut idx: Vec<usize> = (0..positives).collect();
         loop {
             let defs: Vec<&wf_data::RivenStatDef> = idx.iter().map(|&i| pool[i]).collect();

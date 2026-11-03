@@ -1114,3 +1114,14 @@ fn tau_raises_status_chance_taken() {
     // 2.5 shots/s x 50% = 1.25 Tau procs/s x 8 s = 10 stacks (capped): status chance x 2.
     assert!(close(m.components[0].status_chance, 1.0), "{}", m.components[0].status_chance);
 }
+
+/// Incarnon forms ignore ammo efficiency: their gauge holds the same number of shots.
+#[test]
+fn incarnon_gauge_ignores_ammo_efficiency() {
+    use wf_data::{Condition::Always, Stat};
+    let d = fixture();
+    let plain = Build { weapon: "/Test/Laetum".into(), ..Default::default() };
+    let eff = with_mod(Stat::AmmoEfficiency, 0.5, Always, None);
+    let charge = |b: &Build| compute(&d, b, &Target::default()).unwrap().modes[1].per_charge.unwrap();
+    assert!(close(charge(&plain), charge(&eff)));
+}

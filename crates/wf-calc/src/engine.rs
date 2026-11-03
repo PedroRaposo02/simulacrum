@@ -797,8 +797,10 @@ fn compute_mode_once(
         .and_then(|i| r.weapon.modes.get(i).map(|m| (i, m)))
         .and_then(|(i, m)| compute_mode(r, build, target, m, i).ok());
     let beam_ticks = beam.as_ref().map_or(0.0, |b| b.fire_rate / rate);
-    // Ammo efficiency: the share of rounds not used, capped at 75%.
-    let ammo_eff = mode_pools.ammo_eff.clamp(0.0, AMMO_EFFICIENCY_CAP);
+    // Ammo efficiency: the share of rounds not used, capped at 75%. Incarnon forms ignore it (their
+    // gauge isn't ammunition).
+    let incarnon_pool = matches!(mode.ammo_pool, AmmoPool::Incarnon { .. });
+    let ammo_eff = if incarnon_pool { 0.0 } else { mode_pools.ammo_eff.clamp(0.0, AMMO_EFFICIENCY_CAP) };
     // Infinite ammo on headshots (Skull Shots): the buff is up 1 - e^(-triggers/s x duration) of the
     // time. Headshots use the scenario's share, or the on-headshot assumption when it is 0.
     let headshot_rate = {
@@ -811,12 +813,11 @@ fn compute_mode_once(
         };
         rate * partials.first().map_or(1.0, |p| p.projectiles) * share.clamp(0.0, 1.0)
     };
-    let free_ammo = 1.0
-        - mode_pools
-            .infinite_ammo
-            .iter()
-            .map(|(chance, secs)| (-(chance * headshot_rate * secs)).exp())
-            .product::<f64>();
+    let free_ammo = if incarnon_pool {
+        0.0
+    } else {
+        1.0 - mode_pools.infinite_ammo.iter().map(|(chance, secs)| (-(chance * headshot_rate * secs)).exp()).product::<f64>()
+    };
     if free_ammo > 0.01 {
         approx.add(|| format!("Infinite ammo on headshots: active {:.0}% of the time", free_ammo * 100.0));
     }

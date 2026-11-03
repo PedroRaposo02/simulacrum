@@ -4,6 +4,10 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 
 ## Unreleased
 
+- **Faction negatives on Infested**: when a riven's best negative is a faction damage stat, it's -Infested (the easiest content), or -Grineer / -Corpus when fighting Infested.
+- **Riven ranking** uses the same roll rules and, for companion weapons, the negative the best riven takes.
+- **Incarnon forms ignore ammo efficiency** (and infinite-ammo effects), as on the wiki: their gauge holds the same number of shots. It no longer stretches the time their status stacks build up (Ballistica Prime's best riven was Ammo Efficiency because of it).
+- **Physical riven stats** follow the weapon's own main attack (not an Incarnon form) for the 25% rule.
 - **Riven roll rules**: Impact, Puncture and Slash only roll on weapons whose attack is more than 25% that type; elements, Punch Through and spliced stats are positive-only; Zoom, Weapon Recoil and Ammo Maximum no longer roll on companion weapon rivens (Update 44.1). Companion weapons' best rivens take the negative that costs that build least (an off-faction damage negative, -Projectile Speed on hitscan and beam weapons...), and it counts in the build's numbers. The riven editor only offers stats that can roll.
 - **Max-roll rivens have the smallest negative**: the best riven's harmless negative now rolls its smallest penalty (slider at the best end) instead of its largest, so the whole riven grades at the top. New **S** grade for a perfect roll (within 0.1% of the maximum); A+ stays at +9.5% or more.
 - **Instant optimizer results**: the build editor's optimizer remembers what it found this session (switching an option or the scenario back reuses it), and loads the precomputed best build when the settings are exactly the precompute's (default scenario, Balanced or Group fight, default options). The result says where it came from.

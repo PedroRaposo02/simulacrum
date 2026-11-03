@@ -7,7 +7,8 @@ export const emptyRiven = (): RivenState => ({ positives: [], negative: null });
  * no longer roll on companion weapons. */
 export function rivenStatAllowed(s: RivenStatDef, weapon: Weapon, negative: boolean): boolean {
   if (s.stat?.kind === "physical") {
-    const mode = weapon.modes.find((m) => m.headline !== false) ?? weapon.modes[0];
+    // The weapon's own stats decide: its main normal attack, not an Incarnon form.
+    const mode = weapon.modes.find((m) => m.headline !== false && !m.incarnonForm) ?? weapon.modes[0];
     const comps = mode?.components ?? [];
     const total = comps.reduce((a, c) => a + Object.values(c.damage).reduce((x, y) => x + y, 0), 0);
     const of = (s.stat as { of?: string }).of ?? "";
