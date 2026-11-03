@@ -2,7 +2,7 @@
 
 Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the version lives in `Cargo.toml` (workspace) and the `package.json` files, and each release is tagged `v<version>`.
 
-## Unreleased
+## 0.7.0-beta.3 — 2026-11-03
 
 - **Faction negatives on Infested**: when a riven's best negative is a faction damage stat, it's -Infested (the easiest content), or -Grineer / -Corpus when fighting Infested.
 - **Riven ranking** uses the same roll rules and, for companion weapons, the negative the best riven takes.
