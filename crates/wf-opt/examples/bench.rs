@@ -3,7 +3,7 @@
 // cargo run --release -p wf-opt --example bench -- [data/gamedata.json] [out.txt]
 use std::time::Instant;
 use wf_calc::{Build, Target};
-use wf_opt::{optimize_with_riven, Objective, OptimizeOptions};
+use wf_opt::{optimize_with_riven_memo, EvalMemo, Objective, OptimizeOptions};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -19,6 +19,8 @@ fn main() {
             eprintln!("missing {name}");
             continue;
         };
+        // One memo per weapon and target, as in the precompute.
+        let mut memo = EvalMemo::default();
         let heavy = w.modes.iter().position(|m| m.melee_role == Some(wf_data::MeleeRole::Heavy));
         let mut variants = vec![("", Objective::Balanced, None), ("group", Objective::Group, None)];
         if let Some(h) = heavy {
@@ -26,7 +28,7 @@ fn main() {
         }
         for (label, objective, mode) in variants {
             let t0 = Instant::now();
-            let r = optimize_with_riven(&data, &w.id, &Build::default(), &target, &OptimizeOptions { objective, mode, ..Default::default() });
+            let r = optimize_with_riven_memo(&data, &w.id, &Build::default(), &target, &OptimizeOptions { objective, mode, ..Default::default() }, &mut memo);
             let dt = t0.elapsed().as_secs_f64();
             total += dt;
             match r {

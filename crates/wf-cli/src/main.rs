@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use wf_calc::sweep::{diff, sweep, SweepReport};
 use wf_calc::{compute, Build, Explain, Target};
 use wf_data::GameData;
-use wf_opt::{optimize, optimize_with_riven, OptimizeOptions, OptimizeResult, RivenPick};
+use wf_opt::{optimize, optimize_with_riven_memo, EvalMemo, OptimizeOptions, OptimizeResult, RivenPick};
 use rayon::prelude::*;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -567,12 +567,15 @@ fn run() -> Result<bool, String> {
                         conditions: wf_calc::Conditions { contagious_bond: w.slot == wf_data::Slot::Companion, ..Default::default() },
                         ..Default::default()
                     };
-                    let mut run = |label: &str, objective, mode| match optimize_with_riven(
+                    // Builds calculated by one search are reused by the others (single, group, heavy).
+                    let mut memo = EvalMemo::default();
+                    let mut run = |label: &str, objective, mode| match optimize_with_riven_memo(
                         &data,
                         &w.id,
                         if objective == wf_opt::Objective::Group { &group_base } else { &single_base },
                         t,
                         &OptimizeOptions { objective, mode, ..Default::default() },
+                        &mut memo,
                     ) {
                         Ok((plain, riven)) => (Some(entry(plain)), Some(entry(riven))),
                         Err(e) => {

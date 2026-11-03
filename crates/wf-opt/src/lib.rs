@@ -2,7 +2,7 @@
 //! order, then arcane choice, then an optional theoretical riven searched jointly with the mods.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use wf_calc::{evaluate, resolve_enemy, Build, CalcError, ErrorCode, Resolved, Target};
 use wf_data::{Arcane, DamageType, EnemyProfile, Faction, GameData, Mod, Modifier, RivenType, Stat, Weapon};
 
@@ -347,6 +347,10 @@ struct Ctx<'a> {
     evolutions: Vec<&'a wf_data::Evolution>,
     /// Mods every build must contain (the explosion-radius mod).
     forced: Vec<&'a Mod>,
+    /// Builds already calculated (see EvalMemo); `context` identifies the scenario they belong to.
+    memo: HashMap<Vec<u64>, Option<Scored>>,
+    memo_hits: u64,
+    context: u64,
 }
 
 /// The Balanced objective stops valuing fire rate past this bonus over the unmodded rate.
@@ -398,8 +402,54 @@ pub fn is_explosive(mode: &wf_data::AttackMode) -> bool {
     total > 0.0 && radial / total >= EXPLOSIVE_SHARE
 }
 
+/// What scoring a build reads from its calculation: the objectives, comfort limits and the crit
+/// threshold. Kept instead of the whole result so searches with other objectives can reuse it.
+#[derive(Debug, Clone, Copy)]
+struct Scored {
+    fire_rate: f64,
+    attack_speed: Option<f64>,
+    magazine_shots: Option<f64>,
+    magazine: Option<f64>,
+    burst: f64,
+    sustained: f64,
+    group: f64,
+    group_sustained: f64,
+    per_shot: f64,
+    per_charge: Option<f64>,
+    arsenal_crit_chance: f64,
+}
+
+impl Scored {
+    fn of(m: &wf_calc::ModeResult) -> Self {
+        Scored {
+            fire_rate: m.fire_rate,
+            attack_speed: m.attack_speed,
+            magazine_shots: m.magazine_shots,
+            magazine: m.magazine.map(|x| x as f64),
+            burst: m.burst_dps,
+            sustained: m.sustained_dps,
+            group: m.group_dps,
+            group_sustained: m.group_sustained_dps,
+            per_shot: m.per_shot,
+            per_charge: m.per_charge,
+            arsenal_crit_chance: m.components.iter().map(|c| c.arsenal_crit_chance).fold(0.0, f64::max),
+        }
+    }
+}
+
+/// Builds already calculated, shared by the searches of one weapon against one target (single
+/// target and group, with and without riven): they revisit many of the same builds. Entries are
+/// keyed by the scenario too, so searches with different conditions never mix.
+#[derive(Default)]
+pub struct EvalMemo {
+    map: HashMap<Vec<u64>, Option<Scored>>,
+}
+
+/// Past this many builds the memo starts over (memory stays bounded on long runs).
+const MEMO_MAX: usize = 3_000_000;
+
 /// Sustained damage where attacks past `cap` per second count for nothing.
-fn balanced(m: &wf_calc::ModeResult, cap: f64, burst: f64, sustained: f64) -> f64 {
+fn balanced(m: &Scored, cap: f64, burst: f64, sustained: f64) -> f64 {
     if m.fire_rate <= cap || m.fire_rate <= 0.0 {
         return sustained;
     }
@@ -409,7 +459,7 @@ fn balanced(m: &wf_calc::ModeResult, cap: f64, burst: f64, sustained: f64) -> f6
     }
     // Same shots, but only `cap` of them per second count; reloads still apply.
     let per_shot = burst / m.fire_rate;
-    match m.magazine_shots.or(m.magazine.map(|x| x as f64)) {
+    match m.magazine_shots.or(m.magazine) {
         Some(mag) if sustained < burst * (1.0 - 1e-9) => {
             let reload = mag / m.fire_rate * (burst / sustained - 1.0);
             per_shot * mag / (mag / cap + reload)
@@ -418,12 +468,12 @@ fn balanced(m: &wf_calc::ModeResult, cap: f64, burst: f64, sustained: f64) -> f6
     }
 }
 
-fn objective_value(objective: Objective, m: &wf_calc::ModeResult, cap: f64) -> f64 {
+fn objective_value(objective: Objective, m: &Scored, cap: f64) -> f64 {
     match objective {
-        Objective::Balanced => balanced(m, cap, m.burst_dps, m.sustained_dps),
-        Objective::Group => balanced(m, cap, m.group_dps, m.group_sustained_dps),
-        Objective::Burst => m.burst_dps,
-        Objective::Sustained => m.sustained_dps,
+        Objective::Balanced => balanced(m, cap, m.burst, m.sustained),
+        Objective::Group => balanced(m, cap, m.group, m.group_sustained),
+        Objective::Burst => m.burst,
+        Objective::Sustained => m.sustained,
         Objective::PerShot => m.per_shot,
         Objective::PerCharge => m.per_charge.unwrap_or_else(|| m.per_shot * m.magazine_shots.unwrap_or(1.0)),
     }
@@ -446,14 +496,62 @@ impl<'a> Ctx<'a> {
 
     fn raw(&mut self, mods: &[&'a Mod], arcane: Option<&'a Arcane>, riven: &[RivenStat]) -> f64 {
         let (objective, cap) = (self.objective, self.rate_cap);
-        self.mode_result(mods, arcane, riven).map_or(0.0, |x| objective_value(objective, &x, cap))
+        self.mode_result(mods, arcane, riven).map_or(0.0, |x| objective_value(objective, &Scored::of(&x), cap))
     }
 
     /// The objective value. Comfort bounds (attack speed floor, fire rate cap) make builds outside
     /// them score negative (closer to the bound is better), so any build within the bounds beats
     /// every build outside them.
+    /// Identity of a build within one search: mods in order, arcane, riven stats, evolutions,
+    /// progenitor and mode (everything else is fixed while the memo lives).
+    fn memo_key(&self, mods: &[&'a Mod], arcane: Option<&'a Arcane>, riven: &[RivenStat]) -> Vec<u64> {
+        let mut k = Vec::with_capacity(mods.len() + riven.len() * 2 + self.evolutions.len() + 5);
+        k.push(self.context);
+        k.push(self.mode as u64);
+        k.push(self.build.progenitor.map_or(u64::MAX, |t| t as u64));
+        k.push(arcane.map_or(0, |a| a as *const Arcane as u64));
+        k.extend(self.evolutions.iter().map(|e| *e as *const wf_data::Evolution as u64));
+        k.push(u64::MAX - 1);
+        k.extend(mods.iter().map(|m| *m as *const Mod as u64));
+        k.push(u64::MAX - 2);
+        for r in riven {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&r.key, &mut h);
+            k.push(std::hash::Hasher::finish(&h));
+            k.push(r.modifier.value.to_bits());
+        }
+        k
+    }
+
+    /// The scenario fingerprint for memo keys: conditions, buffs, target and weapon.
+    fn context_id(&self) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let text = serde_json::to_string(&(&self.build.conditions, &self.build.buffs, self.target)).unwrap_or_default();
+        std::hash::Hash::hash(&text, &mut h);
+        std::hash::Hash::hash(&self.weapon.id, &mut h);
+        std::hash::Hasher::finish(&h)
+    }
+
     fn eval(&mut self, mods: &[&'a Mod], arcane: Option<&'a Arcane>, riven: &[RivenStat]) -> f64 {
-        match self.mode_result(mods, arcane, riven) {
+        let key = self.memo_key(mods, arcane, riven);
+        let scored = match self.memo.get(&key) {
+            Some(s) => {
+                self.memo_hits += 1;
+                *s
+            }
+            None => {
+                let s = self.mode_result(mods, arcane, riven).map(|m| Scored::of(&m));
+                self.memo.insert(key, s);
+                s
+            }
+        };
+        self.score(scored)
+    }
+
+    /// The search's score for a calculated build: comfort limits and thresholds first (builds outside
+    /// them score negative, closer is better), then the objective.
+    fn score(&self, scored: Option<Scored>) -> f64 {
+        match scored {
             None => f64::NEG_INFINITY,
             Some(m) => {
                 let speed = m.attack_speed.unwrap_or(m.fire_rate);
@@ -474,7 +572,7 @@ impl<'a> Ctx<'a> {
                 }
                 // Tenacious Bond checks the weapon's own (arsenal) crit chance.
                 if let Some(min) = self.min_crit_chance {
-                    let cc = m.components.iter().map(|c| c.arsenal_crit_chance).fold(0.0, f64::max);
+                    let cc = m.arsenal_crit_chance;
                     if cc < min - 1e-9 {
                         return -(min - cc) - 1.0;
                     }
@@ -972,7 +1070,7 @@ pub fn optimize(
     target: &Target,
     opts: &OptimizeOptions,
 ) -> Result<OptimizeResult, CalcError> {
-    optimize_cached(data, weapon_key, base, target, opts, &mut StructureCache::new())
+    optimize_cached(data, weapon_key, base, target, opts, &mut StructureCache::new(), &mut EvalMemo::default())
 }
 
 /// The best build without a riven and the best with one (same options otherwise). The riven search
@@ -985,9 +1083,22 @@ pub fn optimize_with_riven(
     target: &Target,
     opts: &OptimizeOptions,
 ) -> Result<(OptimizeResult, OptimizeResult), CalcError> {
+    optimize_with_riven_memo(data, weapon_key, base, target, opts, &mut EvalMemo::default())
+}
+
+/// `optimize_with_riven` with a memo the caller keeps across searches of the same weapon and target
+/// (other objectives or attacks): builds already calculated aren't calculated again.
+pub fn optimize_with_riven_memo(
+    data: &GameData,
+    weapon_key: &str,
+    base: &Build,
+    target: &Target,
+    opts: &OptimizeOptions,
+    memo: &mut EvalMemo,
+) -> Result<(OptimizeResult, OptimizeResult), CalcError> {
     let mut cache = StructureCache::new();
-    let plain = optimize_cached(data, weapon_key, base, target, &OptimizeOptions { riven: false, ..opts.clone() }, &mut cache)?;
-    let riven = optimize_cached(data, weapon_key, base, target, &OptimizeOptions { riven: true, ..opts.clone() }, &mut cache)?;
+    let plain = optimize_cached(data, weapon_key, base, target, &OptimizeOptions { riven: false, ..opts.clone() }, &mut cache, memo)?;
+    let riven = optimize_cached(data, weapon_key, base, target, &OptimizeOptions { riven: true, ..opts.clone() }, &mut cache, memo)?;
     Ok((plain, riven))
 }
 
@@ -1002,9 +1113,10 @@ fn optimize_cached<'a>(
     target: &'a Target,
     opts: &OptimizeOptions,
     cache: &mut StructureCache<'a>,
+    memo: &mut EvalMemo,
 ) -> Result<OptimizeResult, CalcError> {
     if opts.mode.is_some() {
-        return optimize_mode(data, weapon_key, base, target, opts, cache);
+        return optimize_mode(data, weapon_key, base, target, opts, cache, memo);
     }
     let weapon = data
         .weapon(weapon_key)
@@ -1026,12 +1138,12 @@ fn optimize_cached<'a>(
         .collect();
     if picks.is_empty() {
         // Nothing computable: let the single-mode path produce the engine's error.
-        return optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(0), ..opts.clone() }, cache);
+        return optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(0), ..opts.clone() }, cache, memo);
     }
     let mut best: Option<OptimizeResult> = None;
     let mut evals = 0;
     for m in picks {
-        let r = optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(m), ..opts.clone() }, cache)?;
+        let r = optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(m), ..opts.clone() }, cache, memo)?;
         evals += r.evaluations;
         let better = best.as_ref().is_none_or(|b| {
             (b.below_attack_speed_floor && !r.below_attack_speed_floor)
@@ -1053,6 +1165,7 @@ fn optimize_mode<'a>(
     target: &'a Target,
     opts: &OptimizeOptions,
     cache: &mut StructureCache<'a>,
+    memo: &mut EvalMemo,
 ) -> Result<OptimizeResult, CalcError> {
     let weapon = data
         .weapon(weapon_key)
@@ -1082,6 +1195,9 @@ fn optimize_mode<'a>(
         mode: 0,
         candidates,
         evals: 0,
+        memo: HashMap::new(),
+        memo_hits: 0,
+        context: 0,
         min_attack_speed: opts.min_attack_speed,
         min_rate: None,
         max_rate: None,
@@ -1092,6 +1208,9 @@ fn optimize_mode<'a>(
         evolutions: vec![],
         forced: vec![],
     };
+    // Builds already calculated by earlier searches of this weapon and target.
+    ctx.memo = std::mem::take(&mut memo.map);
+    ctx.context = ctx.context_id();
 
     let mode = match opts.mode {
         Some(m) => m,
@@ -1134,6 +1253,8 @@ fn optimize_mode<'a>(
         .modes
         .get(mode)
         .ok_or_else(|| CalcError::new(ErrorCode::MissingField, format!("{} has no mode {mode}", weapon.name)))?;
+    // Conditions are final from here on (explosives can't headshot).
+    ctx.context = ctx.context_id();
     if !ctx.eval(&[], None, &[]).is_finite() {
         let r = Resolved { weapon, mods: vec![], arcane: None, evolutions: vec![], enemy: ctx.enemy.clone(), warnings: vec![] };
         return Err(match evaluate(&r, &ctx.build, target, mode) {
@@ -1432,7 +1553,7 @@ fn optimize_mode<'a>(
 
     let final_mode = ctx.mode_result(&mods, arcane, &riven);
     if let Some(m) = &final_mode {
-        best = objective_value(opts.objective, m, ctx.rate_cap);
+        best = objective_value(opts.objective, &Scored::of(m), ctx.rate_cap);
     }
 
     // Marginal value of each piece, on raw DPS (not the attack-speed-floor score).
@@ -1476,6 +1597,10 @@ fn optimize_mode<'a>(
     let drain = opts.capacity.as_ref().map(|c| total_drain(&mods, normal_slots, c));
 
     let fm = final_mode.as_ref();
+    memo.map = std::mem::take(&mut ctx.memo);
+    if memo.map.len() > MEMO_MAX {
+        memo.map.clear();
+    }
     Ok(OptimizeResult {
         objective: opts.objective,
         score: best,
@@ -1554,6 +1679,9 @@ pub fn rank_rivens(data: &GameData, weapon_key: &str, base: &Build, target: &Tar
         mode: best.mode_index,
         candidates: vec![],
         evals: 0,
+        memo: HashMap::new(),
+        memo_hits: 0,
+        context: 0,
         min_attack_speed: opts.min_attack_speed,
         min_rate: None,
         max_rate: None,
@@ -1564,6 +1692,7 @@ pub fn rank_rivens(data: &GameData, weapon_key: &str, base: &Build, target: &Tar
         evolutions,
         forced: vec![],
     };
+    ctx.context = ctx.context_id();
     if let Some(base) = ctx.mode_result(&[], None, &[]).map(|m| m.fire_rate).filter(|r| *r > 0.0) {
         ctx.rate_cap = balanced_rate_cap(weapon, &weapon.modes[best.mode_index], base);
         ctx.max_rate = opts.max_fire_rate_bonus.map(|b| base * (1.0 + b));
