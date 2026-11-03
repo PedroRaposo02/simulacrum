@@ -4,6 +4,7 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 
 ## Unreleased
 
+- **DPS strip**: Incarnon weapons show status DPS too (it was replaced by per charge).
 - **Element plans in the optimizer**: it now tries every order of up to three elements (best mod of each, then the full search from the best two). Plans like Cold + Toxin into Viral with a separate Heat need three mods together and were never found: on Verglas Prime (whose own Cold turns lone Heat into Blast) the optimizer now finds a rivenless build about twice as strong as the one it found before, and the Contagious Bond group riven build it finds goes from 3.1M to 6.2M (Heat + Status Damage + Damage).
 - **Riven search**: also starts from the best complete rivens (every combination scored on the rivenless build) and swaps two stats at once, so stats that only pay off together (crit chance with crit damage) are found. On the benchmark no build got worse, and some riven builds the optimizer finds are better than before (Onos group riven build +10%, Acceltra Prime riven build +9%). For scale, the riven itself adds about +190% to +410% on those weapons.
 - **Companion weapons' group builds** are precomputed with Contagious Bond on.

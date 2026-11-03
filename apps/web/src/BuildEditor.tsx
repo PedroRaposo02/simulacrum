@@ -81,7 +81,8 @@ function DpsStrip({ m, resetKey }: { m: ModeResult; resetKey: string }) {
     ["Per shot", m.perShot],
     ["Burst DPS", m.burstDps],
     ["Sustained DPS", m.sustainedDps],
-    m.perCharge != null ? ["Per charge", m.perCharge] : ["Status DPS", m.statusDps],
+    ["Status DPS", m.statusDps],
+    ...(m.perCharge != null ? ([["Per charge", m.perCharge]] as [string, number][]) : []),
     ["Group DPS", m.groupDps],
     ["Group sustained", m.groupSustainedDps],
   ];
@@ -107,7 +108,7 @@ function DpsStrip({ m, resetKey }: { m: ModeResult; resetKey: string }) {
         <span className="font-semibold">{m.mode}</span>
         {delta.some((d) => d != null && Math.abs(d) >= 0.0005) && <span className="text-zinc-500">change from your last edit</span>}
       </div>
-      <div className="grid grid-cols-3 gap-1.5 xl:grid-cols-6">
+      <div className={`grid grid-cols-3 gap-1.5 sm:grid-cols-4 ${tiles.length > 6 ? "xl:grid-cols-7" : "xl:grid-cols-6"}`}>
         {tiles.map(([label, v], i) => {
           const d = delta[i];
           return (
