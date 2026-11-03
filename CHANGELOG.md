@@ -4,6 +4,8 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 
 ## Unreleased
 
+- **Status types counted from the build**: per-status bonuses (Galvanized Shot, Condition Overload...) use the statuses actually on the target: each outsourced status (Viral, Corrosive, Heat) counts 1 and each status the weapon procs itself counts by its uptime, instead of an assumed 4. The manual count stays available (Scenario > Conditions). Onos's best build goes from 55M to 33M per shot (2 status types, Galvanized Shot x3.4 instead of x5.8).
+- **DPS strip details**: burst shows its split (hits + status) under the number; hovering a tile explains it, and status DPS lists each damage-over-time source (procs per second, damage per tick, stacks).
 - **Explanation**: per-status damage (Galvanized Shot, Condition Overload) shows on its own line when it multiplies separately on an attack (GunCO sheet), instead of inside the base damage multiplier.
 - **Incarnon status stacking**: an Incarnon form only fires until its gauge is empty (Ballistica Prime: 18 rounds, about 2.7 s), so its own status stacks build up for that long at most instead of the whole fight. Heat-heavy Incarnon builds were overstated: Ballistica Prime's best build goes from 137M to 30M burst, Laetum's from 88M to 83M.
 - **Form-specific evolution values**: "+X per projectile" / "+Y for Incarnon Form" lines (Elemental Balance, Survivor's Edge) now apply X to the normal attacks and Y to the Incarnon form only, instead of both to both. Mods and evolutions can target "every attack except" one (`!Incarnon`).

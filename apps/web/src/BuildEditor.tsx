@@ -77,14 +77,26 @@ function SearchOverlay() {
  * change every number shows how much that change moved it.
  */
 function DpsStrip({ m, resetKey }: { m: ModeResult; resetKey: string }) {
-  const tiles: [string, number][] = [
-    ["Per shot", m.perShot],
-    ["Burst DPS", m.burstDps],
-    ["Sustained DPS", m.sustainedDps],
-    ["Status DPS", m.statusDps],
-    ...(m.perCharge != null ? ([["Per charge", m.perCharge]] as [string, number][]) : []),
-    ["Group DPS", m.groupDps],
-    ["Group sustained", m.groupSustainedDps],
+  const hits = Math.max(0, m.burstDps - m.statusDps);
+  const statusNode = m.explain?.children?.find((c) => c.label.startsWith("Status damage"));
+  const statusLines = (statusNode?.children ?? []).map((c) => `${c.label}: ${fmt(c.value)}/s${c.detail ? ` (${c.detail})` : ""}`);
+  const projectiles = m.components.map((c) => c.projectiles.toFixed(2)).join(" + ");
+  // [label, value, line under the value, hover text]
+  const tiles: [string, number, string | null, string][] = [
+    ["Per shot", m.perShot, null, `One trigger pull against this enemy, multishot included (${projectiles} projectiles), crits averaged.`],
+    [
+      "Burst DPS",
+      m.burstDps,
+      m.statusDps > 0 ? `hits ${fmt(hits)} + status ${fmt(m.statusDps)}` : null,
+      `While firing, no reloads: per shot ${fmt(m.perShot)} x ${m.fireRate.toFixed(2)} shots/s = ${fmt(hits)}/s from hits, plus ${fmt(m.statusDps)}/s from status damage.`,
+    ],
+    ["Sustained DPS", m.sustainedDps, null, "Burst averaged with reloads (or, for Incarnon forms, the time spent refilling the gauge in normal form)."],
+    ["Status DPS", m.statusDps, null, statusLines.length ? `Damage over time per second:\n${statusLines.join("\n")}` : "No damage-over-time status from this build."],
+    ...(m.perCharge != null
+      ? ([["Per charge", m.perCharge, null, "Everything a full Incarnon gauge deals before the weapon reverts."]] as [string, number, string | null, string][])
+      : []),
+    ["Group DPS", m.groupDps, null, "Burst against the scenario's group of enemies: radius, punch through, chaining, spreading statuses and kills."],
+    ["Group sustained", m.groupSustainedDps, null, "Group DPS with reloads or Incarnon refills."],
   ];
   const values = tiles.map((t) => t[1]);
   const signature = values.join("|");
@@ -109,10 +121,10 @@ function DpsStrip({ m, resetKey }: { m: ModeResult; resetKey: string }) {
         {delta.some((d) => d != null && Math.abs(d) >= 0.0005) && <span className="text-zinc-500">change from your last edit</span>}
       </div>
       <div className={`grid grid-cols-3 gap-1.5 sm:grid-cols-4 ${tiles.length > 6 ? "xl:grid-cols-7" : "xl:grid-cols-6"}`}>
-        {tiles.map(([label, v], i) => {
+        {tiles.map(([label, v, sub, hover], i) => {
           const d = delta[i];
           return (
-            <div key={label} className="rounded-md bg-zinc-100 px-2 py-1 dark:bg-zinc-800/60">
+            <div key={label} className="cursor-help rounded-md bg-zinc-100 px-2 py-1 dark:bg-zinc-800/60" title={hover}>
               <div className="text-[10px] uppercase text-zinc-500">{label}</div>
               <div className="flex items-baseline gap-1.5">
                 <span className="num text-base font-semibold">{fmt(v)}</span>
@@ -123,6 +135,7 @@ function DpsStrip({ m, resetKey }: { m: ModeResult; resetKey: string }) {
                   </span>
                 )}
               </div>
+              {sub && <div className="num text-[10px] text-zinc-500">{sub}</div>}
             </div>
           );
         })}

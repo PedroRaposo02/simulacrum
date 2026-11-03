@@ -148,6 +148,8 @@ export interface Conditions {
   conditionalUptime: number;
   headshotShare: number;
   statusTypes: number;
+  /** Count status types from outsourced statuses and the weapon's own procs (default) instead of statusTypes. */
+  statusTypesAuto?: boolean;
   comboMultiplier: number;
   heavyComboMultiplier: number;
   headshotEffects: boolean;

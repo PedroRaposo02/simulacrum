@@ -9,8 +9,12 @@ pub struct Conditions {
     pub conditional_uptime: f64,
     /// Share of hits that land on a headshot / weak point (only where allowed).
     pub headshot_share: f64,
-    /// Distinct status types on the target, for "per status type" effects.
+    /// Distinct status types on the target, for "per status type" effects (Galvanized, Condition
+    /// Overload). With `status_types_auto` the engine sets it itself.
     pub status_types: f64,
+    /// Count status types on the target from the scenario's outsourced statuses (each counts 1) and the
+    /// weapon's own procs (each counts its uptime), instead of `status_types`.
+    pub status_types_auto: bool,
     /// Melee combo multiplier during light attacks (1 = no combo, 12 = max). Tennokai heavies use it too.
     pub combo_multiplier: f64,
     /// Combo multiplier a regular heavy attack consumes (practical max ~5x with Galvanized Reflex).
@@ -56,6 +60,7 @@ impl Default for Conditions {
             conditional_uptime: 1.0,
             headshot_share: 0.0,
             status_types: 4.0,
+            status_types_auto: true,
             combo_multiplier: 12.0,
             heavy_combo_multiplier: 5.0,
             headshot_effects: true,

@@ -526,6 +526,7 @@ fn status_types_below_condition() {
     use wf_data::{Condition::StatusTypesBelow, Stat};
     let d = fixture();
     let mut b = with_mod(Stat::CritDamage, 1.0, StatusTypesBelow, Some(3.0));
+    b.conditions.status_types_auto = false;
     b.conditions.status_types = 2.0;
     assert!(close(compute(&d, &b, &Target::default()).unwrap().modes[0].components[0].crit_mult, 4.4));
     b.conditions.status_types = 4.0;
@@ -577,6 +578,7 @@ fn gunco_adds_or_multiplies_per_attack() {
         let mut b = with_mod(Stat::BaseDamage, 0.4, Always, None);
         b.buffs[0].per = Some(wf_data::PerCount::StatusType);
         b.buffs.push(wf_data::Modifier { stat: Stat::BaseDamage, value: 1.0, per: None, source: "serration".into(), ..b.buffs[0].clone() });
+        b.conditions.status_types_auto = false;
         b.conditions.status_types = 2.0;
         compute(d, &b, &Target::default()).unwrap().modes[0].per_shot
     };
@@ -1053,4 +1055,27 @@ fn calc_only_matches_full_calculation() {
         }
     }
     assert!(checked > 1000, "only {checked} builds checked");
+}
+
+/// Status types on the target are counted from what is on it: each outsourced status counts 1, the
+/// weapon's own procs count by their uptime (Galvanized-style "per status type" bonuses follow).
+#[test]
+fn status_types_count_outsourced_and_own_procs() {
+    use wf_data::{Condition::Always, Stat};
+    let d = fixture();
+    let mut b = with_mod(Stat::BaseDamage, 0.4, Always, None);
+    b.buffs[0].per = Some(wf_data::PerCount::StatusType);
+    let raw = |b: &Build, t: &Target| compute(&d, b, t).unwrap().modes[0].per_shot_raw;
+    let mut manual = b.clone();
+    manual.conditions.status_types_auto = false;
+    manual.conditions.status_types = 0.0;
+    let none = raw(&manual, &Target::default());
+    // Raw damage = base x (1 + 0.4 x status types): read the count back.
+    let types = |b: &Build, t: &Target| (raw(b, t) / none - 1.0) / 0.4;
+    let own = types(&b, &Target::default());
+    assert!(own > 0.0 && own <= 2.0 + 1e-9, "Impact and Slash by uptime: {own}");
+    let viral = Target { viral_stacks: Some(10.0), ..Default::default() };
+    assert!(close(types(&b, &viral), own + 1.0), "outsourced Viral adds one type");
+    let both = Target { viral_stacks: Some(10.0), corrosive_stacks: Some(10.0), ..Default::default() };
+    assert!(close(types(&b, &both), own + 2.0), "Viral and Corrosive outsourced");
 }

@@ -465,7 +465,24 @@ fn average_falloff(f: &Falloff) -> f64 {
 /// Puncture and Cold on the target raise crit chance / crit damage of direct hits; their stacks come
 /// from the weapon's own procs, so evaluate once, derive the stacks, evaluate again.
 fn compute_mode(r: &Resolved, build: &Build, target: &Target, mode: &AttackMode, index: usize) -> Result<ModeResult, CalcError> {
-    let first = compute_mode_stacked(r, build, target, mode, index)?;
+    // Status types on the target (automatic): outsourced statuses count fully; the weapon's own procs
+    // are only known after a pass, so the first pass counts the outsourced ones alone.
+    let auto_types = build.conditions.status_types_auto;
+    let outsourced: Vec<DamageType> = [
+        (target.viral_stacks.unwrap_or(0.0) > 0.0).then_some(DamageType::Viral),
+        (target.corrosive_stacks.unwrap_or(0.0) > 0.0).then_some(DamageType::Corrosive),
+        target.heat_active.unwrap_or(false).then_some(DamageType::Heat),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let first = if auto_types {
+        let mut b = build.clone();
+        b.conditions.status_types = outsourced.len() as f64;
+        compute_mode_stacked(r, &b, target, mode, index)?
+    } else {
+        compute_mode_stacked(r, build, target, mode, index)?
+    };
     let sd = first.status_duration_s / STATUS_DURATION_S;
     let pps = |t: DamageType| first.procs_per_s.get(&t).copied().unwrap_or(0.0);
     // Puncture: +5% crit chance per stack, 5 stacks of 10 s.
@@ -485,16 +502,36 @@ fn compute_mode(r: &Resolved, build: &Build, target: &Target, mode: &AttackMode,
     let cc = 0.05 * puncture;
     // Infinite ammo on headshots: on-reload effects only get the reloads that are left.
     let reload_share = (first.free_ammo > 0.01).then(|| 1.0 - first.free_ammo);
-    if cc < 1e-6 && cold_cd < 1e-6 && reload_share.is_none() {
+    // Own statuses count by their uptime (share of the time at least one is on the target).
+    let own_types: Vec<(DamageType, f64)> = if auto_types {
+        first
+            .procs_per_s
+            .iter()
+            .filter(|(t, p)| **p > 0.0 && !outsourced.contains(t))
+            .map(|(t, p)| (*t, 1.0 - (-p * first.status_duration_s).exp()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let status_types = auto_types.then(|| outsourced.len() as f64 + own_types.iter().map(|(_, u)| u).sum::<f64>());
+    if cc < 1e-6 && cold_cd < 1e-6 && reload_share.is_none() && status_types.is_none_or(|n| n - (outsourced.len() as f64) < 1e-6) {
         return Ok(first);
     }
     let mut b = build.clone();
     b.conditions.target_crit_chance = cc;
     b.conditions.target_crit_damage = cold_cd;
     b.conditions.reload_share = reload_share;
+    if let Some(n) = status_types {
+        b.conditions.status_types = n;
+    }
     let mut res = compute_mode_stacked(r, &b, target, mode, index)?;
     if build.conditions.calc_only {
         return Ok(res);
+    }
+    if let Some(n) = status_types {
+        let mut parts: Vec<String> = outsourced.iter().map(|t| format!("{t:?} (outsourced)")).collect();
+        parts.extend(own_types.iter().filter(|(_, u)| *u >= 0.005).map(|(t, u)| format!("{t:?} {:.0}%", u * 100.0)));
+        res.approximations.push(format!("Status types on the target: {n:.1} ({})", if parts.is_empty() { "none".into() } else { parts.join(", ") }));
     }
     res.approximations.push(format!(
         "Target status from this weapon: {puncture:.1} Puncture stacks (+{:.0}% crit chance), {cold:.1} Cold stacks (+{cold_cd:.2}x crit damage), direct hits only",

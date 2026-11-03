@@ -216,15 +216,23 @@ export default function ScenarioPanel() {
         <Slider label="Conditional uptime (on-kill stacks…)" value={conditions.conditionalUptime} onChange={(v) => setC({ conditionalUptime: v })} />
         <Toggle label="Headshot-triggered effects active" checked={conditions.headshotEffects} onChange={(v) => setC({ headshotEffects: v })} />
         <Slider label="Headshot share" value={conditions.headshotShare} onChange={(v) => setC({ headshotShare: v })} />
-        <Slider
-          label="Status types on target"
-          value={conditions.statusTypes}
-          min={0}
-          max={10}
-          step={1}
-          display={String(conditions.statusTypes)}
-          onChange={(v) => setC({ statusTypes: v })}
+        <Toggle
+          label="Count status types on the target automatically"
+          checked={conditions.statusTypesAuto ?? true}
+          onChange={(v) => setC({ statusTypesAuto: v })}
+          title="For per-status bonuses (Galvanized, Condition Overload): each outsourced status counts 1, each status the weapon procs itself counts by its uptime"
         />
+        {!(conditions.statusTypesAuto ?? true) && (
+          <Slider
+            label="Status types on target"
+            value={conditions.statusTypes}
+            min={0}
+            max={10}
+            step={1}
+            display={String(conditions.statusTypes)}
+            onChange={(v) => setC({ statusTypes: v })}
+          />
+        )}
         <Slider
           label="Light attack combo (Tennokai uses it too)"
           value={conditions.comboMultiplier}

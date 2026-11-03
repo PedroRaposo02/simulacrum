@@ -55,6 +55,7 @@ export const defaultConditions = (): Conditions => ({
   conditionalUptime: 1,
   headshotShare: 0,
   statusTypes: 4,
+  statusTypesAuto: true,
   comboMultiplier: 12,
   heavyComboMultiplier: 5,
   headshotEffects: true,
