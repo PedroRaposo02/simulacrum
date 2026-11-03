@@ -1102,6 +1102,28 @@ pub fn optimize_with_riven_memo(
     Ok((plain, riven))
 }
 
+/// Share of an attack's listed damage that is one damage type.
+fn damage_share(mode: &wf_data::AttackMode, t: DamageType) -> f64 {
+    let total: f64 = mode.components.iter().flat_map(|c| c.damage.values()).sum();
+    let of_t: f64 = mode.components.iter().filter_map(|c| c.damage.get(&t)).sum();
+    if total > 0.0 { of_t / total } else { 0.0 }
+}
+
+/// Whether a riven stat can roll on this weapon, as a positive or as the negative: physical damage
+/// types need more than 25% of the attack's damage; elements and Punch Through (and spliced stats) are
+/// positive-only; Zoom, Recoil and Ammo Maximum no longer roll on companion weapons.
+fn riven_stat_allowed(s: &wf_data::RivenStatDef, weapon: &Weapon, mode: &wf_data::AttackMode, negative: bool) -> bool {
+    if let Some(Stat::Physical(t)) = s.stat {
+        if damage_share(mode, t) <= 0.25 {
+            return false;
+        }
+    }
+    if negative && (s.positive_only || s.spliced) {
+        return false;
+    }
+    !(s.vintage_on_companion && weapon.slot == wf_data::Slot::Companion)
+}
+
 /// Finalist structures (arcane x evolutions x progenitor with their mods) per attack mode, and whether
 /// the element plan search added one in front.
 type StructureCache<'a> = BTreeMap<usize, (Vec<Structure<'a>>, bool)>;
@@ -1356,7 +1378,7 @@ fn optimize_mode<'a>(
             .ok_or_else(|| CalcError::new(ErrorCode::MissingField, "game data has no riven table"))?;
         let ty = RivenType::for_pool(weapon.mod_pool);
         let roll = table.roll_min + (table.roll_max - table.roll_min) * opts.riven_roll.clamp(0.0, 1.0);
-        let mut best_riven: Option<(Structure<'_>, Vec<RivenStat>, RivenPick)> = None;
+        let mut best_riven: Option<(Structure<'_>, Vec<RivenStat>, RivenPick, Option<Modifier>)> = None;
         // The riven can change which structure wins, so try it on the best two.
         // One more when the element plan search added a structure, so the original runner-up still gets one.
         for st in finals.iter().take(RIVEN_STRUCTURES + usize::from(plan_added)) {
@@ -1364,11 +1386,66 @@ fn optimize_mode<'a>(
             ctx.build.progenitor = st.progenitor;
             for positives in [3usize, 2] {
                 let Some(layout) = table.layout(positives, true) else { continue };
-                let Some(neg_def) = table.stats.iter().find(|s| s.stat.is_none() && s.base.contains_key(&ty)) else { continue };
+                // The negative at its smallest penalty (the best riven): a harmless stat when one can roll,
+                // otherwise (companion weapons) the one that costs this build least.
+                let neg_roll = table.roll_min + table.roll_max - roll;
+                let neg_value = |s: &wf_data::RivenStatDef| -s.base[&ty] * table.disposition * layout.negative_mult * neg_roll;
+                let neg_modifier = |s: &wf_data::RivenStatDef| {
+                    s.stat.map(|stat| Modifier {
+                        source: format!("Riven {} (negative)", s.label),
+                        stat,
+                        value: neg_value(s),
+                        max_stacks: 1,
+                        applies_to: s.applies_to.unwrap_or(wf_data::ComponentFilter::All),
+                        condition: wf_data::Condition::Always,
+                        per: None,
+                        threshold: None,
+                        aiming: false,
+                        only_slots: vec![],
+                        not_slots: vec![],
+                        trigger: None,
+                        mode_contains: None,
+                    })
+                };
+                // -Projectile Speed is only free on hitscan and beam attacks (it isn't modelled).
+                let hitscan = matches!(weapon.modes[mode].shot.as_deref(), Some("hitscan") | Some("beam"));
+                let harmless = |s: &wf_data::RivenStatDef| s.stat.is_none() && (s.key != "PFS" || hitscan);
+                let negatives: Vec<&wf_data::RivenStatDef> = table
+                    .stats
+                    .iter()
+                    .filter(|s| s.base.contains_key(&ty) && riven_stat_allowed(s, weapon, &weapon.modes[mode], true))
+                    .collect();
+                let neg_def = match negatives.iter().find(|s| harmless(s)) {
+                    Some(s) => *s,
+                    None => {
+                        let mut best_neg: Option<(&wf_data::RivenStatDef, f64)> = None;
+                        for s in negatives.iter().filter(|s| s.stat.is_some()) {
+                            let saved = std::mem::take(&mut ctx.build.buffs);
+                            ctx.build.buffs = saved.iter().cloned().chain(neg_modifier(s)).collect();
+                            ctx.context = ctx.context_id();
+                            let v = ctx.eval(&st.mods, st.arcane, &[]);
+                            ctx.build.buffs = saved;
+                            ctx.context = ctx.context_id();
+                            if best_neg.is_none_or(|(_, bv)| v > bv) {
+                                best_neg = Some((s, v));
+                            }
+                        }
+                        let Some((s, _)) = best_neg else { continue };
+                        s
+                    }
+                };
+                // A real negative counts in every evaluation of this riven's search.
+                let neg_mod = neg_modifier(neg_def);
+                let base_buffs = ctx.build.buffs.clone();
+                if let Some(m) = &neg_mod {
+                    ctx.build.buffs.push(m.clone());
+                    ctx.context = ctx.context_id();
+                }
                 let pool: Vec<RivenStat> = table
                     .stats
                     .iter()
                     .filter(|s| opts.spliced_riven || !s.spliced)
+                    .filter(|s| riven_stat_allowed(s, weapon, &weapon.modes[mode], false))
                     .filter_map(|s| {
                         let stat = s.stat?;
                         let base = *s.base.get(&ty)?;
@@ -1395,18 +1472,22 @@ fn optimize_mode<'a>(
                     })
                     .collect();
                 let (m, r, v) = ctx.search_riven(st.mods.clone(), st.arcane, &pool, positives);
-                let neg = RivenPick {
-                    key: neg_def.key.clone(),
-                    label: neg_def.label.clone(),
-                    // The best riven also has the smallest penalty: the negative's roll mirrors the positives'.
-                    value: -neg_def.base[&ty] * table.disposition * layout.negative_mult * (table.roll_min + table.roll_max - roll),
-                };
-                if best_riven.as_ref().is_none_or(|(b, _, _)| v > b.score) {
-                    best_riven = Some((Structure { score: v, mods: m, ..st.clone() }, r, neg));
+                let neg = RivenPick { key: neg_def.key.clone(), label: neg_def.label.clone(), value: neg_value(neg_def) };
+                if best_riven.as_ref().is_none_or(|(b, _, _, _)| v > b.score) {
+                    best_riven = Some((Structure { score: v, mods: m, ..st.clone() }, r, neg, neg_mod.clone()));
+                }
+                if neg_mod.is_some() {
+                    ctx.build.buffs = base_buffs;
+                    ctx.context = ctx.context_id();
                 }
             }
         }
-        if let Some((st, r, neg)) = best_riven {
+        if let Some((st, r, neg, neg_mod)) = best_riven {
+            // The chosen negative stays in effect for the rest of the search (exilus, final numbers).
+            if let Some(m) = neg_mod {
+                ctx.build.buffs.push(m);
+                ctx.context = ctx.context_id();
+            }
             mods = st.mods;
             best = st.score;
             arcane = st.arcane;

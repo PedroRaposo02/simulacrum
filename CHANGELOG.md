@@ -4,6 +4,7 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 
 ## Unreleased
 
+- **Riven roll rules**: Impact, Puncture and Slash only roll on weapons whose attack is more than 25% that type; elements, Punch Through and spliced stats are positive-only; Zoom, Weapon Recoil and Ammo Maximum no longer roll on companion weapon rivens (Update 44.1). Companion weapons' best rivens take the negative that costs that build least (an off-faction damage negative, -Projectile Speed on hitscan and beam weapons...), and it counts in the build's numbers. The riven editor only offers stats that can roll.
 - **Max-roll rivens have the smallest negative**: the best riven's harmless negative now rolls its smallest penalty (slider at the best end) instead of its largest, so the whole riven grades at the top. New **S** grade for a perfect roll (within 0.1% of the maximum); A+ stays at +9.5% or more.
 - **Instant optimizer results**: the build editor's optimizer remembers what it found this session (switching an option or the scenario back reuses it), and loads the precomputed best build when the settings are exactly the precompute's (default scenario, Balanced or Group fight, default options). The result says where it came from.
 - **Recalculate a few weapons**: `wfcalc optimize --all --weapons Laetum,Onos --out part.json`, then `node tools/merge-best-builds.mjs --replace data/best-builds.json data/best-builds.json part.json` puts them into the full file (the result takes the newer data version).

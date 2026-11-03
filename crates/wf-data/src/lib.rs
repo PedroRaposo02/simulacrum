@@ -700,6 +700,12 @@ pub struct RivenStatDef {
     /// Only obtainable by splicing.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub spliced: bool,
+    /// Never rolls as a negative (elements, Punch Through).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub positive_only: bool,
+    /// Can't roll on companion weapon rivens any more (Zoom, Recoil, Ammo Maximum since Update 44.1).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vintage_on_companion: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applies_to: Option<ComponentFilter>,
 }

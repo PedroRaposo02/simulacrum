@@ -1,4 +1,4 @@
-import { formatRivenValue, layoutOf, rivenType, rowValue, statRange } from "./riven";
+import { formatRivenValue, layoutOf, rivenStatAllowed, rivenType, rowValue, statRange } from "./riven";
 import { useState } from "react";
 import { fmt, pct, placeRiven, rankRivensInWorker, scenarioBuild, useStore } from "./store";
 import type { RivenRanking, RivenRow, RivenState, Weapon } from "./types";
@@ -136,7 +136,7 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
   const row = (r: RivenRow | null, i: number, negative: boolean) => {
     const range = r && layout ? statRange(table, r.key, ty, layout, negative) : null;
     const value = r && layout ? rowValue(table, r, ty, layout, negative) : null;
-    const options = available.filter((s) => (negative || s.stat) && (s.key === r?.key || !used.has(s.key)));
+    const options = available.filter((s) => (negative || s.stat) && rivenStatAllowed(s, weapon, negative) && (s.key === r?.key || !used.has(s.key)));
     const setRow = (next: RivenRow | null) => {
       if (negative) return setRiven({ ...riven, negative: next });
       const positives = [...riven.positives];
@@ -245,7 +245,7 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
       <RollRanking
         weapon={weapon}
         onUse={(keys) => {
-          const harmless = table.stats.find((s) => !s.stat && s.base[ty] != null);
+          const harmless = table.stats.find((s) => !s.stat && s.base[ty] != null && rivenStatAllowed(s, weapon, true));
           setRiven({ positives: keys.map((key) => ({ key, roll: 1 })), negative: harmless ? { key: harmless.key, roll: 1 } : null });
         }}
       />

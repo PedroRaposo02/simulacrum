@@ -71,6 +71,8 @@ export interface WeaponMode {
   headline?: boolean;
   meleeRole?: MeleeRole;
   stance?: string;
+  /** Hit parts with their listed damage by type. */
+  components?: { name: string; damage: Record<string, number> }[];
 }
 
 export interface Weapon {
@@ -117,6 +119,10 @@ export interface RivenStatDef {
   base: Partial<Record<RivenType, number>>;
   unit?: "m" | "s" | "count";
   spliced?: boolean;
+  /** Never rolls as a negative (elements, Punch Through). */
+  positiveOnly?: boolean;
+  /** Can't roll on companion weapon rivens (Zoom, Recoil, Ammo Maximum since Update 44.1). */
+  vintageOnCompanion?: boolean;
   appliesTo?: string;
 }
 export interface RivenLayout { positives: number; negative: boolean; positiveMult: number; negativeMult: number }

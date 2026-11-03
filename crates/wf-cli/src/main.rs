@@ -334,7 +334,7 @@ fn print_optimized(r: &OptimizeResult) {
         println!("  riven +{:.1}% {}", p.value * 100.0, p.label);
     }
     if let Some(n) = &r.riven_negative {
-        println!("  riven {:.1}% {} (harmless)", n.value * 100.0, n.label);
+        println!("  riven {:.1}% {} (negative)", n.value * 100.0, n.label);
     }
     println!("  marginal value (DPS this adds on top of the rest):");
     for m in &r.marginal {

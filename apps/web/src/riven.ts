@@ -1,6 +1,22 @@
-import type { GameData, Modifier, ModPool, RivenLayout, RivenPick, RivenRow, RivenState, RivenTable, RivenType } from "./types";
+import type { GameData, Modifier, ModPool, RivenLayout, RivenPick, RivenRow, RivenStatDef, RivenState, RivenTable, RivenType, Weapon } from "./types";
 
 export const emptyRiven = (): RivenState => ({ positives: [], negative: null });
+
+/** Whether a riven stat can roll on this weapon: physical types need more than 25% of its main attack's
+ * damage; elements, Punch Through and spliced stats are positive-only; Zoom, Recoil and Ammo Maximum
+ * no longer roll on companion weapons. */
+export function rivenStatAllowed(s: RivenStatDef, weapon: Weapon, negative: boolean): boolean {
+  if (s.stat?.kind === "physical") {
+    const mode = weapon.modes.find((m) => m.headline !== false) ?? weapon.modes[0];
+    const comps = mode?.components ?? [];
+    const total = comps.reduce((a, c) => a + Object.values(c.damage).reduce((x, y) => x + y, 0), 0);
+    const of = (s.stat as { of?: string }).of ?? "";
+    const ofT = comps.reduce((a, c) => a + (c.damage[of] ?? 0), 0);
+    if (!(total > 0) || ofT / total <= 0.25) return false;
+  }
+  if (negative && (s.positiveOnly || s.spliced)) return false;
+  return !(s.vintageOnCompanion && weapon.slot === "companion");
+}
 
 export function rivenType(pool: ModPool): RivenType {
   switch (pool) {
