@@ -363,7 +363,13 @@ fn all_modifiers<'a>(r: &'a Resolved, build: &'a Build, mode: &'a AttackMode) ->
         .chain(build.buffs.iter())
         .filter(move |m| !(companion && m.aiming))
         .filter(move |m| (m.only_slots.is_empty() || m.only_slots.contains(&slot)) && !m.not_slots.contains(&slot))
-        .filter(move |m| m.mode_contains.as_deref().map_or(true, |s| mode.name.contains(s)))
+        // "Incarnon": attacks whose name contains it; "!Incarnon": the others.
+        .filter(move |m| {
+            m.mode_contains.as_deref().map_or(true, |s| match s.strip_prefix('!') {
+                Some(not) => !mode.name.contains(not),
+                None => mode.name.contains(s),
+            })
+        })
 }
 
 /// Rounds in one Incarnon charge (0 when unknown).
@@ -923,7 +929,19 @@ fn compute_mode_once(
     // second for the status duration); Heat procs refresh every stack, so they keep growing for the
     // fight; Gas keeps at most 10 clouds; Blast deals 30% per proc and, at 10 stacks within its fuse,
     // detonates for 300% per stack on the enemies around.
-    let fight = build.conditions.fight_s.max(0.0);
+    // An Incarnon form only fires until its gauge is empty, then the weapon reverts: its own procs
+    // stack for that long at most (Heat keeps refreshing only while it fires).
+    let gauge_s = match &mode.ammo_pool {
+        AmmoPool::Incarnon { rounds: Some(n), .. } if !endless && rate > 0.0 => Some(*n as f64 / ammo_cost / rate),
+        _ => None,
+    };
+    let fight = match gauge_s {
+        Some(g) if build.conditions.fight_s <= 0.0 || g < build.conditions.fight_s => {
+            approx.add(|| format!("Incarnon form fires for {g:.1} s per gauge: its status stacks build up over that time"));
+            g
+        }
+        _ => build.conditions.fight_s.max(0.0),
+    };
     let fuse = BLAST_FUSE_S * duration / STATUS_DURATION_S;
     let (mut status_dps, mut group_status, mut status_raw) = (0.0, 0.0, 0.0);
     let mut per_proc: BTreeMap<DamageType, f64> = BTreeMap::new();

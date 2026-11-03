@@ -526,7 +526,8 @@ pub struct Modifier {
     /// enables it, on top of the condition's own scaling.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger: Option<String>,
-    /// Only attack modes whose name contains this (Devastation Cascade: the charged blast).
+    /// Only attack modes whose name contains this (Devastation Cascade: the charged blast); with a
+    /// leading "!", only the others ("!Incarnon": the normal form).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode_contains: Option<String>,
 }

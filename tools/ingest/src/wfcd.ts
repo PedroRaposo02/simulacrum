@@ -344,9 +344,17 @@ function parseEvolutionText(e: ScrapedEvolution, text: string) {
     for (const sentence of merged) {
       // "+20% Multishot" inside a multishot-damage line is a separate stat.
       const r = parseEvolutionSentence(e.name, sentence, cond);
+      // "... for Incarnon Form" only applies to the Incarnon attacks.
+      if (r && /for Incarnon Form/i.test(sentence)) for (const m of r) m.modeContains = "Incarnon";
       if (r) modifiers.push(...r);
       else unparsed.push(sentence);
     }
+  }
+  // A stat given once for the Incarnon form and once without it (Elemental Balance: "+X per
+  // projectile", "+Y for Incarnon Form"): the other value is the normal form's.
+  for (const m of modifiers) {
+    if (m.modeContains) continue;
+    if (modifiers.some((o) => o.modeContains === "Incarnon" && JSON.stringify(o.stat) === JSON.stringify(m.stat))) m.modeContains = "!Incarnon";
   }
   // "Bonuses are added after mods as a flat value": crit/status chance become flat additions.
   if (e.notes.some((n) => /after mods as a flat value|added as a flat/i.test(n))) {
