@@ -305,6 +305,9 @@ export interface OptimizeResult {
   drain: number | null;
   rangeCost: number | null;
   belowAttackSpeedFloor: boolean;
+  progenitor?: string | null;
+  /** Not from a new search: the precomputed best build, or a result found earlier this session. */
+  source?: "precomputed" | "remembered";
 }
 
 export interface CapacityOptions { capacity: number; polarities: (string | null)[]; rivenDrain: number }

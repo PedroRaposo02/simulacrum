@@ -3,6 +3,7 @@ import { usePersistent } from "./persist";
 import { rivenModifiers } from "./riven";
 import { buildFromBest, cancelSearch, fmt, optimizeInWorker, pct, scenarioBuild, SLOT_COUNT, useStore } from "./store";
 import { Toggle } from "./Common";
+import { cachedResult, precomputedResult, rememberResult } from "./optimizerCache";
 import type { EditorBuild, Objective, OptimizeOptions, OptimizeResult, Weapon } from "./types";
 
 const OBJECTIVES: [Objective, string, string][] = [
@@ -43,7 +44,7 @@ export default function OptimizerControls({
   setComfort: (c: ComfortSettings) => void;
   onResult: (s: OptimizerState) => void;
 }) {
-  const { data, build, setBuild, scenario, search, setSearch } = useStore();
+  const { data, engine, best, build, setBuild, scenario, search, setSearch } = useStore();
   const busy = search?.label ?? null;
   // Each search gets a number; a newer one cancels the older, whose result is then ignored.
   const generation = useRef(0);
@@ -84,15 +85,31 @@ export default function OptimizerControls({
     ...extra,
   });
 
-  const run = async (label: string, extra: OptimizeOptions) => {
+  // `instant`: the precomputed best build may answer (not for grading, which compares search scores).
+  const run = async (label: string, extra: OptimizeOptions, instant = true) => {
+    const opts = options(extra);
+    const base = scenarioBuild(data!, scenario);
+    // Same weapon, scenario and options as an earlier search (or the precompute's): no new search.
+    const key = JSON.stringify([weapon.id, data!.version, base, scenario.target, opts]);
+    const known = cachedResult(key) ?? (instant ? precomputedResult(data!, engine!, best, weapon, scenario, opts) : undefined);
+    if (known) {
+      if (useStore.getState().search) {
+        cancelSearch();
+        setSearch(null);
+      }
+      generation.current++;
+      setError(null);
+      return { ...known, source: known.source ?? "remembered" };
+    }
     if (useStore.getState().search) cancelSearch();
     const mine = ++generation.current;
     setSearch({ label, started: Date.now() });
     setError(null);
-    const r = await optimizeInWorker(weapon.id, scenarioBuild(data!, scenario), scenario.target, options(extra));
+    const r = await optimizeInWorker(weapon.id, base, scenario.target, opts);
     if (mine !== generation.current) return null;
     setSearch(null);
     if (r.error?.code === "cancelled") return null;
+    if (r.ok) rememberResult(key, r.ok);
     if (!r.ok) {
       setError(r.error?.message ?? "optimizer failed");
       return null;
@@ -119,8 +136,8 @@ export default function OptimizerControls({
       setError("Add riven stats first.");
       return;
     }
-    const god = await run("grade", { riven: true });
-    const own = await run("grade", { fixedRiven: mine });
+    const god = await run("grade", { riven: true }, false);
+    const own = await run("grade", { fixedRiven: mine }, false);
     if (god && own) setGrade({ ratio: own.score / god.score, god: god.score, mine: own.score });
   };
 

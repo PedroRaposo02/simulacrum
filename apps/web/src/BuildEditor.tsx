@@ -471,7 +471,11 @@ function OptimizerPanel({ state, onUndo }: { state: OptimizerState; onUndo: () =
         <h3 className="font-semibold">{state.label}</h3>
         <span className="text-sm text-zinc-500">
           {result.mode} · {fmt(result.burstDps)} {result.mode === "Heavy Attack" ? "heavy DPS" : "burst DPS"} · {fmt(result.fireRate)} shots/s
-          {result.perCharge != null ? ` · ${fmt(result.perCharge)} per charge` : ""} · {result.evaluations.toLocaleString()} builds evaluated
+          {result.perCharge != null ? ` · ${fmt(result.perCharge)} per charge` : ""} · {result.source === "precomputed"
+            ? "precomputed best build (instant)"
+            : result.source === "remembered"
+              ? "found earlier this session (instant)"
+              : `${result.evaluations.toLocaleString()} builds evaluated`}
         </span>
         <button className="ml-auto text-sm text-indigo-600 hover:underline" onClick={onUndo}>
           Undo (restore previous build)
