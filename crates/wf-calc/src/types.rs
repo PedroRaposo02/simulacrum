@@ -49,6 +49,12 @@ pub struct Conditions {
     /// Set by the engine for companion weapons: their AI doesn't aim or reliably headshot.
     #[serde(skip)]
     pub companion: bool,
+    /// Set by the engine: hits per second and how long they keep coming (an Incarnon form's gauge,
+    /// else the fight), so on-hit stacks build up instead of starting full.
+    #[serde(skip)]
+    pub hits_per_s: Option<f64>,
+    #[serde(skip)]
+    pub stack_window_s: Option<f64>,
     /// Numbers only: skip explanations, notes and source names (the optimizer's hot path).
     #[serde(skip)]
     pub calc_only: bool,
@@ -77,6 +83,8 @@ impl Default for Conditions {
             target_crit_damage: 0.0,
             companion: false,
             calc_only: false,
+            hits_per_s: None,
+            stack_window_s: None,
         }
     }
 }
@@ -159,9 +167,13 @@ pub struct ComponentResult {
     /// Average crit chance in the fight: the arsenal value plus Enervate's average bonus and the
     /// Puncture stacks this weapon keeps on the target. Damage uses this.
     pub crit_chance: f64,
-    /// Crit chance as the arsenal shows it: mods, arcane and evolution stats only.
+    /// Crit chance as the arsenal shows it: effects that are always on (no on-hit, on-kill or other
+    /// conditional bonuses, no Enervate, no target status).
     #[serde(default)]
     pub arsenal_crit_chance: f64,
+    /// Crit multiplier as the arsenal shows it (always-on effects only).
+    #[serde(default)]
+    pub arsenal_crit_mult: f64,
     pub crit_mult: f64,
     pub status_chance: f64,
     pub explain: Explain,
@@ -198,6 +210,12 @@ pub struct ModeResult {
     /// Share of the time infinite ammo on headshots is active.
     #[serde(skip)]
     pub free_ammo: f64,
+    /// Hits per second (projectiles of the main hit, plus a charging beam's ticks).
+    #[serde(skip)]
+    pub hit_rate: f64,
+    /// Seconds an Incarnon form fires per gauge.
+    #[serde(skip)]
+    pub gauge_s: Option<f64>,
     pub viral_stacks: f64,
     pub corrosive_stacks: f64,
     /// Melee: modded attack speed (weapon base x (1 + bonus)) and range in meters.

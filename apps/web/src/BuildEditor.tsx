@@ -289,10 +289,12 @@ function StatSheet({ m }: { m: ModeResult }) {
               .sort((a, b) => b[1] - a[1])
               .map(([t, v]) => row(TYPE_LABEL[t] ?? t, fmt(v)))}
             {row("Total", fmt(total))}
-            {row("Critical chance", `${(c.arsenalCritChance * 100).toFixed(1)}%`)}
+            {row("Critical chance (arsenal)", `${(c.arsenalCritChance * 100).toFixed(1)}%`, "Always-on effects only, as the arsenal shows it.")}
             {Math.abs(c.critChance - c.arsenalCritChance) > 0.0005 &&
-              row("Average in the fight", `${(c.critChance * 100).toFixed(1)}%`, "Arsenal value plus Enervate's average bonus and the Puncture stacks this weapon keeps on the target (+5% each). Damage uses this average.")}
-            {row("Critical multiplier", `${c.critMult.toFixed(2)}×`)}
+              row("· in the fight", `${(c.critChance * 100).toFixed(1)}%`, "Average while fighting: conditional bonuses (on hit, on kill, weak points) at their uptime or built-up stacks, Enervate's average and the Puncture stacks this weapon keeps on the target (+5% each). Damage uses this.")}
+            {row("Critical multiplier (arsenal)", `${c.arsenalCritMult.toFixed(2)}×`, "Always-on effects only, as the arsenal shows it.")}
+            {Math.abs(c.critMult - c.arsenalCritMult) > 0.005 &&
+              row("· in the fight", `${c.critMult.toFixed(2)}×`, "Average while fighting: conditional bonuses and built-up stacks, Cold on the target. Damage uses this.")}
             {row("Status chance", `${(c.statusChance * 100).toFixed(1)}%`)}
             {row("Projectiles (multishot)", c.projectiles.toFixed(2))}
           </div>

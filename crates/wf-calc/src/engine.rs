@@ -103,6 +103,8 @@ struct Pools {
     sources: Vec<(String, Stat, f64)>,
     /// Per-status-type damage sources (Galvanized Shot...), shown with the GunCO line.
     gunco_sources: Vec<(String, f64)>,
+    /// Crit pieces from always-on effects only, for the arsenal values.
+    always_crit: [f64; 6],
     /// Numbers only: no source names (Conditions::calc_only).
     quiet: bool,
 }
@@ -128,6 +130,20 @@ impl Pools {
                 self.gunco_sources.push((m.source.clone(), v));
             }
             return;
+        }
+        if m.condition == Condition::Always && m.trigger.is_none() && m.per.is_none() {
+            let slot = match m.stat {
+                Stat::CritChance => Some(0),
+                Stat::CritChanceBase => Some(1),
+                Stat::CritChanceFlat => Some(2),
+                Stat::CritDamage => Some(3),
+                Stat::CritMultBase => Some(4),
+                Stat::CritDamageFlat => Some(5),
+                _ => None,
+            };
+            if let Some(i) = slot {
+                self.always_crit[i] += v;
+            }
         }
         match m.stat {
             Stat::BaseDamage => self.base_damage += v,
@@ -282,6 +298,14 @@ fn condition_scale(m: &Modifier, c: &Conditions) -> f64 {
         Condition::HeadshotShare => c.headshot_share.clamp(0.0, 1.0),
         Condition::OnReload if c.no_reload => 0.0,
         Condition::OnReload => c.conditional_uptime.clamp(0.0, 1.0) * stacks * c.reload_share.unwrap_or(1.0),
+        // On-hit stacks build up from the hit rate over the time the hits keep coming.
+        Condition::OnHit if stacks > 1.0 => {
+            let built = match (c.hits_per_s, c.stack_window_s) {
+                (Some(h), Some(w)) if h > 0.0 && w > 0.0 && w.is_finite() => average_stacks(h, stacks, w),
+                _ => stacks,
+            };
+            c.conditional_uptime.clamp(0.0, 1.0) * built
+        }
         _ => c.conditional_uptime.clamp(0.0, 1.0) * stacks,
     };
     let per = match m.per {
@@ -291,6 +315,16 @@ fn condition_scale(m: &Modifier, c: &Conditions) -> f64 {
         Some(PerCount::Shields200) => (c.shields.max(0.0) / 200.0).floor().min(stacks),
     };
     cond * per
+}
+
+/// Average stacks over `window` seconds when each hit adds one, up to `max`, starting from none.
+pub(crate) fn average_stacks(hits_per_s: f64, max: f64, window: f64) -> f64 {
+    let reached = hits_per_s * window;
+    if reached <= max {
+        reached / 2.0
+    } else {
+        max - max * max / (2.0 * reached)
+    }
 }
 
 fn filter_ok(f: ComponentFilter, comp: &HitComponent) -> bool {
@@ -426,6 +460,7 @@ struct Partial {
     projectiles: f64,
     crit_chance: f64,
     arsenal_crit_chance: f64,
+    arsenal_crit_mult: f64,
     crit_mult: f64,
     status_chance: f64,
     crit_hs: f64,
@@ -514,7 +549,11 @@ fn compute_mode(r: &Resolved, build: &Build, target: &Target, mode: &AttackMode,
         Vec::new()
     };
     let status_types = auto_types.then(|| outsourced.len() as f64 + own_types.iter().map(|(_, u)| u).sum::<f64>());
-    if cc < 1e-6 && cold_cd < 1e-6 && reload_share.is_none() && status_types.is_none_or(|n| n - (outsourced.len() as f64) < 1e-6) {
+    // On-hit stacks (Devastation Cascade) build up from the first pass's hit rate.
+    let stacking = all_modifiers(r, build, mode).any(|m| m.condition == Condition::OnHit && m.max_stacks > 1);
+    let window = first.gauge_s.map_or(build.conditions.fight_s, |g| if build.conditions.fight_s > 0.0 { g.min(build.conditions.fight_s) } else { g });
+    let stack_basis = (stacking && window > 0.0 && first.hit_rate > 0.0).then_some((first.hit_rate, window));
+    if stack_basis.is_none() && cc < 1e-6 && cold_cd < 1e-6 && reload_share.is_none() && status_types.is_none_or(|n| n - (outsourced.len() as f64) < 1e-6) {
         return Ok(first);
     }
     let mut b = build.clone();
@@ -524,9 +563,16 @@ fn compute_mode(r: &Resolved, build: &Build, target: &Target, mode: &AttackMode,
     if let Some(n) = status_types {
         b.conditions.status_types = n;
     }
+    if let Some((h, w)) = stack_basis {
+        b.conditions.hits_per_s = Some(h);
+        b.conditions.stack_window_s = Some(w);
+    }
     let mut res = compute_mode_stacked(r, &b, target, mode, index)?;
     if build.conditions.calc_only {
         return Ok(res);
+    }
+    if let Some((h, w)) = stack_basis {
+        res.approximations.push(format!("On-hit stacks build up from {h:.1} hits/s over {w:.1} s (average, not full stacks)"));
     }
     if let Some(n) = status_types {
         let mut parts: Vec<String> = outsourced.iter().map(|t| format!("{t:?} (outsourced)")).collect();
@@ -732,6 +778,7 @@ fn compute_mode_once(
     }
 
     let magazine = mode.magazine.map(|m| ((m as f64) * (1.0 + mode_pools.magazine)).round().max(1.0) as u32);
+    let first_projectiles = partials.first().map_or(1.0, |p| p.projectiles);
     // Attacks per magazine: an attack may use several rounds (Ballistica Prime's 4 bolts, 4 rounds).
     // A beam fired while charging (Onos): its ticks use rounds and deal damage during each charge.
     let beam = mode
@@ -951,6 +998,7 @@ fn compute_mode_once(
             projectiles: p.projectiles,
             crit_chance: p.crit_chance,
             arsenal_crit_chance: p.arsenal_crit_chance,
+            arsenal_crit_mult: p.arsenal_crit_mult,
             crit_mult: p.crit_mult,
             status_chance: p.status_chance,
             explain: ex,
@@ -1205,6 +1253,8 @@ fn compute_mode_once(
         procs_per_s: procs,
         status_duration_s: duration,
         free_ammo,
+        hit_rate: rate * first_projectiles + beam.as_ref().map_or(0.0, |b| b.fire_rate * b.components.first().map_or(1.0, |c| c.projectiles)),
+        gauge_s,
         viral_stacks: viral_n,
         corrosive_stacks: corr_n,
         attack_speed: r.weapon.melee.as_ref().map(|m| m.attack_speed * fr_mult),
@@ -1581,7 +1631,8 @@ fn component(
         damage,
         projectiles,
         crit_chance: cc,
-        arsenal_crit_chance: modded_cc,
+        arsenal_crit_chance: ((comp.crit_chance + p.always_crit[1]) * (1.0 + p.always_crit[0]) + p.always_crit[2]).max(0.0),
+        arsenal_crit_mult: ((comp.crit_mult + p.always_crit[4]) * (1.0 + p.always_crit[3]) + p.always_crit[5]).max(1.0),
         crit_mult: cd,
         status_chance: sc,
         crit_hs,

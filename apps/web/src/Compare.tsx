@@ -223,7 +223,8 @@ export default function Compare() {
             {section("Stats")}
             {numRow("Critical chance", (m) => m.components[0]?.arsenalCritChance, (v) => `${(v * 100).toFixed(1)}%`)}
             {numRow("· average in the fight", (m) => m.components[0]?.critChance, (v) => `${(v * 100).toFixed(1)}%`)}
-            {numRow("Critical multiplier", (m) => m.components[0]?.critMult, (v) => `${v.toFixed(2)}×`)}
+            {numRow("Critical multiplier", (m) => m.components[0]?.arsenalCritMult, (v) => `${v.toFixed(2)}×`)}
+            {numRow("· in the fight", (m) => m.components[0]?.critMult, (v) => `${v.toFixed(2)}×`)}
             {numRow("Status chance", (m) => m.components[0]?.statusChance, (v) => `${(v * 100).toFixed(1)}%`)}
             {numRow("Multishot", (m) => m.components[0]?.projectiles, (v) => v.toFixed(2))}
             {numRow("Damage per projectile", (m) => m.components[0] && Object.values(m.components[0].damage).reduce((a, b) => a + b, 0))}

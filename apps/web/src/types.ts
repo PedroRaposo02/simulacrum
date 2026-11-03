@@ -220,8 +220,10 @@ export interface ComponentResult {
   projectiles: number;
   /** Average in the fight: arsenal value + Enervate's average bonus + Puncture on the target. */
   critChance: number;
-  /** As the arsenal shows it. */
+  /** As the arsenal shows it: always-on effects only. */
   arsenalCritChance: number;
+  /** As the arsenal shows it: always-on effects only. */
+  arsenalCritMult: number;
   critMult: number;
   statusChance: number;
 }

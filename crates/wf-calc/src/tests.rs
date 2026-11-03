@@ -1079,3 +1079,25 @@ fn status_types_count_outsourced_and_own_procs() {
     let both = Target { viral_stacks: Some(10.0), corrosive_stacks: Some(10.0), ..Default::default() };
     assert!(close(types(&b, &both), own + 2.0), "Viral and Corrosive outsourced");
 }
+
+/// On-hit stacks build up from zero: half the stacks reached on average until the cap, then most of it.
+#[test]
+fn on_hit_stacks_build_up() {
+    use crate::engine::average_stacks;
+    // 2 hits/s for 10 s, cap 50: never reaches it, average 10.
+    assert!(close(average_stacks(2.0, 50.0, 10.0), 10.0));
+    // 10 hits/s for 10 s, cap 50: full after 5 s, average 50 - 50^2 / 200 = 37.5.
+    assert!(close(average_stacks(10.0, 50.0, 10.0), 37.5));
+}
+
+/// The arsenal crit values leave out conditional bonuses; the in-fight value includes them.
+#[test]
+fn arsenal_crit_leaves_out_conditional_bonuses() {
+    use wf_data::{Condition, Stat};
+    let d = fixture();
+    let b = with_mod(Stat::CritChance, 1.0, Condition::OnHeadshot, None);
+    let c = &compute(&d, &b, &Target::default()).unwrap().modes[0].components[0];
+    assert!(close(c.arsenal_crit_chance, 0.22), "arsenal: base only, {}", c.arsenal_crit_chance);
+    assert!(close(c.crit_chance, 0.44), "in the fight: +100% on headshot at full uptime, {}", c.crit_chance);
+    assert!(close(c.arsenal_crit_mult, 2.2));
+}
