@@ -170,6 +170,7 @@ wfcalc optimize "Nikana Prime" --heavy
 wfcalc optimize Verglas --objective group --fight-s 60 --fixed-riven SDMG,CC
 wfcalc optimize Laetum --capacity 60 --polarities madurai,madurai,-,-,-,-,-,-,-
 wfcalc optimize --all --shard 0/16 --out part-0.json
+wfcalc optimize --all --weapons Laetum,Onos --out part.json   # just these weapons
 wfcalc sweep
 wfcalc golden
 ```

@@ -119,6 +119,10 @@ enum Cmd {
         shard: Option<String>,
         #[arg(long, default_value = "data/best-builds.json")]
         out: PathBuf,
+        /// With --all: only these weapons (names or ids, comma separated), e.g. to refresh a few
+        /// weapons and merge them into the full file with tools/merge-best-builds.mjs --replace.
+        #[arg(long, value_delimiter = ',')]
+        weapons: Vec<String>,
         /// With --all: log file, one line per weapon and target (default: --out with .log).
         #[arg(long)]
         log: Option<PathBuf>,
@@ -461,6 +465,7 @@ fn run() -> Result<bool, String> {
             evolutions,
             shard,
             log,
+            weapons,
         } => {
             let data = load(&cli.data)?;
             if !all {
@@ -534,8 +539,23 @@ fn run() -> Result<bool, String> {
                 }
                 None => (0, 1),
             };
+            let wanted: Vec<usize> = if weapons.is_empty() {
+                (0..data.weapons.len()).collect()
+            } else {
+                let mut idx = Vec::new();
+                for name in &weapons {
+                    let name = name.trim();
+                    let i = data
+                        .weapons
+                        .iter()
+                        .position(|w| w.name.eq_ignore_ascii_case(name) || w.id == name)
+                        .ok_or(format!("no weapon '{name}'"))?;
+                    idx.push(i);
+                }
+                idx
+            };
             let jobs: Vec<(usize, usize)> = (0..targets.len())
-                .flat_map(|t| (0..data.weapons.len()).map(move |w| (t, w)))
+                .flat_map(|t| wanted.iter().map(move |&w| (t, w)))
                 .enumerate()
                 .filter(|(k, _)| k % shard_n == shard_i)
                 .map(|(_, j)| j)
