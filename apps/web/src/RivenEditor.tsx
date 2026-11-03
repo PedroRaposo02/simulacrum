@@ -6,8 +6,9 @@ import type { RivenRanking, RivenRow, RivenState, Weapon } from "./types";
 const SHOWN = 30;
 
 // Community riven grading: deviation of a roll from the centre of its range (-10%..+10%).
+// S: a perfect roll (within 0.1% of the maximum).
 const GRADES: [number, string][] = [
-  [9.5, "A+"], [7.5, "A"], [5.5, "A-"], [3.5, "B+"], [1.5, "B"], [-1.5, "C"],
+  [9.9, "S"], [9.5, "A+"], [7.5, "A"], [5.5, "A-"], [3.5, "B+"], [1.5, "B"], [-1.5, "C"],
   [-3.5, "C-"], [-5.5, "D+"], [-7.5, "D"], [-9.5, "D-"],
 ];
 /** Roll 0..1 across rollMin..rollMax -> % deviation from the centre value. */
@@ -19,6 +20,7 @@ function grade(dev: number): string {
   return GRADES.find(([t]) => dev >= t - 1e-9)?.[1] ?? "F";
 }
 function gradeClass(g: string): string {
+  if (g === "S") return "bg-fuchsia-600 text-white";
   if (g.startsWith("A")) return "bg-emerald-600 text-white";
   if (g.startsWith("B")) return "bg-sky-600 text-white";
   if (g.startsWith("C")) return "bg-zinc-500 text-white";
@@ -30,7 +32,7 @@ function GradeBadge({ dev }: { dev: number }) {
   return (
     <span
       className={`inline-block w-7 rounded text-center text-[10px] font-bold ${gradeClass(g)}`}
-      title={`${dev >= 0 ? "+" : ""}${dev.toFixed(1)}% from the centre of the roll range (A+ ≥ 9.5%, C ≈ centre, F ≤ -9.5%)`}
+      title={`${dev >= 0 ? "+" : ""}${dev.toFixed(1)}% from the centre of the roll range (S = perfect roll, A+ ≥ 9.5%, C ≈ centre, F ≤ -9.5%)`}
     >
       {g}
     </span>

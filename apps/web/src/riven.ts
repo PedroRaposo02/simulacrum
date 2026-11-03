@@ -72,7 +72,8 @@ export function rivenFromPicks(table: RivenTable, picks: RivenPick[], negative: 
     return Math.min(1, Math.max(0, (p.value - r[0]) / (r[1] - r[0] || 1)));
   };
   state.positives = picks.map((p) => ({ key: p.key, roll: toRoll(p, false) }));
-  if (negative) state.negative = { key: negative.key, roll: toRoll(negative, true) };
+  // The optimizer's negatives are harmless stats: show them at their smallest penalty (best roll).
+  if (negative) state.negative = { key: negative.key, roll: 1 };
   return state;
 }
 

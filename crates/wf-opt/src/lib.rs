@@ -1398,7 +1398,8 @@ fn optimize_mode<'a>(
                 let neg = RivenPick {
                     key: neg_def.key.clone(),
                     label: neg_def.label.clone(),
-                    value: -neg_def.base[&ty] * table.disposition * layout.negative_mult * roll,
+                    // The best riven also has the smallest penalty: the negative's roll mirrors the positives'.
+                    value: -neg_def.base[&ty] * table.disposition * layout.negative_mult * (table.roll_min + table.roll_max - roll),
                 };
                 if best_riven.as_ref().is_none_or(|(b, _, _)| v > b.score) {
                     best_riven = Some((Structure { score: v, mods: m, ..st.clone() }, r, neg));
