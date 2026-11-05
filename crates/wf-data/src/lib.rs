@@ -453,6 +453,8 @@ pub enum Stat {
     /// Chance per headshot for a few seconds of infinite ammo (Skull Shots, Brain Storm); the duration in
     /// seconds is the modifier's `threshold`.
     InfiniteAmmoOnHeadshot,
+    /// Chance for a critical hit to go one tier higher (Vigilante set).
+    CritEnhanceChance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -530,6 +532,10 @@ pub struct Modifier {
     /// leading "!", only the others ("!Incarnon": the normal form).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode_contains: Option<String>,
+    /// An external element that doesn't fuse (Fired Up's Heat): added after the weapon's elements
+    /// have combined, as its own damage type.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub standalone: bool,
 }
 
 fn one() -> u8 { 1 }
@@ -588,6 +594,23 @@ pub struct Mod {
     pub rarity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Everything the mod does at max rank, as the game words it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<String>,
+    /// The set this mod belongs to (id in GameData::mod_sets).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set: Option<String>,
+}
+
+/// A mod set: its bonus grows with the pieces equipped (Warframe and weapon pieces together).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModSet {
+    pub id: String,
+    pub name: String,
+    pub size: u8,
+    /// Bonus text with 1, 2, ... `size` pieces equipped.
+    pub bonuses: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -790,6 +813,8 @@ pub struct GameData {
     pub buffs: Vec<BuffDef>,
     #[serde(default)]
     pub rules: OptimizerRules,
+    #[serde(default)]
+    pub mod_sets: Vec<ModSet>,
 }
 
 impl GameData {

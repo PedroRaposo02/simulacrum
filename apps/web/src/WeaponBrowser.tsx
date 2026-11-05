@@ -260,7 +260,11 @@ export default function WeaponBrowser() {
                                   +{(p.value * 100).toFixed(1)}% {p.label}
                                 </div>
                               ))}
-                              {e.rivenNegative && <div className="text-zinc-500">{e.rivenNegative.label} (harmless −)</div>}
+                              {e.rivenNegative && (
+                                <div className="text-red-600 dark:text-red-400">
+                                  {(e.rivenNegative.value * 100).toFixed(1)}% {e.rivenNegative.label}
+                                </div>
+                              )}
                             </div>
                           )}
                           <button

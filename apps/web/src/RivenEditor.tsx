@@ -1,34 +1,12 @@
-import { formatRivenValue, layoutOf, rivenStatAllowed, rivenType, rowValue, statRange } from "./riven";
+import { formatRivenValue, gradeClass, layoutOf, rivenStatAllowed, rivenType, rollDeviation, rollGrade, rowValue, statRange } from "./riven";
 import { useState } from "react";
 import { fmt, pct, placeRiven, rankRivensInWorker, scenarioBuild, useStore } from "./store";
 import type { RivenRanking, RivenRow, RivenState, Weapon } from "./types";
 
 const SHOWN = 30;
 
-// Community riven grading: deviation of a roll from the centre of its range (-10%..+10%).
-// S: a perfect roll (within 0.1% of the maximum).
-const GRADES: [number, string][] = [
-  [9.9, "S"], [9.5, "A+"], [7.5, "A"], [5.5, "A-"], [3.5, "B+"], [1.5, "B"], [-1.5, "C"],
-  [-3.5, "C-"], [-5.5, "D+"], [-7.5, "D"], [-9.5, "D-"],
-];
-/** Roll 0..1 across rollMin..rollMax -> % deviation from the centre value. */
-function deviation(roll: number, min: number, max: number): number {
-  const centre = (min + max) / 2;
-  return ((min + roll * (max - min)) / centre - 1) * 100;
-}
-function grade(dev: number): string {
-  return GRADES.find(([t]) => dev >= t - 1e-9)?.[1] ?? "F";
-}
-function gradeClass(g: string): string {
-  if (g === "S") return "bg-fuchsia-600 text-white";
-  if (g.startsWith("A")) return "bg-emerald-600 text-white";
-  if (g.startsWith("B")) return "bg-sky-600 text-white";
-  if (g.startsWith("C")) return "bg-zinc-500 text-white";
-  if (g.startsWith("D")) return "bg-amber-600 text-white";
-  return "bg-red-700 text-white";
-}
 function GradeBadge({ dev }: { dev: number }) {
-  const g = grade(dev);
+  const g = rollGrade(dev);
   return (
     <span
       className={`inline-block w-7 rounded text-center text-[10px] font-bold ${gradeClass(g)}`}
@@ -73,7 +51,7 @@ function RollRanking({ weapon, onUse }: { weapon: Weapon; onUse: (keys: string[]
         </button>
       </div>
       <p className="text-[11px] text-zinc-500">
-        Every combination of 2–3 positive stats (max rolls, harmless negative), scored with this weapon&apos;s best riven build for the current scenario.
+        Every combination of 2–3 positive stats (max rolls), scored with this weapon&apos;s best riven build for the current scenario.
         Rolls near 100% are worth keeping; anything far below is a reroll.
       </p>
       {error && <p className="text-xs text-red-600">{error}</p>}
@@ -159,7 +137,6 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
                 .map((s) => (
                   <option key={s.key} value={s.key}>
                     {s.label}
-                    {negative && !s.stat ? " (harmless)" : !s.stat ? " (no modelled effect)" : ""}
                   </option>
                 ))}
             </optgroup>
@@ -180,7 +157,7 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
           </span>
           {r && range ? (
             <span className="self-center">
-              <GradeBadge dev={deviation(r.roll, table.rollMin, table.rollMax)} />
+              <GradeBadge dev={rollDeviation(r.roll, table.rollMin, table.rollMax)} />
             </span>
           ) : null}
         </div>
@@ -219,7 +196,7 @@ export default function RivenEditor({ weapon }: { weapon: Weapon }) {
           {avgRoll != null && layout && (
             <>
               <span>· roll grade</span>
-              <GradeBadge dev={deviation(avgRoll, table.rollMin, table.rollMax)} />
+              <GradeBadge dev={rollDeviation(avgRoll, table.rollMin, table.rollMax)} />
             </>
           )}
         </span>

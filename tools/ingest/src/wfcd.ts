@@ -386,6 +386,28 @@ function exclusiveGroup(name: string, pool: string): string | undefined {
   return `${pool}:${stem}`;
 }
 
+// Game text without markup: <DT_HEAT_COLOR> tags dropped, "\n" as line breaks.
+const gameText = (t: string) =>
+  String(t ?? "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\\n/g, "\n")
+    .split("\n")
+    .map((x) => x.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+// Mod sets: bonus text per number of pieces equipped. The weapon-damage bonuses that grow linearly per
+// piece are also given to each weapon piece as its share (so pieces count by themselves).
+const modSetItems = (load("Mods.json") as any[]).filter((m) => m.numUpgradesInSet);
+function setPieceModifiers(set: any, setName: string): Modifier[] {
+  const one = gameText(set.stats?.[0] ?? "").join(" ");
+  const source = `${setName} set (per piece)`;
+  const enhance = one.match(/(\d+(?:\.\d+)?)% chance to enhance Critical Hits/i);
+  if (enhance) return [{ source, stat: { kind: "critEnhanceChance" }, value: +enhance[1] / 100 } as Modifier];
+  const perCombo = one.match(/(\d+(?:\.\d+)?)% Melee Critical Chance per Combo Multiplier/i);
+  if (perCombo) return [{ source, stat: { kind: "critChance" }, value: +perCombo[1] / 100, per: "comboMultiplier" } as Modifier];
+  return [];
+}
+
 function buildMods() {
   const all = (load("Mods.json") as any[]).filter((m) => POOLS[m.type] && (m.levelStats?.length || /Enables Tennokai/i.test(m.description ?? "")));
   // Datamined, unreleased mods (e.g. "Soaring Truth"): no wiki page and no drop source.
@@ -415,12 +437,16 @@ function buildMods() {
     // Discipline's Merit: a Tennokai every N melee hits instead of a 15% chance per hit.
     const every = (desc + " " + lines.join(" ")).match(/every (?:<[^>]+>)?(\d+) melee hits/i);
     const tennokaiEvery = every ? +every[1] : undefined;
+    const set = m.modSet ? modSetItems.find((x) => x.uniqueName === m.modSet) : undefined;
+    if (set) modifiers.push(...setPieceModifiers(set, setDisplayName(set)));
     return {
       id: m.uniqueName, name: m.name, pool, compat, polarity: m.polarity ?? "", baseDrain: m.baseDrain ?? 0,
       maxRank: m.fusionLimit ?? 0, isExilus: !!(m.isUtility || m.isExilus), exclusiveGroup: exclusiveGroup(m.name, pool),
       modifiers, ...(requiresTrigger ? { requiresTrigger } : {}), ...(locksFireRate ? { locksFireRate } : {}), ...(enablesTennokai ? { enablesTennokai } : {}), ...(tennokaiEvery ? { tennokaiEvery } : {}), unparsed,
       ...(m.rarity ? { rarity: m.rarity } : {}),
       ...(m.imageName ? { image: `https://cdn.warframestat.us/img/${m.imageName}` } : {}),
+      effects: lines.flatMap(gameText),
+      ...(m.modSet ? { set: m.modSet } : {}),
     };
   });
   // Same name can appear several times (beginner, PvP variants); keep the full version.
@@ -767,13 +793,25 @@ if (existsSync(gunCoSheet)) {
   gunCoReport = { rows: rows.length, matched: matches.length, components: applied, unmatched: unmatched.map((r) => `${r.name} (${r.mode}, ${r.factor}) [${r.edition}]`) };
   console.log(`GunCO sheet: ${rows.length} rows, ${matches.length} matched (${applied} attack components), ${unmatched.length} unmatched`);
 }
+// A set's name: the first word its pieces share ("Vigilante", "Carnis", "Amar's").
+function setDisplayName(set: any): string {
+  const names = (load("Mods.json") as any[]).filter((m) => m.modSet === set.uniqueName).map((m) => String(m.name));
+  const first = names[0]?.split(" ")[0];
+  return first && names.every((n) => n.startsWith(first)) ? first : String(set.name).replace(/setmod$/i, "");
+}
+const modSets = modSetItems.map((set) => ({
+  id: set.uniqueName,
+  name: setDisplayName(set),
+  size: set.numUpgradesInSet,
+  bonuses: (set.stats ?? []).map((t: string) => gameText(t).join(" ")),
+}));
 const mods = buildMods();
 const arcanes = buildArcanes();
 const enemies = override("enemies.json").enemies;
 const { _note: _rivenNote, source: _rivenSource, readOn: _rivenReadOn, ...riven } = override("riven.json");
 const buffs = override("buffs.json").buffs;
 const { _note: _rulesNote, ...rules } = override("optimizer-rules.json");
-const body = { weapons, mods, arcanes, enemies, riven, buffs, rules };
+const body = { weapons, mods, arcanes, enemies, riven, buffs, rules, modSets };
 const hash = createHash("sha256").update(JSON.stringify(body)).digest("hex").slice(0, 12);
 const gamedata = {
   version: hash, generatedAt: new Date().toISOString(),

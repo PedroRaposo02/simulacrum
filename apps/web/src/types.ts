@@ -17,6 +17,8 @@ export interface Modifier {
   trigger?: string;
   modeContains?: string;
   appliesTo?: string;
+  /** External element that doesn't fuse (Fired Up). */
+  standalone?: boolean;
 }
 
 export interface Mod {
@@ -36,6 +38,18 @@ export interface Mod {
   unparsed?: string[];
   rarity?: string;
   image?: string;
+  /** Everything the mod does at max rank, as the game words it. */
+  effects?: string[];
+  /** Id of its set in GameData.modSets. */
+  set?: string;
+}
+
+/** A mod set: bonus text with 1, 2, ... size pieces equipped. */
+export interface ModSet {
+  id: string;
+  name: string;
+  size: number;
+  bonuses: string[];
 }
 
 export type MeleeRole = "light" | "heavy" | "tennokai" | "other";
@@ -148,6 +162,7 @@ export interface GameData {
   enemies: EnemyProfile[];
   riven?: RivenTable;
   buffs: BuffDef[];
+  modSets?: ModSet[];
 }
 
 export interface Conditions {

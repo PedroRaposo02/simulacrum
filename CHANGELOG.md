@@ -2,6 +2,13 @@
 
 Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the version lives in `Cargo.toml` (workspace) and the `package.json` files, and each release is tagged `v<version>`.
 
+## Unreleased
+
+- **Mods show everything they do**: every mod keeps its full in-game text at max rank (shown on its card, in the mod picker and in the new details view) and its set. Set bonuses are listed with the pieces equipped; the weapon-damage ones are calculated per weapon piece: Vigilante (+5% chance per piece to enhance a critical hit by one tier) and Gladiator (+10% melee crit chance per combo multiplier per piece).
+- **Details view**: the ⤢ button on a mod, riven or arcane card (or a right-click) opens it enlarged: art, full text, drain, set progress and the DPS it adds. For a riven: each stat on its roll range with its grade, and an overall grade.
+- **External elements that don't fuse**: Fired Up's Heat is added after the weapon's elements have combined, as its own Heat, instead of fusing (e.g. with Verglas's innate Cold into Blast). Modifiers can be marked as not fusing (`standalone`).
+- **Riven labels**: negatives show just the stat and its value (no "harmless" notes).
+
 ## 0.7.0-beta.3 — 2026-11-03
 
 - **Faction negatives on Infested**: when a riven's best negative is a faction damage stat, it's -Infested (the easiest content), or -Grineer / -Corpus when fighting Infested.

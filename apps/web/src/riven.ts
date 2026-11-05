@@ -2,6 +2,29 @@ import type { GameData, Modifier, ModPool, RivenLayout, RivenPick, RivenRow, Riv
 
 export const emptyRiven = (): RivenState => ({ positives: [], negative: null });
 
+// Community riven grading: deviation of a roll from the centre of its range (-10%..+10%).
+// S: a perfect roll (within 0.1% of the maximum).
+const GRADES: [number, string][] = [
+  [9.9, "S"], [9.5, "A+"], [7.5, "A"], [5.5, "A-"], [3.5, "B+"], [1.5, "B"], [-1.5, "C"],
+  [-3.5, "C-"], [-5.5, "D+"], [-7.5, "D"], [-9.5, "D-"],
+];
+/** Roll 0..1 across rollMin..rollMax -> % deviation from the centre value. */
+export function rollDeviation(roll: number, min: number, max: number): number {
+  const centre = (min + max) / 2;
+  return ((min + roll * (max - min)) / centre - 1) * 100;
+}
+export function rollGrade(dev: number): string {
+  return GRADES.find(([t]) => dev >= t - 1e-9)?.[1] ?? "F";
+}
+export function gradeClass(g: string): string {
+  if (g === "S") return "bg-fuchsia-600 text-white";
+  if (g.startsWith("A")) return "bg-emerald-600 text-white";
+  if (g.startsWith("B")) return "bg-sky-600 text-white";
+  if (g.startsWith("C")) return "bg-zinc-500 text-white";
+  if (g.startsWith("D")) return "bg-amber-600 text-white";
+  return "bg-red-700 text-white";
+}
+
 /** Whether a riven stat can roll on this weapon: physical types need more than 25% of its main attack's
  * damage; elements, Punch Through and spliced stats are positive-only; Zoom, Recoil and Ammo Maximum
  * no longer roll on companion weapons. */
@@ -89,7 +112,7 @@ export function rivenFromPicks(table: RivenTable, picks: RivenPick[], negative: 
     return Math.min(1, Math.max(0, (p.value - r[0]) / (r[1] - r[0] || 1)));
   };
   state.positives = picks.map((p) => ({ key: p.key, roll: toRoll(p, false) }));
-  // The optimizer's negatives are harmless stats: show them at their smallest penalty (best roll).
+  // The best riven's negative is at its smallest penalty (best roll).
   if (negative) state.negative = { key: negative.key, roll: 1 };
   return state;
 }

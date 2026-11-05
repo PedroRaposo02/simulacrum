@@ -233,6 +233,7 @@ fn fixed_riven_grades_below_or_at_god_roll() {
         not_slots: vec![],
         trigger: None,
         mode_contains: None,
+        standalone: false,
     }];
     let graded = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { fixed_riven: weak, ..Default::default() }).unwrap();
     assert!(graded.burst_dps < god.burst_dps);

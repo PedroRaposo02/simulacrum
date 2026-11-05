@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { usePersistent } from "./persist";
-import { formatRivenValue, layoutOf, rivenType, rowValue } from "./riven";
+import { formatRivenValue, gradeClass, layoutOf, rivenType, rollDeviation, rollGrade, rowValue, statRange } from "./riven";
 import { RIVEN_SLOT, SLOT_COUNT, useStore } from "./store";
 import { planCapacity, type SlotPlan } from "./capacity";
 import type { Arcane, EditorBuild, Mod, Modifier, Weapon } from "./types";
@@ -27,6 +27,7 @@ const STAT_LABEL: Record<string, string> = {
   statusDamage: "Status Damage",
   ammoEfficiency: "Ammo Efficiency",
   headshotCritChance: "Weak Point Critical Chance",
+  critEnhanceChance: "Chance to Enhance Critical Hits",
   heavyEfficiency: "Heavy Attack Efficiency",
 };
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -82,11 +83,17 @@ export function arcaneLines(a: Arcane, melee = false): string[] {
   return lines;
 }
 
-export function modSummary(m: Mod, melee = false): string {
+/** What a mod does at max rank: the game's own text when known, else its stats. */
+export function modLines(m: Mod, melee = false): string[] {
+  if (m.effects?.length) return m.effects;
   const parts = m.modifiers.map((x) => statLine(x, melee));
   if (m.locksFireRate) parts.push("Fire rate locked");
   if (m.enablesTennokai) parts.push("Enables Tennokai");
-  return parts.join(", ") || "No modelled effect";
+  return parts;
+}
+
+export function modSummary(m: Mod, melee = false): string {
+  return modLines(m, melee).join(" · ");
 }
 
 export const modDrain = (m: Mod) => Math.max(0, m.baseDrain + m.maxRank);
@@ -156,9 +163,36 @@ interface CardProps {
   pips?: number;
   label: string;
   onClick: () => void;
+  /** Opens the enlarged view (also on right-click). */
+  onDetails?: () => void;
 }
 
-function Card({ frame, title, lines, image, corner, badge, share, shareTitle, pips, label, onClick }: CardProps) {
+function Card(props: CardProps) {
+  const { onDetails, label, title } = props;
+  if (!onDetails) return <CardFace {...props} />;
+  return (
+    <div
+      className="relative"
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onDetails();
+      }}
+    >
+      <CardFace {...props} />
+      <button
+        type="button"
+        onClick={onDetails}
+        aria-label={`${label}: ${title}, details`}
+        title="Details (or right-click the card)"
+        className="absolute bottom-1.5 right-1.5 z-10 grid h-5 w-5 place-items-center rounded-full bg-black/60 text-[11px] text-white hover:bg-black/80"
+      >
+        ⤢
+      </button>
+    </div>
+  );
+}
+
+function CardFace({ frame, title, lines, image, corner, badge, share, shareTitle, pips, label, onClick }: CardProps) {
   const [imgOk, setImgOk] = useState(true);
   return (
     <button
@@ -316,6 +350,29 @@ function Picker({
 // ---- Grid -----------------------------------------------------------------------------------
 
 type PickerState = { kind: "mod"; slot: number } | { kind: "arcane" } | null;
+type DetailState = { kind: "mod"; slot: number } | { kind: "riven" } | { kind: "arcane" } | null;
+
+/** A dialog that closes on Escape or a click outside. */
+function Dialog({ label, onClose, children }: { label: string; onClose: () => void; children: ReactNode }) {
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-40 flex items-start justify-center overflow-y-auto bg-black/60 p-4 pt-[6vh]" onClick={onClose} role="dialog" aria-modal="true" aria-label={label}>
+      <div className="card relative w-full max-w-lg space-y-3 p-4" onClick={(e) => e.stopPropagation()}>
+        <button className="absolute right-3 top-2 text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-200" onClick={onClose} aria-label="Close">
+          ✕
+        </button>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const sharePct = (v: number | undefined) =>
+  v == null ? null : !isFinite(v) ? "needed for the build to work" : `+${(v * 100).toFixed(v < 0.1 ? 1 : 0)}% DPS on top of the rest of the build`;
 
 export default function ModGrid({
   weapon,
@@ -337,6 +394,7 @@ export default function ModGrid({
 }) {
   const { data } = useStore();
   const [picker, setPicker] = useState<PickerState>(null);
+  const [detail, setDetail] = useState<DetailState>(null);
   const [capacity, setCapacity] = usePersistent("cards.catalyst", 60);
   const shareTitle = vsEnemy
     ? "DPS this adds on top of the rest of the build, against the scenario enemy (armor and the build's own Viral/Corrosive/Heat included)"
@@ -412,7 +470,7 @@ export default function ModGrid({
         label={label}
         frame={frameFor(m.rarity, m.name)}
         title={m.name}
-        lines={m.modifiers.map((x) => statLine(x, melee)).concat(m.locksFireRate ? ["Fire rate locked"] : [])}
+        lines={modLines(m, melee)}
         image={m.image}
         corner={corner(i, m.polarity)}
         badge={slotPlan(i).forma ? "Forma" : undefined}
@@ -420,6 +478,7 @@ export default function ModGrid({
         shareTitle={shareTitle}
         pips={m.maxRank}
         onClick={() => setPicker({ kind: "mod", slot: i })}
+        onDetails={() => setDetail({ kind: "mod", slot: i })}
       />
     );
   };
@@ -447,6 +506,7 @@ export default function ModGrid({
         shareTitle={shareTitle}
         pips={8}
         onClick={() => document.getElementById("riven-editor")?.scrollIntoView({ behavior: "smooth", block: "center" })}
+        onDetails={() => setDetail({ kind: "riven" })}
       />
     );
   };
@@ -512,6 +572,7 @@ export default function ModGrid({
               shareTitle={shareTitle}
               pips={5}
               onClick={() => setPicker({ kind: "arcane" })}
+              onDetails={() => setDetail({ kind: "arcane" })}
             />
           ) : (
             <EmptyCard label="Arcane" onClick={() => setPicker({ kind: "arcane" })} />
@@ -524,6 +585,25 @@ export default function ModGrid({
           />
         )}
       </div>
+
+      {detail && (
+        <Dialog label="Details" onClose={() => setDetail(null)}>
+          {detail.kind === "mod" && build.slots[detail.slot] && modById(build.slots[detail.slot]) ? (
+            <ModDetail
+              mod={modById(build.slots[detail.slot])!}
+              equipped={build.slots.map((id) => (id ? modById(id) : undefined)).filter((m): m is Mod => !!m)}
+              share={contributions?.[String(detail.slot)]}
+              drain={slotPlan(detail.slot).drain}
+              polarity={slotPlan(detail.slot).polarity}
+              melee={melee}
+            />
+          ) : detail.kind === "riven" ? (
+            <RivenDetail weapon={weapon} build={build} share={contributions?.riven} />
+          ) : detail.kind === "arcane" && arcane ? (
+            <ArcaneDetail arcane={arcane} share={contributions?.arcane} melee={melee} />
+          ) : null}
+        </Dialog>
+      )}
 
       {picker?.kind === "mod" && (
         <Picker
@@ -557,5 +637,141 @@ export default function ModGrid({
         />
       )}
     </div>
+  );
+}
+
+// ---- Details views ---------------------------------------------------------------------------
+
+function DetailHeader({ image, title, subtitle, frame }: { image?: string; title: string; subtitle: ReactNode; frame: Frame }) {
+  const [imgOk, setImgOk] = useState(true);
+  return (
+    <div className="flex gap-3">
+      <div className="h-28 w-24 shrink-0 overflow-hidden rounded-lg" style={{ background: frame.bg, border: `2px solid ${frame.border}` }}>
+        {image && imgOk ? <img src={image} alt="" className="h-full w-full object-cover" onError={() => setImgOk(false)} /> : null}
+      </div>
+      <div className="min-w-0 pr-6">
+        <h3 className="text-lg font-semibold leading-tight">{title}</h3>
+        <div className="mt-1 text-xs text-zinc-500">{subtitle}</div>
+      </div>
+    </div>
+  );
+}
+
+function ModDetail({ mod, equipped, share, drain, polarity, melee }: { mod: Mod; equipped: Mod[]; share?: number; drain: number; polarity: string | null; melee: boolean }) {
+  const { data } = useStore();
+  const set = mod.set ? data!.modSets?.find((s) => s.id === mod.set) : undefined;
+  const pieces = set ? equipped.filter((m) => m.set === set.id).length : 0;
+  return (
+    <>
+      <DetailHeader
+        image={mod.image}
+        title={mod.name}
+        frame={frameFor(mod.rarity, mod.name)}
+        subtitle={
+          <span className="inline-flex flex-wrap items-center gap-x-2">
+            {mod.rarity && <span>{mod.rarity}</span>}
+            <span className="inline-flex items-center gap-0.5">
+              Drain {drain} <PolarityIcon polarity={polarity && polarity !== "any" ? polarity : mod.polarity} />
+            </span>
+            <span>Rank {mod.maxRank}</span>
+            {mod.isExilus && <span>Exilus</span>}
+          </span>
+        }
+      />
+      <ul className="space-y-1 text-sm">
+        {modLines(mod, melee).map((l, i) => (
+          <li key={i}>{l}</li>
+        ))}
+      </ul>
+      {set && (
+        <div className="space-y-1 rounded-md bg-zinc-100 p-2 text-xs dark:bg-zinc-800/60">
+          <div className="font-semibold">
+            {set.name} set: {pieces} of {set.size} pieces on this weapon
+          </div>
+          <ol className="space-y-0.5">
+            {set.bonuses.map((b, i) => (
+              <li key={i} className={i + 1 === pieces ? "font-semibold text-indigo-700 dark:text-indigo-300" : "text-zinc-500"}>
+                {i + 1}: {b}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      {sharePct(share) && <p className="text-xs text-zinc-500">{sharePct(share)}</p>}
+    </>
+  );
+}
+
+function ArcaneDetail({ arcane, share, melee }: { arcane: Arcane; share?: number; melee: boolean }) {
+  return (
+    <>
+      <DetailHeader image={arcane.image} title={arcane.name} frame={FRAMES.arcane} subtitle="Arcane, rank 5" />
+      <ul className="space-y-1 text-sm">
+        {(arcane.description ? [arcane.description] : arcaneLines(arcane, melee)).map((l, i) => (
+          <li key={i}>{l}</li>
+        ))}
+      </ul>
+      {sharePct(share) && <p className="text-xs text-zinc-500">{sharePct(share)}</p>}
+    </>
+  );
+}
+
+function RivenDetail({ weapon, build, share }: { weapon: Weapon; build: EditorBuild; share?: number }) {
+  const { data } = useStore();
+  const table = data!.riven;
+  if (!table) return null;
+  const layout = layoutOf(table, build.riven);
+  const ty = rivenType(weapon.modPool);
+  const rows = [...build.riven.positives.map((r) => ({ r, neg: false })), ...(build.riven.negative ? [{ r: build.riven.negative, neg: true }] : [])];
+  const graded = rows.map(({ r }) => r.roll);
+  const avg = graded.length ? graded.reduce((a, b) => a + b, 0) / graded.length : null;
+  const overall = avg == null ? null : rollDeviation(avg, table.rollMin, table.rollMax);
+  return (
+    <>
+      <div className="flex items-center gap-3 pr-6">
+        <div>
+          <h3 className="text-lg font-semibold leading-tight">{weapon.family} Riven</h3>
+          <div className="text-xs text-zinc-500">{layout ? `${layout.positives} positives${layout.negative ? " + 1 negative" : ""}` : "Incomplete"}</div>
+        </div>
+        {overall != null && (
+          <div className="ml-auto text-center">
+            <div className={`rounded px-2 py-1 text-xl font-bold ${gradeClass(rollGrade(overall))}`}>{rollGrade(overall)}</div>
+            <div className="mt-0.5 text-[10px] text-zinc-500">
+              {overall >= 0 ? "+" : ""}
+              {overall.toFixed(1)}% avg roll
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="space-y-3">
+        {rows.map(({ r, neg }) => {
+          const def = table.stats.find((s) => s.key === r.key);
+          const range = layout ? statRange(table, r.key, ty, layout, neg) : null;
+          const v = layout ? rowValue(table, r, ty, layout, neg) : null;
+          const dev = rollDeviation(r.roll, table.rollMin, table.rollMax);
+          const g = rollGrade(dev);
+          const fmtV = (x: number) => formatRivenValue(table, r.key, x);
+          return (
+            <div key={`${neg}-${r.key}`}>
+              <div className="flex items-baseline gap-2 text-sm">
+                <span className={`num font-semibold ${neg ? "text-red-600 dark:text-red-400" : ""}`}>{v != null ? fmtV(v) : ""}</span>
+                <span>{def?.label ?? r.key}</span>
+                <span className={`ml-auto inline-block w-7 rounded text-center text-[10px] font-bold ${gradeClass(g)}`}>{g}</span>
+              </div>
+              <div className="relative mt-1 h-2 rounded-full bg-gradient-to-r from-red-500/40 via-zinc-400/40 to-emerald-500/50">
+                <div className="absolute top-1/2 h-4 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded bg-zinc-900 dark:bg-white" style={{ left: `${r.roll * 100}%` }} />
+              </div>
+              {range && (
+                <div className="num mt-0.5 flex justify-between text-[10px] text-zinc-500">
+                  <span>{fmtV(range[0])} (worst roll)</span>
+                  <span>{fmtV(range[1])} (best roll)</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {sharePct(share) && <p className="text-xs text-zinc-500">{sharePct(share)}</p>}
+    </>
   );
 }

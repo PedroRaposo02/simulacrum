@@ -231,6 +231,7 @@ fn ability_damage_is_a_separate_multiplier() {
         not_slots: vec![],
         trigger: None,
         mode_contains: None,
+        standalone: false,
     };
     let base = Build { weapon: "Laetum".into(), mods: vec!["Hornet Strike".into()], ..Default::default() };
     let buffed = Build { buffs: vec![roar], ..base.clone() };
@@ -464,6 +465,7 @@ fn roar_is_faction_type_and_adds_to_bane() {
         not_slots: vec![],
         trigger: None,
         mode_contains: None,
+        standalone: false,
     };
     let t = Target { enemy: Some("sp-grineer".into()), armor_strip: 1.0, ..Default::default() };
     let base = compute(&fixture(), &Build { weapon: "Laetum".into(), ..Default::default() }, &t).unwrap().modes[0].per_shot;
@@ -491,6 +493,7 @@ fn with_mod(stat: wf_data::Stat, value: f64, condition: wf_data::Condition, thre
             not_slots: vec![],
             trigger: None,
             mode_contains: None,
+            standalone: false,
         }],
         ..Default::default()
     }
@@ -1124,4 +1127,38 @@ fn incarnon_gauge_ignores_ammo_efficiency() {
     let eff = with_mod(Stat::AmmoEfficiency, 0.5, Always, None);
     let charge = |b: &Build| compute(&d, b, &Target::default()).unwrap().modes[1].per_charge.unwrap();
     assert!(close(charge(&plain), charge(&eff)));
+}
+
+/// An external element that doesn't fuse (Fired Up's Heat) stays its own type: on a Cold weapon with
+/// Toxin mods it doesn't turn Cold into Blast, it adds Heat next to the Viral.
+#[test]
+fn standalone_external_element_does_not_fuse() {
+    use wf_data::{Condition::Always, DamageType, Stat};
+    let mut d = fixture();
+    d.weapons[0].modes[0].components[0].damage = [(DamageType::Cold, 160.0)].into_iter().collect();
+    let mut b = with_mod(Stat::Element(DamageType::Toxin), 0.9, Always, None);
+    let template = b.buffs[0].clone();
+    let heat = |standalone: bool| wf_data::Modifier { stat: Stat::Element(DamageType::Heat), value: 1.0, standalone, source: "Fired Up".into(), ..template.clone() };
+    b.buffs.push(heat(true));
+    let dmg = compute(&d, &b, &Target::default()).unwrap().modes[0].components[0].damage.clone();
+    assert!(dmg.contains_key(&DamageType::Viral) && dmg.contains_key(&DamageType::Heat), "{dmg:?}");
+    assert!(!dmg.contains_key(&DamageType::Blast) && !dmg.contains_key(&DamageType::Gas));
+    // A fusing Heat would combine instead.
+    b.buffs.pop();
+    b.buffs.push(heat(false));
+    let fused = compute(&d, &b, &Target::default()).unwrap().modes[0].components[0].damage.clone();
+    assert!(!fused.contains_key(&DamageType::Heat), "{fused:?}");
+}
+
+/// Crit enhancement (Vigilante set): each crit has the chance to go one tier higher, so the expected
+/// multiplier is 1 + (CC + chance x min(CC, 1)) x (CD - 1).
+#[test]
+fn crit_enhance_raises_crit_tiers() {
+    use wf_data::{Condition::Always, Stat};
+    let d = fixture();
+    let plain = Build { weapon: "/Test/Laetum".into(), ..Default::default() };
+    let enhanced = with_mod(Stat::CritEnhanceChance, 0.2, Always, None);
+    let shot = |b: &Build| compute(&d, b, &Target::default()).unwrap().modes[0].per_shot_raw;
+    // CC 22%, CD 2.2x: 1 + 0.22 x 1.2 = 1.264 -> 1 + (0.22 + 0.2 x 0.22) x 1.2 = 1.3168.
+    assert!(close(shot(&enhanced) / shot(&plain), 1.3168 / 1.264));
 }

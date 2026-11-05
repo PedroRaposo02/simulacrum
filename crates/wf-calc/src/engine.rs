@@ -63,6 +63,8 @@ struct Pools {
     base_damage: f64,
     physical: BTreeMap<DamageType, f64>,
     elements: Vec<(DamageType, f64, String)>,
+    /// External elements that don't fuse (Fired Up): added after the others have combined.
+    standalone_elements: Vec<(DamageType, f64)>,
     multishot: f64,
     crit_chance: f64,
     crit_chance_flat: f64,
@@ -101,6 +103,7 @@ struct Pools {
     heavy_eff: f64,
     ammo_eff: f64,
     head_crit: f64,
+    crit_enhance: f64,
     /// (chance per headshot, seconds) of infinite ammo.
     infinite_ammo: Vec<(f64, f64)>,
     sources: Vec<(String, Stat, f64)>,
@@ -151,6 +154,7 @@ impl Pools {
         match m.stat {
             Stat::BaseDamage => self.base_damage += v,
             Stat::Physical(t) => *self.physical.entry(t).or_default() += v,
+            Stat::Element(t) if m.standalone => self.standalone_elements.push((t, v)),
             Stat::Element(t) => self.elements.push((t, v, self.source(m))),
             Stat::Multishot => self.multishot += v,
             Stat::CritChance => self.crit_chance += v,
@@ -184,6 +188,7 @@ impl Pools {
             Stat::HeavyEfficiency => self.heavy_eff += v,
             Stat::AmmoEfficiency => self.ammo_eff += v,
             Stat::HeadshotCritChance => self.head_crit += v,
+            Stat::CritEnhanceChance => self.crit_enhance += v,
             Stat::InfiniteAmmoOnHeadshot => self.infinite_ammo.push((v, m.threshold.unwrap_or(0.0))),
         }
         if !self.quiet {
@@ -1439,6 +1444,10 @@ fn component(
     for (t, v) in combine(&mod_elements, &innate_elements) {
         *damage.entry(t).or_default() += v;
     }
+    // External elements that don't fuse (Fired Up's Heat) join after the weapon's own have combined.
+    for (t, v) in &p.standalone_elements {
+        *damage.entry(*t).or_default() += v * modded_base;
+    }
 
     // 5. Quantization to multiples of modded base / 16.
     let q = modded_base / 16.0;
@@ -1507,7 +1516,10 @@ fn component(
     let cd = ((comp.crit_mult + p.crit_mult_base + crit_mult_extra) * (1.0 + p.crit_damage + crit_damage_extra + if direct { cond.target_crit_damage } else { 0.0 }) + p.crit_damage_flat + doughty).max(1.0)
         * (1.0 + p.crit_mult_mult).max(0.0);
     let cd = cd.max(1.0);
-    let m_crit = 1.0 + cc * (cd - 1.0);
+    // Crit enhancement (Vigilante set): a critical hit has this chance to go one tier higher.
+    let enhance = p.crit_enhance.clamp(0.0, 1.0);
+    let tiers = |c: f64| c + enhance * c.clamp(0.0, 1.0);
+    let m_crit = 1.0 + tiers(cc) * (cd - 1.0);
     let p_crit = cc.min(1.0);
     let crit_part = m_crit - (1.0 - p_crit);
     let mut non_crit = 1.0;
@@ -1549,7 +1561,7 @@ fn component(
     });
     let parts = |c: f64| {
         let p = c.min(1.0);
-        (p, 1.0 + c * (cd - 1.0) - (1.0 - p))
+        (p, 1.0 + tiers(c) * (cd - 1.0) - (1.0 - p))
     };
     // Weak point crit chance (spliced riven) adds to the crit chance mods on weak point hits only.
     let head_bonus = crit0 * p.head_crit;
@@ -1628,7 +1640,7 @@ fn component(
     };
 
     let mut elem_bonus: BTreeMap<DamageType, f64> = BTreeMap::new();
-    for (t, v, _) in &p.elements {
+    for (t, v) in p.elements.iter().map(|(t, v, _)| (t, v)).chain(p.standalone_elements.iter().map(|(t, v)| (t, v))) {
         *elem_bonus.entry(*t).or_default() += v;
     }
     Ok(Partial {

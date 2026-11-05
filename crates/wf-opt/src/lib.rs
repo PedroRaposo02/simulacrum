@@ -307,6 +307,7 @@ pub fn riven_modifiers(data: &GameData, picks: &[RivenPick]) -> Vec<Modifier> {
                 not_slots: vec![],
                 trigger: None,
                 mode_contains: None,
+                standalone: false,
             })
         })
         .collect()
@@ -1152,6 +1153,7 @@ fn negative_modifier(table: &wf_data::RivenTable, ty: RivenType, layout: &wf_dat
         not_slots: vec![],
         trigger: None,
         mode_contains: None,
+        standalone: false,
     })
 }
 
@@ -1483,6 +1485,7 @@ fn optimize_mode<'a>(
                                 not_slots: vec![],
                                 trigger: None,
                                 mode_contains: None,
+                                standalone: false,
                             },
                         })
                     })
@@ -1836,6 +1839,7 @@ pub fn rank_rivens(data: &GameData, weapon_key: &str, base: &Build, target: &Tar
                             not_slots: vec![],
                             trigger: None,
                             mode_contains: None,
+                            standalone: false,
                         },
                     })
                     .collect();

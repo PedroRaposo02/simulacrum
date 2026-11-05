@@ -288,6 +288,7 @@ fn fixed_riven_modifiers(data: &wf_data::GameData, weapon: &str, keys: &[String]
                 not_slots: vec![],
                 trigger: None,
                 mode_contains: None,
+                standalone: false,
             })
         })
         .collect()

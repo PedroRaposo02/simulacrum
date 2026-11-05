@@ -134,6 +134,7 @@
             "of": "heat"
           },
           "value": 1.0,
+          "standalone": true,
           "onlySlots": [
             "companion"
           ]
