@@ -151,6 +151,17 @@ impl Engine {
         }
     }
 
+    /// Attack modes an optimize call without a mode searches (in order). Returns `{"ok": [index]}` or `{"error": …}`.
+    #[wasm_bindgen(js_name = candidateModes)]
+    pub fn candidate_modes(&self, weapon: &str, base_build_json: &str, target_json: &str) -> String {
+        let base: Build = serde_json::from_str(base_build_json).unwrap_or_default();
+        let target: Target = serde_json::from_str(target_json).unwrap_or_default();
+        match wf_opt::candidate_modes(&self.data, weapon, &base, &target) {
+            Ok(r) => to_json(&serde_json::json!({ "ok": r })),
+            Err(e) => to_json(&serde_json::json!({ "error": e })),
+        }
+    }
+
     /// Theoretical best build for one weapon. Returns `{"ok": OptimizeResult}` or `{"error": CalcError}`.
     pub fn optimize(&self, weapon: &str, base_build_json: &str, target_json: &str, options_json: &str) -> String {
         let base: Build = serde_json::from_str(base_build_json).unwrap_or_default();

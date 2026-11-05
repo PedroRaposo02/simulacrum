@@ -16,12 +16,17 @@ function getEngine(dataUrl: string): Promise<Engine> {
 }
 
 self.onmessage = async (
-  e: MessageEvent<{ id: number; kind?: "optimize" | "rankRivens"; dataUrl: string; weapon: string; base: string; target: string; options: string }>,
+  e: MessageEvent<{ id: number; kind?: "optimize" | "rankRivens" | "modes"; dataUrl: string; weapon: string; base: string; target: string; options: string }>,
 ) => {
   const { id, kind, dataUrl, weapon, base, target, options } = e.data;
   try {
     const eng = await getEngine(dataUrl);
-    const result = kind === "rankRivens" ? eng.rankRivens(weapon, base, target, options) : eng.optimize(weapon, base, target, options);
+    const result =
+      kind === "rankRivens"
+        ? eng.rankRivens(weapon, base, target, options)
+        : kind === "modes"
+          ? eng.candidateModes(weapon, base, target)
+          : eng.optimize(weapon, base, target, options);
     self.postMessage({ id, result });
   } catch (err) {
     self.postMessage({ id, result: JSON.stringify({ error: { code: "internal", message: String(err) } }) });

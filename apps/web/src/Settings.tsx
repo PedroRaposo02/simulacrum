@@ -1,6 +1,6 @@
 import { useRef, useState, type ReactNode } from "react";
 import { exportSettings, importSettings, KEYS, readSetting, removeSettings, writeSetting } from "./persist";
-import { defaultScenario, mergeScenario, useStore, type Scenario } from "./store";
+import { AUTO_WORKERS, cancelSearch, defaultScenario, MAX_WORKERS, mergeScenario, useStore, type Scenario } from "./store";
 
 function Block({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -19,6 +19,8 @@ export default function Settings() {
   const { data, scenario, setScenario } = useStore();
   const [notice, setNotice] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const cores = navigator.hardwareConcurrency || 2;
+  const [workers, setWorkers] = useState<number | "auto">(() => readSetting<number | "auto">("opt.workers", "auto"));
   const [savedDefault, setSavedDefault] = useState<Partial<Scenario> | null>(() => readSetting<Partial<Scenario> | null>("defaultScenario", null));
 
   const describe = (s: Scenario) => {
@@ -113,6 +115,37 @@ export default function Settings() {
             Reset scenario now
           </button>
         </div>
+      </Block>
+
+      <Block title="Optimizer">
+        <label className="block text-sm">
+          Parallel searches
+          <select
+            className="field mt-1 w-auto"
+            value={String(workers)}
+            onChange={(e) => {
+              const v = e.target.value === "auto" ? "auto" : Number(e.target.value);
+              writeSetting("opt.workers", v);
+              setWorkers(v);
+              // Workers start again with the new count on the next search.
+              cancelSearch();
+            }}
+          >
+            <option value="auto">Auto ({Math.max(1, Math.min(AUTO_WORKERS, cores - 1))})</option>
+            {Array.from({ length: MAX_WORKERS }, (_, i) => i + 1)
+              .filter((n) => n <= Math.max(1, cores - 1))
+              .map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+          </select>
+        </label>
+        <p className="text-[11px] text-zinc-500">
+          A search split across this many background threads (attack modes, then riven searches), with the same result as one. Each one holds its own copy
+          of the calculator and game data in memory, and in a browser they slow each other down, so more isn't always faster. This device has {cores}{" "}
+          logical cores.
+        </p>
       </Block>
 
       <Block title="Reset">

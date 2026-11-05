@@ -326,3 +326,84 @@ fn forced_explosion_mod_survives_making_room_for_a_riven() {
     assert!(r.mods.iter().any(|m| m == "Primed Fulmination"), "{:?}", r.mods);
     assert!(!r.riven.is_empty());
 }
+
+#[test]
+fn locked_mods_stay_and_the_rest_is_searched() {
+    let d = fixture();
+    let o = OptimizeOptions { locked_mods: vec!["Slip Magazine".into(), "Hush".into()], ..Default::default() };
+    let r = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &o).unwrap();
+    assert!(r.mods.iter().any(|m| m == "Slip Magazine") && r.mods.iter().any(|m| m == "Hush"), "{:?}", r.mods);
+    assert!(r.mods.iter().any(|m| m == "Hornet Strike"), "{:?}", r.mods);
+    // With a riven too.
+    let o = OptimizeOptions { riven: true, ..o };
+    let r = optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &o).unwrap();
+    assert!(r.mods.iter().any(|m| m == "Slip Magazine"), "{:?}", r.mods);
+    assert!(!r.riven.is_empty());
+    // Two mods of one exclusive group can't both be locked.
+    let bad = OptimizeOptions { locked_mods: vec!["Barrel Diffusion".into(), "Galvanized Diffusion".into()], ..Default::default() };
+    assert!(optimize(&d, "Test Pistol", &Build::default(), &Target::default(), &bad).is_err());
+}
+
+#[test]
+fn stat_goals_are_reached_before_damage() {
+    let d = fixture();
+    let t = Target::default();
+    let per = OptimizeOptions { objective: Objective::PerShot, ..Default::default() };
+    let plain = optimize(&d, "Test Pistol", &Build::default(), &t, &per).unwrap();
+    // 15 shots/s is out of reach (2.5 base, +132% at most): the closest build, flagged.
+    for (goal, reachable) in [
+        (StatGoal { stat: GoalStat::FireRate, value: 0.5, relative: true }, true),
+        (StatGoal { stat: GoalStat::FireRate, value: 5.5, relative: false }, true),
+        (StatGoal { stat: GoalStat::FireRate, value: 15.0, relative: false }, false),
+    ] {
+        let o = OptimizeOptions { goals: vec![goal], ..per.clone() };
+        let r = optimize(&d, "Test Pistol", &Build::default(), &t, &o).unwrap();
+        assert_eq!(r.goals_met, reachable, "{goal:?}: {:?}", r.goals);
+        if reachable {
+            assert!(r.goals[0].value >= r.goals[0].target - 1e-6, "{:?}", r.goals);
+            assert!(r.per_shot <= plain.per_shot + 1e-9);
+        } else {
+            assert!(r.mods.iter().any(|m| m == "Gunslinger") && r.mods.iter().any(|m| m == "Lethal Torrent"), "{:?}", r.mods);
+        }
+    }
+    // Magazine mods only join the search for a magazine goal.
+    assert!(!plain.mods.iter().any(|m| m == "Slip Magazine"));
+    let o = OptimizeOptions { goals: vec![StatGoal { stat: GoalStat::Magazine, value: 15.0, relative: false }], ..per };
+    let r = optimize(&d, "Test Pistol", &Build::default(), &t, &o).unwrap();
+    assert!(r.goals_met && r.mods.iter().any(|m| m == "Slip Magazine"), "{:?} {:?}", r.mods, r.goals);
+}
+
+#[test]
+fn riven_shards_together_equal_one_search() {
+    let d = fixture();
+    let t = Target::default();
+    let o = OptimizeOptions { riven: true, mode: Some(0), ..Default::default() };
+    let full = optimize(&d, "Test Pistol", &Build::default(), &t, &o).unwrap();
+    for count in [2usize, 3, 8] {
+        let shards: Vec<OptimizeResult> = (0..count)
+            .map(|index| optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { riven_shard: Some(Shard { index, count }), ..o.clone() }).unwrap())
+            .filter(|r| !r.shard_empty)
+            .collect();
+        let best = shards
+            .iter()
+            .reduce(|a, b| if b.search_score > a.search_score || (b.search_score == a.search_score && b.riven_job < a.riven_job) { b } else { a })
+            .unwrap();
+        assert_eq!((&best.mods, best.score.to_bits()), (&full.mods, full.score.to_bits()), "{count} shards");
+        assert_eq!(best.riven.iter().map(|r| &r.key).collect::<Vec<_>>(), full.riven.iter().map(|r| &r.key).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn a_seed_never_makes_the_result_worse() {
+    let d = fixture();
+    let t = Target::default();
+    for riven in [false, true] {
+        let plain = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { riven, ..Default::default() }).unwrap();
+        // A poor seed and the best build as a seed.
+        for mods in [vec!["Slip Magazine".to_string(), "Hush".to_string()], plain.mods.clone()] {
+            let seed = SeedBuild { mode_index: 0, mods, arcane: plain.arcane.clone(), riven: plain.riven.iter().map(|r| r.key.clone()).collect(), ..Default::default() };
+            let r = optimize(&d, "Test Pistol", &Build::default(), &t, &OptimizeOptions { riven, seed: Some(seed), ..Default::default() }).unwrap();
+            assert!(r.score >= plain.score * (1.0 - 1e-9), "riven {riven}: {} < {}", r.score, plain.score);
+        }
+    }
+}

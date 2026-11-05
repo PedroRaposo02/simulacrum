@@ -229,6 +229,8 @@ export interface EditorBuild {
   evolutions: string[];
   /** Kuva / Tenet progenitor element (damage type key), or null. */
   progenitor?: string | null;
+  /** Mod ids the optimizer keeps. */
+  locked?: string[];
 }
 
 export interface Explain { label: string; value: number; detail?: string; children?: Explain[] }
@@ -326,6 +328,12 @@ export interface OptimizeResult {
   drain: number | null;
   rangeCost: number | null;
   belowAttackSpeedFloor: boolean;
+  goals?: GoalOutcome[];
+  goalsMet?: boolean;
+  /** Parallel searches: the score the riven search ended on, which of them won, and whether this share had none. */
+  searchScore: number;
+  rivenJob?: number | null;
+  shardEmpty?: boolean;
   progenitor?: string | null;
   /** Not from a new search: the precomputed best build, or a result found earlier this session. */
   source?: "precomputed" | "remembered";
@@ -353,7 +361,20 @@ export interface OptimizeOptions {
   fixedEvolutions?: string[];
   /** Keep this arcane. */
   fixedArcane?: string | null;
+  /** Mods (ids or names) every build must contain. */
+  lockedMods?: string[];
+  goals?: StatGoal[];
+  /** A known good build to start from (the precomputed best). */
+  seed?: SeedBuild | null;
+  rivenShard?: { index: number; count: number } | null;
 }
+
+export interface SeedBuild { modeIndex: number; mods: string[]; arcane: string | null; evolutions: string[]; progenitor: string | null; riven: string[] }
+
+export type GoalStat = "fireRate" | "critChance" | "critMultiplier" | "statusChance" | "multishot" | "magazine" | "reloadTime" | "range";
+/** `relative`: value is the change over the unmodded stat (2 = +200%). Reload time is a maximum. */
+export interface StatGoal { stat: GoalStat; value: number; relative: boolean }
+export interface GoalOutcome { stat: GoalStat; target: number; value: number; met: boolean }
 
 export interface SavedBuild { name: string; savedAt: number; build: EditorBuild }
 

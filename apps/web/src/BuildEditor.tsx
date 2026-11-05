@@ -5,7 +5,7 @@ import { formatRivenValue, layoutOf, rivenType, rowValue } from "./riven";
 import { CoverageBadge, ExplainTree } from "./Common";
 import RivenEditor from "./RivenEditor";
 import MeleeSummary from "./MeleeSummary";
-import OptimizerControls, { type ComfortSettings, type OptimizerState } from "./OptimizerControls";
+import OptimizerControls, { goalDefs, goalValue, type ComfortSettings, type OptimizerState } from "./OptimizerControls";
 import SavedBuilds from "./SavedBuilds";
 import { weaponTypeLabel } from "./labels";
 import { buildJson, buildMarkdown } from "./exportBuild";
@@ -463,7 +463,27 @@ function MeleeModeTable({ modes, weapon }: { modes: ModeResult[]; weapon: Weapon
   );
 }
 
-function OptimizerPanel({ state, onUndo }: { state: OptimizerState; onUndo: () => void }) {
+function GoalResults({ weapon, result }: { weapon: Weapon; result: OptimizeResult }) {
+  const defs = goalDefs(!!weapon.melee);
+  return (
+    <div className="flex flex-wrap gap-1.5 text-xs">
+      {result.goals!.map((g) => {
+        const d = defs.find((x) => x.stat === g.stat);
+        if (!d) return null;
+        return (
+          <span
+            key={g.stat}
+            className={`rounded px-1.5 py-0.5 ${g.met ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/50 dark:text-emerald-300" : "bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-300"}`}
+          >
+            {d.label} {goalValue(d, g.value)} {g.met ? `✓ (goal ${goalValue(d, g.target)})` : `(goal ${goalValue(d, g.target)} not reachable; closest build)`}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+function OptimizerPanel({ state, onUndo, weapon }: { state: OptimizerState; onUndo: () => void; weapon: Weapon }) {
   const result: OptimizeResult = state.result;
   return (
     <div className="card space-y-2">
@@ -492,6 +512,7 @@ function OptimizerPanel({ state, onUndo }: { state: OptimizerState; onUndo: () =
         {result.rangeCost != null && <span>range costs {pct(result.rangeCost)} DPS</span>}
         {result.drain != null && <span>capacity used {result.drain}</span>}
       </div>
+      {!!result.goals?.length && <GoalResults weapon={weapon} result={result} />}
       <p className="text-xs text-zinc-500">
         Applied to the editor. Marginal value = how much each piece adds on top of the rest (additive bonuses share a pool, so +360% base damage adds less
         than +360% when other base damage mods are present).
@@ -843,6 +864,7 @@ export default function BuildEditor() {
         )}
         {opt && opt.result.weaponId === weapon?.id && (
           <OptimizerPanel
+            weapon={weapon}
             state={opt}
             onUndo={() => {
               setBuild(opt.previous);

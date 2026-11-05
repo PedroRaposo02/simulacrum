@@ -315,42 +315,115 @@ export function rank(engine: Engine, target: Target, base: EngineBuild, perWeapo
   return JSON.parse(engine.rank(JSON.stringify(target), JSON.stringify(base), JSON.stringify(perWeapon)));
 }
 
-// Optimizer runs in a worker so the page stays responsive.
-let worker: Worker | null = null;
-let nextId = 0;
+// Optimizer searches run in workers so the page stays responsive. One search is split across
+// several (each attack mode, and shares of its riven searches) when the device has the cores; each
+// worker holds its own copy of the engine, so memory caps how many.
+type JobKind = "optimize" | "rankRivens" | "modes";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const pending = new Map<number, (r: { ok?: any; error?: CalcError }) => void>();
+type Reply = { ok?: any; error?: CalcError };
 
-/** Stop the running search: the worker is discarded (a new one starts on the next search). */
+/** Workers "auto" uses: two (attack modes in parallel). Browsers run all of a page's workers in one
+ * process, and there the search's workers slow each other down, so more rarely pays for the memory. */
+export const AUTO_WORKERS = 2;
+export const MAX_WORKERS = 4;
+
+/** Parallel searches the device can run: the setting ("auto" or a number), at most one per spare core. */
+export function workerCount(): number {
+  const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 2 : 2;
+  const chosen = readSetting<number | "auto">("opt.workers", "auto");
+  return Math.max(1, Math.min(chosen === "auto" ? AUTO_WORKERS : chosen, MAX_WORKERS, cores - 1));
+}
+
+interface PoolWorker { worker: Worker; load: number }
+let pool: PoolWorker[] = [];
+let nextId = 0;
+const pending = new Map<number, { resolve: (r: Reply) => void; pw: PoolWorker }>();
+
+/** Stop the running search: the workers are discarded (new ones start on the next search). */
 export function cancelSearch() {
-  if (!worker) return;
-  worker.terminate();
-  worker = null;
-  for (const resolve of pending.values()) resolve({ error: { code: "cancelled", message: "Cancelled" } });
+  if (!pool.length) return;
+  for (const pw of pool) pw.worker.terminate();
+  pool = [];
+  for (const { resolve } of pending.values()) resolve({ error: { code: "cancelled", message: "Cancelled" } });
   pending.clear();
 }
 
-function runInWorker<T>(kind: "optimize" | "rankRivens", weapon: string, base: EngineBuild, target: Target, options: OptimizeOptions): Promise<{ ok?: T; error?: CalcError }> {
-  if (!worker) {
-    worker = new Worker(new URL("./optimizer.worker.ts", import.meta.url), { type: "module" });
-    worker.onmessage = (e: MessageEvent<{ id: number; result: string }>) => {
-      pending.get(e.data.id)?.(JSON.parse(e.data.result));
+/** The least busy worker; a new one while all are busy and the pool isn't full. */
+function poolWorker(): PoolWorker {
+  const limit = workerCount();
+  const usable = pool.slice(0, limit);
+  const idle = usable.find((p) => p.load === 0);
+  if (idle) return idle;
+  if (pool.length < limit) {
+    const pw: PoolWorker = { worker: new Worker(new URL("./optimizer.worker.ts", import.meta.url), { type: "module" }), load: 0 };
+    pw.worker.onmessage = (e: MessageEvent<{ id: number; result: string }>) => {
+      const p = pending.get(e.data.id);
+      if (!p) return;
       pending.delete(e.data.id);
+      p.pw.load--;
+      p.resolve(JSON.parse(e.data.result));
     };
+    pool.push(pw);
+    return pw;
   }
+  return usable.reduce((a, b) => (b.load < a.load ? b : a));
+}
+
+function runInWorker(kind: JobKind, weapon: string, base: EngineBuild, target: Target, options: OptimizeOptions): Promise<Reply> {
+  const pw = poolWorker();
+  pw.load++;
   const id = nextId++;
   return new Promise((resolve) => {
-    pending.set(id, resolve);
+    pending.set(id, { resolve, pw });
     const dataUrl = new URL(`${import.meta.env.BASE_URL}gamedata.json`, location.href).href;
-    worker!.postMessage({ id, kind, dataUrl, weapon, base: JSON.stringify(base), target: JSON.stringify(target), options: JSON.stringify(options) });
+    pw.worker.postMessage({ id, kind, dataUrl, weapon, base: JSON.stringify(base), target: JSON.stringify(target), options: JSON.stringify(options) });
   });
 }
 
-export const optimizeInWorker = (weapon: string, base: EngineBuild, target: Target, options: OptimizeOptions) =>
-  runInWorker<OptimizeResult>("optimize", weapon, base, target, options);
+const missesLimits = (r: OptimizeResult) => r.belowAttackSpeedFloor || r.goalsMet === false;
+
+/** Best build for a weapon: the same result as one search, split across the workers. */
+export async function optimizeInWorker(weapon: string, base: EngineBuild, target: Target, options: OptimizeOptions): Promise<{ ok?: OptimizeResult; error?: CalcError }> {
+  const workers = workerCount();
+  if (workers === 1) return runInWorker("optimize", weapon, base, target, options);
+  let modes: number[];
+  if (options.mode != null) modes = [options.mode];
+  else {
+    const r = await runInWorker("modes", weapon, base, target, options);
+    if (!r.ok) return r.error?.code === "cancelled" ? r : runInWorker("optimize", weapon, base, target, options);
+    modes = r.ok;
+  }
+  const rivenSearch = !!options.riven && !options.fixedRiven?.length;
+  const shards = rivenSearch ? Math.max(1, Math.min(4, Math.floor(workers / modes.length))) : 1;
+  const jobs = modes.map((mode) =>
+    Promise.all(
+      Array.from({ length: shards }, (_, index) =>
+        runInWorker("optimize", weapon, base, target, { ...options, mode, rivenShard: shards > 1 ? { index, count: shards } : null }),
+      ),
+    ),
+  );
+  const replies = await Promise.all(jobs);
+  const flat = replies.flat();
+  const failed = flat.find((r) => !r.ok);
+  if (failed) return failed;
+  const evaluations = flat.reduce((n, r) => n + (r.ok as OptimizeResult).evaluations, 0);
+  // Within a mode: the shard whose riven search scored best (ties: the earlier search). Across
+  // modes: fewer missed limits and goals, then the higher score (ties: the earlier mode).
+  let best: OptimizeResult | undefined;
+  for (const rs of replies) {
+    const results = rs.map((r) => r.ok as OptimizeResult).filter((r) => !r.shardEmpty);
+    const m = results.reduce<OptimizeResult | undefined>(
+      (a, b) => (!a || b.searchScore > a.searchScore || (b.searchScore === a.searchScore && (b.rivenJob ?? 0) < (a.rivenJob ?? 0)) ? b : a),
+      undefined,
+    );
+    if (!m) continue;
+    if (!best || (missesLimits(best) && !missesLimits(m)) || (missesLimits(best) === missesLimits(m) && m.score > best.score)) best = m;
+  }
+  return best ? { ok: { ...best, evaluations } } : runInWorker("optimize", weapon, base, target, options);
+}
 
 export const rankRivensInWorker = (weapon: string, base: EngineBuild, target: Target, options: OptimizeOptions) =>
-  runInWorker<RivenRanking>("rankRivens", weapon, base, target, options);
+  runInWorker("rankRivens", weapon, base, target, options) as Promise<{ ok?: RivenRanking; error?: CalcError }>;
 
 export function fmt(v: number): string {
   if (!isFinite(v)) return "—";

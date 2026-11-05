@@ -165,14 +165,26 @@ interface CardProps {
   onClick: () => void;
   /** Opens the enlarged view (also on right-click). */
   onDetails?: () => void;
+  /** Locked for the optimizer: it builds around this card. */
+  locked?: boolean;
+  onLock?: () => void;
+}
+
+function LockIcon({ open }: { open: boolean }) {
+  return (
+    <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <rect x="3" y="7" width="10" height="7" rx="1.5" fill={open ? "none" : "currentColor"} />
+      <path d={open ? "M5.5 7V5a2.5 2.5 0 0 1 4.9-.7" : "M5.5 7V5a2.5 2.5 0 0 1 5 0v2"} strokeLinecap="round" />
+    </svg>
+  );
 }
 
 function Card(props: CardProps) {
-  const { onDetails, label, title } = props;
+  const { onDetails, label, title, locked, onLock } = props;
   if (!onDetails) return <CardFace {...props} />;
   return (
     <div
-      className="relative"
+      className={`relative rounded-lg ${locked ? "ring-2 ring-amber-400 ring-offset-2 ring-offset-white dark:ring-offset-zinc-950" : ""}`}
       onContextMenu={(e) => {
         e.preventDefault();
         onDetails();
@@ -188,6 +200,20 @@ function Card(props: CardProps) {
       >
         ⤢
       </button>
+      {onLock && (
+        <button
+          type="button"
+          onClick={onLock}
+          aria-label={`${label}: ${title}, ${locked ? "unlock" : "lock"}`}
+          aria-pressed={!!locked}
+          title={locked ? "Locked: the optimizer keeps this mod. Click to unlock." : "Lock: the optimizer keeps this mod and builds the rest around it"}
+          className={`absolute bottom-1.5 left-1.5 z-10 grid h-5 w-5 place-items-center rounded-full ${
+            locked ? "bg-amber-400 text-black hover:bg-amber-300" : "bg-black/60 text-white hover:bg-black/80"
+          }`}
+        >
+          <LockIcon open={!locked} />
+        </button>
+      )}
     </div>
   );
 }
@@ -452,6 +478,13 @@ export default function ModGrid({
   const hasRiven = build.riven.positives.length > 0;
   const modById = (id: string) => data!.mods.find((m) => m.id === id);
   const used = new Set(build.slots.filter(Boolean));
+  const locked = new Set((build.locked ?? []).filter((id) => used.has(id)));
+  const toggleLock = (id: string) => {
+    const next = new Set(locked);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setBuild({ ...build, locked: [...next] });
+  };
 
   const setSlot = (i: number, id: string) => {
     const slots = [...build.slots];
@@ -479,6 +512,8 @@ export default function ModGrid({
         pips={m.maxRank}
         onClick={() => setPicker({ kind: "mod", slot: i })}
         onDetails={() => setDetail({ kind: "mod", slot: i })}
+        locked={locked.has(m.id)}
+        onLock={() => toggleLock(m.id)}
       />
     );
   };

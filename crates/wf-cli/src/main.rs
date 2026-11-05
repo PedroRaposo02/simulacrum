@@ -110,6 +110,9 @@ enum Cmd {
         /// Keep these Incarnon evolutions (comma separated); tiers without one are still searched.
         #[arg(long, value_delimiter = ',')]
         evolutions: Vec<String>,
+        /// Optimizer options as the web app sends them (JSON file); replaces the option flags.
+        #[arg(long)]
+        options_json: Option<PathBuf>,
         /// Every weapon x (raw + every enemy preset) x (with and without riven), written to --out.
         #[arg(long)]
         all: bool,
@@ -464,6 +467,7 @@ fn run() -> Result<bool, String> {
             group_size,
             fixed_riven,
             evolutions,
+            options_json,
             shard,
             log,
             weapons,
@@ -506,7 +510,11 @@ fn run() -> Result<bool, String> {
                     "burst" => wf_opt::Objective::Burst,
                     _ => wf_opt::Objective::Balanced,
                 };
-                let opts = OptimizeOptions {
+                let from_json = match &options_json {
+                    Some(p) => Some(serde_json::from_str::<OptimizeOptions>(&std::fs::read_to_string(p).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?),
+                    None => None,
+                };
+                let opts = from_json.unwrap_or(OptimizeOptions {
                     riven,
                     mode,
                     objective,
@@ -519,7 +527,7 @@ fn run() -> Result<bool, String> {
                     fixed_riven: fixed_riven_modifiers(&data, &w, &fixed_riven)?,
                     fixed_evolutions: evolutions.iter().map(|e| e.trim().to_string()).collect(),
                     ..Default::default()
-                };
+                });
                 let t0 = std::time::Instant::now();
                 let r = optimize(&data, &w, &base, &target, &opts).map_err(|e| e.to_string())?;
                 print_optimized(&r);

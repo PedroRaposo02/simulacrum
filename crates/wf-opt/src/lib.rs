@@ -22,6 +22,8 @@ struct Structure<'a> {
     arcane: Option<&'a Arcane>,
     evolutions: Vec<&'a wf_data::Evolution>,
     mods: Vec<&'a Mod>,
+    /// Started from the seed build (an extra finalist: never takes a regular finalist's place).
+    seed: bool,
 }
 
 /// One option per tier. Options with no damage effect are interchangeable, so each tier keeps
@@ -124,6 +126,82 @@ pub struct OptimizeOptions {
     pub fixed_evolutions: Vec<String>,
     /// Keep this arcane (by name) instead of searching arcanes.
     pub fixed_arcane: Option<String>,
+    /// Mods (by name or id) every build must contain; the other slots are searched around them.
+    pub locked_mods: Vec<String>,
+    /// Stat targets: builds that reach every goal rank above builds that don't (closer is better),
+    /// then the objective decides.
+    pub goals: Vec<StatGoal>,
+    /// A known good build (the precomputed best) to start from: screening only tries structures one
+    /// change away from it (arcane, evolutions or progenitor), and its mods and riven are extra starts.
+    pub seed: Option<SeedBuild>,
+    /// Parallel searches: run only the riven searches `index`, `index + count`, ... of this attack mode.
+    /// The best of all shards (by `search_score`, then `riven_job`) is the full search's result.
+    pub riven_shard: Option<Shard>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct SeedBuild {
+    /// The attack mode the seed was found for; other modes search without it.
+    pub mode_index: usize,
+    pub mods: Vec<String>,
+    pub arcane: Option<String>,
+    pub evolutions: Vec<String>,
+    pub progenitor: Option<wf_data::DamageType>,
+    /// Riven stat keys.
+    pub riven: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Shard {
+    pub index: usize,
+    pub count: usize,
+}
+
+/// A stat the build has to reach (reload time: stay under).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GoalStat {
+    /// Shots per second (melee: attack speed).
+    FireRate,
+    CritChance,
+    CritMultiplier,
+    StatusChance,
+    /// Projectiles per shot.
+    Multishot,
+    Magazine,
+    /// Seconds; the goal is a maximum.
+    ReloadTime,
+    /// Melee range in meters.
+    Range,
+}
+
+impl GoalStat {
+    fn at_most(self) -> bool {
+        self == GoalStat::ReloadTime
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatGoal {
+    pub stat: GoalStat,
+    /// The target value, or with `relative` the change over the unmodded value (2.0 = +200%).
+    pub value: f64,
+    #[serde(default)]
+    pub relative: bool,
+}
+
+/// How a result did against one goal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalOutcome {
+    pub stat: GoalStat,
+    /// The target as an absolute value of the attack.
+    pub target: f64,
+    pub value: f64,
+    pub met: bool,
 }
 
 impl Default for OptimizeOptions {
@@ -139,6 +217,10 @@ impl Default for OptimizeOptions {
             progenitor: None,
             fixed_evolutions: vec![],
             fixed_arcane: None,
+            locked_mods: vec![],
+            goals: vec![],
+            seed: None,
+            riven_shard: None,
             spliced_riven: true,
             objective: Objective::Balanced,
             max_fire_rate_bonus: None,
@@ -270,6 +352,15 @@ pub struct OptimizeResult {
     pub range_cost: Option<f64>,
     /// True when the attack speed floor couldn't be reached.
     pub below_attack_speed_floor: bool,
+    /// Each stat goal against the result (empty without goals).
+    pub goals: Vec<GoalOutcome>,
+    pub goals_met: bool,
+    /// Score when the riven search ended (before exilus and comfort tweaks): shards compare on it.
+    pub search_score: f64,
+    /// Which riven search won (shards: ties go to the lowest).
+    pub riven_job: Option<usize>,
+    /// A shard that had no riven search to run: not a result.
+    pub shard_empty: bool,
 }
 
 impl OptimizeResult {
@@ -346,8 +437,12 @@ struct Ctx<'a> {
     rate_cap: f64,
     capacity: Option<CapacityOptions>,
     evolutions: Vec<&'a wf_data::Evolution>,
-    /// Mods every build must contain (the explosion-radius mod).
+    /// Mods every build must contain (locked mods, the explosion-radius mod).
     forced: Vec<&'a Mod>,
+    /// Stat goals as absolute thresholds of this attack.
+    goals: Vec<(GoalStat, f64)>,
+    /// Riven stats of the seed build: one more start for the riven search.
+    riven_seed: Vec<String>,
     /// Builds already calculated (see EvalMemo); `context` identifies the scenario they belong to.
     memo: HashMap<Vec<u64>, Option<Scored>>,
     memo_hits: u64,
@@ -418,10 +513,30 @@ struct Scored {
     per_shot: f64,
     per_charge: Option<f64>,
     arsenal_crit_chance: f64,
+    // Goal stats (f32: the memo holds millions of these).
+    crit_mult: f32,
+    status_chance: f32,
+    multishot: f32,
+    reload_s: f32,
+    range_m: f32,
 }
 
 impl Scored {
+    fn goal_value(&self, stat: GoalStat) -> f64 {
+        match stat {
+            GoalStat::FireRate => self.attack_speed.unwrap_or(self.fire_rate),
+            GoalStat::CritChance => self.arsenal_crit_chance,
+            GoalStat::CritMultiplier => self.crit_mult as f64,
+            GoalStat::StatusChance => self.status_chance as f64,
+            GoalStat::Multishot => self.multishot as f64,
+            GoalStat::Magazine => self.magazine.unwrap_or(0.0),
+            GoalStat::ReloadTime => self.reload_s as f64,
+            GoalStat::Range => self.range_m as f64,
+        }
+    }
+
     fn of(m: &wf_calc::ModeResult) -> Self {
+        let max = |f: fn(&wf_calc::ComponentResult) -> f64| m.components.iter().map(f).fold(0.0, f64::max) as f32;
         Scored {
             fire_rate: m.fire_rate,
             attack_speed: m.attack_speed,
@@ -434,6 +549,11 @@ impl Scored {
             per_shot: m.per_shot,
             per_charge: m.per_charge,
             arsenal_crit_chance: m.components.iter().map(|c| c.arsenal_crit_chance).fold(0.0, f64::max),
+            crit_mult: max(|c| c.arsenal_crit_mult),
+            status_chance: max(|c| c.status_chance),
+            multishot: max(|c| c.projectiles),
+            reload_s: m.reload_s as f32,
+            range_m: m.range_m.unwrap_or(0.0) as f32,
         }
     }
 }
@@ -467,6 +587,19 @@ fn balanced(m: &Scored, cap: f64, burst: f64, sustained: f64) -> f64 {
         }
         _ => per_shot * cap,
     }
+}
+
+/// How far a build is from its goals, each as a fraction of its target (0 = every goal met).
+fn goal_shortfall(goals: &[(GoalStat, f64)], m: &Scored) -> f64 {
+    goals
+        .iter()
+        .map(|&(stat, target)| {
+            let v = m.goal_value(stat);
+            let miss = if stat.at_most() { v - target } else { target - v };
+            // f32 goal stats: a small tolerance so a reached goal counts as reached.
+            if miss <= target.abs() * 1e-5 + 1e-9 { 0.0 } else { miss / target.abs().max(1e-9) }
+        })
+        .sum()
 }
 
 fn objective_value(objective: Objective, m: &Scored, cap: f64) -> f64 {
@@ -578,6 +711,10 @@ impl<'a> Ctx<'a> {
                         return -(min - cc) - 1.0;
                     }
                 }
+                let short = goal_shortfall(&self.goals, &m);
+                if short > 0.0 {
+                    return -short - 1.0;
+                }
                 objective_value(self.objective, &m, self.rate_cap)
             }
         }
@@ -637,7 +774,10 @@ impl<'a> Ctx<'a> {
                     .max_by(|a, b| elem_value(a, t).total_cmp(&elem_value(b, t)))
             })
             .collect();
-        let keep: Vec<&'a Mod> = current.iter().copied().filter(|m| !has_element(m)).collect();
+        // Forced mods stay (first, so trimming from the end never drops them), element mods or not.
+        let is_forced = |m: &Mod| self.forced.iter().any(|f| f.id == m.id);
+        let mut keep: Vec<&'a Mod> = self.forced.clone();
+        keep.extend(current.iter().copied().filter(|m| !has_element(m) && !is_forced(m)));
         let mut plans: Vec<Vec<usize>> = Vec::new();
         for a in 0..PRIMARY.len() {
             plans.push(vec![a]);
@@ -651,8 +791,10 @@ impl<'a> Ctx<'a> {
         let mut scored: Vec<(Vec<&'a Mod>, f64)> = Vec::new();
         for plan in plans {
             let Some(mut set) = plan.iter().map(|&i| best_of[i]).collect::<Option<Vec<&'a Mod>>>() else { continue };
+            set.retain(|m| !keep.iter().any(|k| k.id == m.id));
+            let plan_len = set.len();
             set.extend(keep.iter().copied());
-            while !self.valid(&set, normal_slots) && set.len() > plan.len() {
+            while !self.valid(&set, normal_slots) && set.len() > plan_len + self.forced.len() {
                 set.pop();
             }
             if !self.valid(&set, normal_slots) {
@@ -857,6 +999,10 @@ impl<'a> Ctx<'a> {
             }
         }
         let mut seeds: Vec<Vec<usize>> = seeds.into_iter().map(|i| vec![i]).collect();
+        let from_seed: Vec<usize> = self.riven_seed.iter().filter_map(|k| pool.iter().position(|s| &s.key == k)).collect();
+        if from_seed.len() == positives && riven_ok(&from_seed.iter().map(|&i| pool[i].clone()).collect::<Vec<_>>()) {
+            seeds.push(from_seed);
+        }
         // Stats that only pay off together (crit chance with crit damage, or an element plan that
         // needs the mods to change) can't be reached one stat at a time: every complete riven is
         // scored on the riven-less mods and the best few start a search too.
@@ -1173,6 +1319,26 @@ fn optimize_cached<'a>(
     if opts.mode.is_some() {
         return optimize_mode(data, weapon_key, base, target, opts, cache, memo);
     }
+    let picks = candidate_modes(data, weapon_key, base, target)?;
+    let mut best: Option<OptimizeResult> = None;
+    let mut evals = 0;
+    for m in picks {
+        let r = optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(m), ..opts.clone() }, cache, memo)?;
+        evals += r.evaluations;
+        let misses = |x: &OptimizeResult| x.below_attack_speed_floor || !x.goals_met;
+        let better = best.as_ref().is_none_or(|b| (misses(b) && !misses(&r)) || (misses(b) == misses(&r) && r.score > b.score));
+        if better {
+            best = Some(r);
+        }
+    }
+    let mut best = best.expect("at least one mode searched");
+    best.evaluations = evals;
+    Ok(best)
+}
+
+/// The attack modes an optimize call without a mode searches, in order (the best of them wins:
+/// fewer missed limits and goals first, then the higher score; ties go to the earlier mode).
+pub fn candidate_modes(data: &GameData, weapon_key: &str, base: &Build, target: &Target) -> Result<Vec<usize>, CalcError> {
     let weapon = data
         .weapon(weapon_key)
         .ok_or_else(|| CalcError::new(ErrorCode::UnknownWeapon, format!("no weapon '{weapon_key}'")))?;
@@ -1191,26 +1357,8 @@ fn optimize_cached<'a>(
         .take(if any_headline { MODE_CANDIDATES } else { 1 })
         .map(|r| r.2)
         .collect();
-    if picks.is_empty() {
-        // Nothing computable: let the single-mode path produce the engine's error.
-        return optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(0), ..opts.clone() }, cache, memo);
-    }
-    let mut best: Option<OptimizeResult> = None;
-    let mut evals = 0;
-    for m in picks {
-        let r = optimize_mode(data, weapon_key, base, target, &OptimizeOptions { mode: Some(m), ..opts.clone() }, cache, memo)?;
-        evals += r.evaluations;
-        let better = best.as_ref().is_none_or(|b| {
-            (b.below_attack_speed_floor && !r.below_attack_speed_floor)
-                || (b.below_attack_speed_floor == r.below_attack_speed_floor && r.score > b.score)
-        });
-        if better {
-            best = Some(r);
-        }
-    }
-    let mut best = best.expect("at least one mode searched");
-    best.evaluations = evals;
-    Ok(best)
+    // Nothing computable: mode 0 searched alone gives the engine's error.
+    Ok(if picks.is_empty() { vec![0] } else { picks })
 }
 
 fn optimize_mode<'a>(
@@ -1232,14 +1380,17 @@ fn optimize_mode<'a>(
     build.conditions.calc_only = true;
 
     let never = |m: &Mod| data.rules.never.iter().any(|n| n.eq_ignore_ascii_case(&m.name));
+    // Magazine and reload add no damage, but count toward a goal on them.
+    let goal_on = |g: GoalStat| opts.goals.iter().any(|x| x.stat == g);
+    let matters = |stat: Stat| {
+        stat_matters(stat, faction, opts.allow_faction)
+            || (stat == Stat::Magazine && goal_on(GoalStat::Magazine))
+            || (stat == Stat::ReloadSpeed && goal_on(GoalStat::ReloadTime))
+    };
     let candidates: Vec<&Mod> = data
         .mods
         .iter()
-        .filter(|m| {
-            m.fits(weapon)
-                && !never(m)
-                && (m.tennokai_every.is_some() || m.modifiers.iter().any(|x| stat_matters(x.stat, faction, opts.allow_faction)))
-        })
+        .filter(|m| m.fits(weapon) && !never(m) && (m.tennokai_every.is_some() || m.modifiers.iter().any(|x| matters(x.stat))))
         .collect();
 
     let mut ctx = Ctx {
@@ -1262,6 +1413,8 @@ fn optimize_mode<'a>(
         capacity: opts.capacity.clone(),
         evolutions: vec![],
         forced: vec![],
+        goals: vec![],
+        riven_seed: vec![],
     };
     // Builds already calculated by earlier searches of this weapon and target.
     ctx.memo = std::mem::take(&mut memo.map);
@@ -1303,6 +1456,57 @@ fn optimize_mode<'a>(
         if let Some(m) = names.iter().filter_map(|n| data.find_mod(n)).find(|m| m.fits(weapon)) {
             ctx.forced = vec![m];
         }
+    }
+    // Locked mods come first; the explosion mod stays only while there is room for it.
+    let with_riven = opts.riven || !opts.fixed_riven.is_empty();
+    let lock_slots = if with_riven { NORMAL_SLOTS - 1 } else { NORMAL_SLOTS };
+    let mut locked: Vec<&Mod> = Vec::new();
+    for name in &opts.locked_mods {
+        let m = data
+            .find_mod(name)
+            .ok_or_else(|| CalcError::new(ErrorCode::UnknownMod, format!("no mod '{name}'")))?;
+        if !m.fits(weapon) {
+            return Err(CalcError::new(ErrorCode::IncompatibleMod, format!("{} doesn't fit {}", m.name, weapon.name)));
+        }
+        if !locked.iter().any(|x| x.id == m.id) {
+            locked.push(m);
+        }
+    }
+    if !locked.is_empty() {
+        // A full set needs an exilus-eligible mod in the last place.
+        if locked.len() > lock_slots {
+            if let Some(i) = locked.iter().rposition(|m| m.is_exilus) {
+                let e = locked.remove(i);
+                locked.push(e);
+            }
+        }
+        let saved = std::mem::take(&mut ctx.forced);
+        ctx.forced = locked.clone();
+        if !ctx.valid(&locked, lock_slots) {
+            return Err(CalcError::new(
+                ErrorCode::InvalidValue,
+                if with_riven { "the locked mods don't fit next to a riven".to_string() } else { "the locked mods don't fit together".to_string() },
+            ));
+        }
+        for m in saved {
+            let mut next = ctx.forced.clone();
+            next.push(m);
+            if !ctx.forced.iter().any(|x| x.id == m.id) && ctx.valid(&next, lock_slots) {
+                ctx.forced = next;
+            }
+        }
+    }
+    // Goals as thresholds of this attack (relative ones from its unmodded value).
+    if !opts.goals.is_empty() {
+        let unmodded = ctx.mode_result(&[], None, &[]).map(|m| Scored::of(&m));
+        ctx.goals = opts
+            .goals
+            .iter()
+            .filter_map(|g| {
+                let target = if g.relative { unmodded?.goal_value(g.stat) * (1.0 + g.value) } else { g.value };
+                (target.is_finite() && target > 0.0).then_some((g.stat, target))
+            })
+            .collect();
     }
     let mode_def = weapon
         .modes
@@ -1359,6 +1563,14 @@ fn optimize_mode<'a>(
     let (finals, plan_added): (Vec<Structure<'a>>, bool) = if let Some(f) = cache.get(&mode) {
         f.clone()
     } else {
+    // A seed for this attack: its structure and mods are one more finalist (and get a riven search).
+    let seed = opts.seed.as_ref().filter(|s| s.mode_index == mode);
+    let seed_arcane = seed.map(|s| arcanes.iter().position(|a| a.map(|a| a.name.to_lowercase()) == s.arcane.as_ref().map(|n| n.to_lowercase())));
+    let seed_evo = seed.map(|s| {
+        let overlap = |c: &Vec<&wf_data::Evolution>| c.iter().filter(|e| s.evolutions.iter().any(|n| n.eq_ignore_ascii_case(&e.name))).count();
+        evo_combos.iter().enumerate().max_by_key(|(i, c)| (overlap(c), std::cmp::Reverse(*i))).map(|(i, _)| i)
+    });
+    let seed_pg = seed.map(|s| progenitors.iter().position(|p| *p == s.progenitor));
     let mut candidates_found: Vec<Structure<'_>> = Vec::new();
     for &pg in &progenitors {
         ctx.build.progenitor = pg;
@@ -1366,7 +1578,7 @@ fn optimize_mode<'a>(
             for evos in &evo_combos {
                 ctx.evolutions = evos.clone();
                 let (m, v) = ctx.search(vec![], a, &fixed, structure_slots, false);
-                candidates_found.push(Structure { score: v, progenitor: pg, arcane: a, evolutions: evos.clone(), mods: m });
+                candidates_found.push(Structure { score: v, progenitor: pg, arcane: a, evolutions: evos.clone(), mods: m, seed: false });
             }
         }
     }
@@ -1378,6 +1590,31 @@ fn optimize_mode<'a>(
         let (m, v) = ctx.search(c.mods.clone(), c.arcane, &fixed, structure_slots, true);
         finals.push(Structure { score: v, mods: m, ..c });
     }
+    // The seed's own mods on its structure: another start for the full search.
+    if let (Some(s), Some(Some(ai)), Some(Some(ei)), Some(Some(pi))) = (seed, seed_arcane, seed_evo, seed_pg) {
+        let (a, evos, pg) = (arcanes[ai], evo_combos[ei].clone(), progenitors[pi]);
+        let mut start: Vec<&Mod> = Vec::new();
+        for m in s.mods.iter().filter_map(|n| data.find_mod(n)) {
+            let clash = |x: &&Mod| x.id == m.id || (m.exclusive_group.is_some() && x.exclusive_group == m.exclusive_group);
+            let forced_clash = ctx.forced.iter().any(|f| f.id != m.id && clash(&f));
+            if m.fits(weapon) && !forced_clash && !start.iter().any(clash) {
+                start.push(m);
+            }
+        }
+        for f in ctx.forced.clone().into_iter().rev() {
+            if !start.iter().any(|m| m.id == f.id) {
+                start.insert(0, f);
+            }
+        }
+        while !ctx.valid(&start, structure_slots) {
+            let Some(i) = start.iter().rposition(|m| !ctx.forced.iter().any(|f| f.id == m.id)) else { break };
+            start.remove(i);
+        }
+        ctx.evolutions = evos.clone();
+        ctx.build.progenitor = pg;
+        let (m, v) = ctx.search(start, a, &fixed, structure_slots, true);
+        finals.push(Structure { score: v, progenitor: pg, arcane: a, evolutions: evos, mods: m, seed: true });
+    }
     finals.sort_by(|x, y| y.score.total_cmp(&x.score));
     // The best structure also tries every element plan (see plan_search). A better plan goes first,
     // and the original stays a finalist: the riven may suit either.
@@ -1387,7 +1624,7 @@ fn optimize_mode<'a>(
         ctx.build.progenitor = top.progenitor;
         let (m, v) = ctx.plan_search(top.mods.clone(), top.score, top.arcane, &fixed, structure_slots);
         if v > top.score * (1.0 + 1e-9) {
-            finals.insert(0, Structure { score: v, mods: m, ..top });
+            finals.insert(0, Structure { score: v, mods: m, seed: false, ..top });
             plan_added = true;
         }
     }
@@ -1403,6 +1640,9 @@ fn optimize_mode<'a>(
     ctx.build.progenitor = top.progenitor;
     let mut riven: Vec<RivenStat> = fixed.clone();
     let mut negative: Option<RivenPick> = None;
+    let mut riven_job: Option<usize> = None;
+    let mut ran_jobs = 0usize;
+    ctx.riven_seed = opts.seed.as_ref().filter(|s| s.mode_index == mode).map(|s| s.riven.clone()).unwrap_or_default();
 
     if fixed.is_empty() && opts.riven {
         let table = data
@@ -1411,14 +1651,25 @@ fn optimize_mode<'a>(
             .ok_or_else(|| CalcError::new(ErrorCode::MissingField, "game data has no riven table"))?;
         let ty = RivenType::for_pool(weapon.mod_pool);
         let roll = table.roll_min + (table.roll_max - table.roll_min) * opts.riven_roll.clamp(0.0, 1.0);
-        let mut best_riven: Option<(Structure<'_>, Vec<RivenStat>, RivenPick, Option<Modifier>)> = None;
+        let mut best_riven: Option<(Structure<'_>, Vec<RivenStat>, RivenPick, Option<Modifier>, usize)> = None;
+        let mut job = 0usize;
         // The riven can change which structure wins, so try it on the best two.
         // One more when the element plan search added a structure, so the original runner-up still gets one.
-        for st in finals.iter().take(RIVEN_STRUCTURES + usize::from(plan_added)) {
+        let riven_count = RIVEN_STRUCTURES + usize::from(plan_added);
+        // The best few regular finalists, plus the seed's.
+        let riven_structures: Vec<&Structure> =
+            finals.iter().filter(|f| !f.seed).take(riven_count).chain(finals.iter().filter(|f| f.seed)).collect();
+        for st in riven_structures {
             ctx.evolutions = st.evolutions.clone();
             ctx.build.progenitor = st.progenitor;
             for positives in [3usize, 2] {
                 let Some(layout) = table.layout(positives, true) else { continue };
+                let this_job = job;
+                job += 1;
+                if opts.riven_shard.is_some_and(|sh| sh.count > 1 && this_job % sh.count != sh.index) {
+                    continue;
+                }
+                ran_jobs += 1;
                 // The negative at its smallest penalty (the best riven): a harmless stat when one can roll,
                 // otherwise (companion weapons) the one that costs this build least.
                 let neg_roll = table.roll_min + table.roll_max - roll;
@@ -1467,7 +1718,7 @@ fn optimize_mode<'a>(
                     .filter_map(|s| {
                         let stat = s.stat?;
                         let base = *s.base.get(&ty)?;
-                        stat_matters(stat, faction, opts.allow_faction).then(|| RivenStat {
+                        matters(stat).then(|| RivenStat {
                             spliced: s.spliced,
                             key: s.key.clone(),
                             label: s.label.clone(),
@@ -1492,8 +1743,8 @@ fn optimize_mode<'a>(
                     .collect();
                 let (m, r, v) = ctx.search_riven(st.mods.clone(), st.arcane, &pool, positives);
                 let neg = RivenPick { key: neg_def.key.clone(), label: neg_def.label.clone(), value: neg_value(neg_def) };
-                if best_riven.as_ref().is_none_or(|(b, _, _, _)| v > b.score) {
-                    best_riven = Some((Structure { score: v, mods: m, ..st.clone() }, r, neg, neg_mod.clone()));
+                if best_riven.as_ref().is_none_or(|(b, _, _, _, _)| v > b.score) {
+                    best_riven = Some((Structure { score: v, mods: m, ..st.clone() }, r, neg, neg_mod.clone(), this_job));
                 }
                 if neg_mod.is_some() {
                     ctx.build.buffs = base_buffs;
@@ -1501,7 +1752,8 @@ fn optimize_mode<'a>(
                 }
             }
         }
-        if let Some((st, r, neg, neg_mod)) = best_riven {
+        if let Some((st, r, neg, neg_mod, j)) = best_riven {
+            riven_job = Some(j);
             // The chosen negative stays in effect for the rest of the search (exilus, final numbers).
             if let Some(m) = neg_mod {
                 ctx.build.buffs.push(m);
@@ -1516,6 +1768,8 @@ fn optimize_mode<'a>(
         }
     }
 
+    let search_score = best;
+    let shard_empty = opts.riven_shard.is_some_and(|sh| sh.count > 1) && fixed.is_empty() && opts.riven && ran_jobs == 0;
     // Discouraged mods (Heavy Caliber) stay only if every alternative is clearly worse.
     {
         let normal_slots = if riven.is_empty() { NORMAL_SLOTS } else { NORMAL_SLOTS - 1 };
@@ -1587,7 +1841,8 @@ fn optimize_mode<'a>(
             ms.iter().map(|m| ((m.base_drain + m.max_rank as i32).max(0) as f64 / 2.0).ceil()).sum::<f64>()
                 + if riven.is_empty() { 0.0 } else { 9.0 }
         };
-        if mods.len() == normal_slots + 1 && full_forma(&mods) > max_capacity {
+        let exilus_locked = mods.last().is_some_and(|l| ctx.forced.iter().any(|f| f.id == l.id));
+        if mods.len() == normal_slots + 1 && full_forma(&mods) > max_capacity && !exilus_locked {
             let exilus = mods.pop().unwrap();
             // A cheaper exilus that still fits, if one is as good.
             let mut swap: Option<(&Mod, f64)> = None;
@@ -1696,6 +1951,17 @@ fn optimize_mode<'a>(
         || matches!((ctx.min_rate, &final_mode), (Some(min), Some(m)) if m.fire_rate < min - 1e-9)
         || matches!((opts.min_crit_chance, &final_mode), (Some(min), Some(m)) if m.components.iter().map(|c| c.arsenal_crit_chance).fold(0.0, f64::max) < min - 1e-9);
     let drain = opts.capacity.as_ref().map(|c| total_drain(&mods, normal_slots, c));
+    let final_scored = final_mode.as_ref().map(Scored::of);
+    let goals: Vec<GoalOutcome> = ctx
+        .goals
+        .iter()
+        .map(|&(stat, target)| {
+            let value = final_scored.map_or(0.0, |s| s.goal_value(stat));
+            let met = final_scored.is_some_and(|s| goal_shortfall(&[(stat, target)], &s) == 0.0);
+            GoalOutcome { stat, target, value, met }
+        })
+        .collect();
+    let goals_met = goals.iter().all(|g| g.met);
 
     let fm = final_mode.as_ref();
     memo.map = std::mem::take(&mut ctx.memo);
@@ -1716,6 +1982,11 @@ fn optimize_mode<'a>(
         drain,
         range_cost,
         below_attack_speed_floor: below_floor,
+        goals,
+        goals_met,
+        search_score,
+        riven_job,
+        shard_empty,
         weapon_id: weapon.id.clone(),
         weapon: weapon.name.clone(),
         mode: mode_def.name.clone(),
@@ -1792,6 +2063,8 @@ pub fn rank_rivens(data: &GameData, weapon_key: &str, base: &Build, target: &Tar
         capacity: None,
         evolutions,
         forced: vec![],
+        goals: vec![],
+        riven_seed: vec![],
     };
     ctx.context = ctx.context_id();
     if let Some(base) = ctx.mode_result(&[], None, &[]).map(|m| m.fire_rate).filter(|r| *r > 0.0) {

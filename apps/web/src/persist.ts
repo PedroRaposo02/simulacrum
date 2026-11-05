@@ -94,7 +94,7 @@ export const KEYS = {
   defaultScenario: ["defaultScenario"],
   session: ["build", "tab", "browserBuild"],
   optimizer: [
-    "opt.objective", "opt.realistic", "opt.capacity", "opt.allowFaction", "opt.tenacious", "opt.spliced", "opt.explosionMod", "opt.comfort",
+    "opt.objective", "opt.realistic", "opt.capacity", "opt.allowFaction", "opt.tenacious", "opt.spliced", "opt.explosionMod", "opt.comfort", "opt.workers",
   ],
   browser: ["browser.slot", "browser.favOnly", "browser.sort", "pageSize"],
   view: ["theme", "modView", "liveStats", "shareVsEnemy", "cards.catalyst", "cards.stance"],

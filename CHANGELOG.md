@@ -8,6 +8,10 @@ Versions follow [SemVer](https://semver.org). Pre-1.0 releases are betas; the ve
 - **Details view**: the ⤢ button on a mod, riven or arcane card (or a right-click) opens it enlarged: art, full text, drain, set progress and the DPS it adds. For a riven: each stat on its roll range with its grade, and an overall grade.
 - **External elements that don't fuse**: Fired Up's Heat is added after the weapon's elements have combined, as its own Heat, instead of fusing (e.g. with Verglas's innate Cold into Blast). Modifiers can be marked as not fusing (`standalone`).
 - **Riven labels**: negatives show just the stat and its value (no "harmless" notes).
+- **Locked mods**: the padlock on a mod card locks it; the optimizer keeps locked mods and finds the best build around them (with or without a riven).
+- **Stat goals** (Optimizer options): targets such as fire rate +200% or 15 shots/s, critical or status chance, critical multiplier, multishot, magazine, reload time (at most) or melee range, as a total or relative to the unmodded value. Builds that reach every goal rank above builds that don't, and the objective picks the best of them; an unreachable goal gives the closest build and says so. Magazine and reload mods join the search only for a goal on them.
+- **Searches start from the precomputed build**: with locked mods, goals or another scenario, the precomputed best build (its mods, arcane, evolutions and riven) is one more start for the search, which still looks everywhere else. Results are the same or better, never worse (Braton Prime with Serration locked: 3.19M instead of 2.24M).
+- **Parallel searches**: a search is split across background threads (attack modes, then riven searches) with the same result as one. Settings › Optimizer › Parallel searches (default 2).
 
 ## 0.7.0-beta.3 — 2026-11-03
 
